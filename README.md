@@ -40,11 +40,11 @@ Autonomous agents (Claude Code, Cursor, Antigravity, OpenCode, Codex, LangChain,
 `zn` acts as an **in-process sacrificial security checkpoint** situated directly in front of your LLM and tool execution loops:
 
 - ⚡ **Zero External Dependencies:** Built 100% with standard libraries in both Node.js (15 kB) and Python. No PyTorch, no HuggingFace transformers, no native C compilation required.
-- ⏱️ **Sub-Millisecond Deterministic Latency:** Local signature rules and homoglyph normalization execute in **< 10 µs** (over 90,000 requests/sec).
+- ⏱️ **Sub-Millisecond Deterministic Latency:** Local signature rules and homoglyph normalization execute in **< 0.3 ms** (in-process standard library execution).
 - 🔌 **Native Model Context Protocol (MCP):** Pre-built MCP server and stdio bidirectional proxy (`zn-gate shield`) protecting tool definitions, arguments, and return outputs.
 - 🛡️ **Trojan Source & Evasion Defense:** Neutralizes Unicode bidirectional overrides (CVE-2021-42574), zero-width characters, hidden CSS payloads, Cyrillic homoglyphs, and Base64 smuggling.
 - 🔑 **Built-in DLP & Credential Redaction:** Masks AWS keys, OpenAI/Anthropic tokens, GitHub PATs, database URIs, and JWTs in real-time.
-- 🔒 **Tamper-Evident Evidence Ledger (SOC 2 / EU AI Act):** Appends SHA-256 hash-chained immutable audit records to `~/.zn/evidence.jsonl` with built-in verification and CLI exports.
+- 🔒 **Cryptographic Evidence Ledger:** Appends SHA-256 hash-chained audit records to `~/.zn/evidence.jsonl` with CLI verification and export capabilities for local forensic tracing.
 - ☁️ **Optional Neural Cloud Fastpath:** Set `ZN_API_KEY` to upgrade clean traffic to cloud neural models (v30 ONNX) while keeping instant local blocking at 0 latency and $0 cost.
 
 ---
@@ -80,6 +80,22 @@ Autonomous agents (Claude Code, Cursor, Antigravity, OpenCode, Codex, LangChain,
          ▼
     [LLM Context]
 ```
+
+### Two-Tier Architecture: Fast-Path vs. Semantic Gate
+
+No single regex or single LLM solves prompt injection alone. `zn` uses a layered defense:
+
+| Layer | Engine | Latency | Cost / Deps | What it Catches |
+|---|---|---|---|---|
+| **Tier 1 (OSS Local)** | Deterministic Rules + Normalizer | < 0.3 ms | $0 · 0 deps | Known signatures, exfiltration URLs, BiDi overrides (CVE-2021-42574), hidden CSS payloads, credential leaks (DLP), and `tools/list` poisoning. |
+| **Tier 2 (Cloud / Neural)** | Galvanize-60M Classifier | ~12 ms | Opt-in API | Zero-keyword semantic stories (PuzzleMask), multi-hop reasoning attacks, and fluent adversarial paraphrases. |
+| **Tool Proxy Boundary** | `zn-gate shield` (stdio) | Real-time | In-process | Blocks malicious arguments pre-flight and strips data exfiltration post-flight before tokens leave the host. |
+
+### Monorepo Structure
+
+- `packages/zn-gate`: Node.js SDK, CLI scanner, and MCP stdio shield (**0 runtime dependencies**, stdlib only).
+- `packages/zn-gate-py`: Python SDK and CLI scanner (**0 runtime dependencies**, stdlib only).
+- `src/` (Rust): Native high-throughput gateway daemon for enterprise infrastructure deployments.
 
 ---
 
@@ -222,9 +238,9 @@ In **Settings → Features → MCP Servers → Add New MCP Server**:
 
 ---
 
-## Cryptographic Evidence Ledger (SOC 2 / EU AI Act)
+## Cryptographic Evidence Ledger (Tamper-Evident Audit Logging)
 
-Every security decision produces a cryptographically signed SHA-256 hash-chained record in `~/.zn/evidence.jsonl`:
+Every security decision produces an append-only SHA-256 hash-chained record in `~/.zn/evidence.jsonl` for local forensic auditing and inspection:
 
 ```bash
 # Verify ledger integrity from genesis to tip
