@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">
-  <img src="assets/logo-400.png" alt="zn logo" width="36"/> zn
+  <img src="assets/logo-400.png" alt="zn logo" width="36"/>
 </h1>
 
 <p align="center">
