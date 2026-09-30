@@ -4,7 +4,10 @@ const readline = require('readline');
 const { analyze, checkToolResult, RULES_VERSION, resolveEndpoint } = require('./client');
 
 const SERVER_NAME = 'zn-gate';
-const SERVER_VERSION = '1.2.1';
+let SERVER_VERSION = '1.4.0';
+try {
+  SERVER_VERSION = require('../package.json').version || '1.4.0';
+} catch (_) {}
 const PROTOCOL_VERSION = '2024-11-05';
 
 function sendJsonRpc(response) {

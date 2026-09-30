@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zn-gate"
-version = "1.3.0"
+version = "1.4.0"
 description = "Deterministic, ultra-fast, zero-dependency guardrail engine for AI agents and LLM tool calling."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
 authors = [
-    { name = "zn", email = "admin@usezn.com" }
+    { name = "usezn", email = "admin@usezn.com" }
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -43,8 +43,8 @@ dependencies = []
 [project.urls]
 Homepage = "https://usezn.com"
 Documentation = "https://usezn.com/docs"
-Repository = "https://github.com/tljohnsilver/zn"
-Issues = "https://github.com/tljohnsilver/zn/issues"
+Repository = "https://github.com/usezn/zn"
+Issues = "https://github.com/usezn/zn/issues"
 
 [project.scripts]
 zn-gate = "zn_gate.cli:main"

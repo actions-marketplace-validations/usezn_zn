@@ -26,7 +26,7 @@ jobs:
       - name: Run zn-gate integration tests
         run: |
           cd packages/zn-gate
-          node tests/integration/test_agent_workflows.js
+          node test/integration/test_agent_workflows.js
       - name: Run benchmark verification
         run: |
           node bench/bench_node.js

@@ -4,6 +4,10 @@ const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 const { evaluate, RULES_VERSION } = require('./rules');
+let PKG_VERSION = '1.4.0';
+try {
+  PKG_VERSION = require('../package.json').version || '1.4.0';
+} catch (_) {}
 
 function resolveEndpoint(options = {}) {
   if (options.apiUrl || process.env.ZN_API_URL) {
@@ -31,7 +35,7 @@ function analyzeCloud(input, apiKey, endpointUrl, timeoutMs = 4000) {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(postData),
           Authorization: `Bearer ${apiKey.trim()}`,
-          'User-Agent': 'zn-gate/1.2.4 (mcp-client)',
+          'User-Agent': `zn-gate/${PKG_VERSION} (mcp-client)`,
         },
         timeout: timeoutMs,
       },

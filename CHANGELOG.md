@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-09-29
+
+### Added
+- **Static Workspace & Prompt Security Scanner (`zn-gate scan <path>`)**:
+  - Recursively audits prompt templates, markdown guides (`AGENTS.md`, `SKILL.md`), and configuration files for injection traps, covert beacons, and secret leaks.
+  - Zero-configuration exit codes (`0` clean, `1` threats found) for seamless integration with git pre-commit hooks and CI/CD pipelines.
+- **Trojan Source & BiDi Override Defense (CVE-2021-42574)**:
+  - Detects and neutralizes Unicode Bidirectional override characters (`\u202A-\u202E`, `\u2066-\u2069`) across Node.js and Python engines.
+- **Hidden CSS Injection Defense**:
+  - Intercepts and neutralizes third-party tool outputs containing invisible CSS text (`display: none`, `opacity: 0`, `font-size: 0px`, `color: transparent`, `text-indent: -9999px`).
+- **Multilingual Prompt Injection (German)**:
+  - Added native detection rules for German prompt injection attempts (`pi:multi_de`) across Node.js and Python.
+- **Expanded Self-Test Suite (51 Vectors)**:
+  - Evaluates 26 attack patterns and 25 diverse benign developer scenarios (React, Next.js, TypeScript, Python, Rust, Docker, SQL, GraphQL, AWS CLI) with 100% accuracy and 0 false positives.
+
+### Changed
+- Migrated primary repository to official organization: **https://github.com/usezn/zn**.
+- Synchronized rules engine to `RULES_VERSION: 2026-09-29.1`.
+
+---
+
 ## [1.3.0] - 2026-09-06
 
 ### Added

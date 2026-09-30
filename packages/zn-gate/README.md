@@ -10,7 +10,7 @@
 - 🛡️ **MCP Shield Proxy (`zn-gate shield`)**: Stdio JSON-RPC interception for any external tool server (Node, Python, UVX, Postgres, GitHub).
 - 🧬 **Multi-Vector Pre-Normalization**: Neutralizes obfuscation attacks (Cyrillic homoglyphs, zero-width spaces, C-style comments, piped Base64 payloads).
 - 🔄 **Bidirectional Lifecycle Coverage**: Pre-call prompt inspection (`analyze_prompt`), argument safety (`check_tool_call`), and post-execution third-party result inspection (`check_tool_result`).
-- 🧪 **Instant Self-Test Suite**: Run `npx -y zn-gate test` to benchmark 33 real-world attack & benign vectors in under 10 ms.
+- 🧪 **Instant Self-Test Suite**: Run `npx -y zn-gate test` to benchmark 51 real-world attack & benign vectors in under 10 ms.
 - 🎯 **Repository Custom Rules**: Define banned patterns and restricted paths via `.znrules` or `zn.config.json`.
 - 🧠 **Cloud-Native Neural Gate (Optional)**: Set `ZN_API_KEY` to activate the `v30` fused gate (deep semantic multilingual ONNX neural classifier with 99.4% accuracy).
 

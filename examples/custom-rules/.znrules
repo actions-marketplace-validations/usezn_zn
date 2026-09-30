@@ -1,0 +1,8 @@
+# Custom organizational security rules
+# Regex patterns to ban
+PROJECT_TITAN_SECRET
+CONFIDENTIAL_INTERNAL_MEMO
+
+# Forbidden sensitive paths
+path:/var/app/internal_certs
+path:/etc/k8s/admin.conf

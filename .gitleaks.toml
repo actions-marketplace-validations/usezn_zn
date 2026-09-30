@@ -1,0 +1,21 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist synthetic test fixtures and documentation mock tokens"
+regexes = [
+  '''ghp_1234567890abcdefghijklmnopqrstuvwxyzAB''',
+  '''ghp_1234567890abcdefghijklmnopqrstuvwxyz''',
+  '''sk-proj-1234567890abcdef1234567890abcdef''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9''',
+]
+paths = [
+  '''test/.*''',
+  '''tests/.*''',
+  '''.*\.test\.js''',
+  '''examples/.*''',
+  '''bench/.*''',
+  '''packages/zn-gate/test/.*''',
+  '''packages/zn-gate-py/tests/.*''',
+]

@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-09-06.3"
+RULES_VERSION = "2026-09-29.1"
 
 # Cyrillic homoglyphs mapping to Latin
 HOMOGLYPH_MAP = {
@@ -25,6 +25,7 @@ HOMOGLYPH_MAP = {
 }
 
 ZERO_WIDTH_RE = re.compile(r'[\u200B-\u200D\uFEFF\u00AD]')
+ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07\x1b]*\x07')
 C_COMMENT_RE = re.compile(r'/\*[\s\S]*?\*/')
 DELIMITER_SPLIT_RE = re.compile(r'([\w<|/.-]{1,})\s*[\r\n]+\s*([\w>|/.-]{1,})', re.UNICODE)
 B64_EXEC_RE = re.compile(r'(?:echo|printf)\s+([A-Za-z0-9+/=]{16,})\s*\|\s*(?:base64\s+-(?:d|-decode)|openssl)', re.IGNORECASE)
@@ -46,8 +47,17 @@ INJECTION_RULES: List[Tuple[str, re.Pattern, str]] = [
     ('pi:template_boundary', re.compile(r'\[INST\]|\[/INST\]|<<<SYS>>>|</<<SYS>>>|<\|im_start\|>|<\|im_end\|>', re.IGNORECASE), 'Chat template boundary injection'),
     ('pi:multi_es', re.compile(r'ignora\s+(todas\s+las\s+)?(instrucciones|anteriores|previas)|olvida\s+(todo|las\s+instrucciones)|act[uú]a\s+como|ahora\s+eres', re.IGNORECASE), 'Multilingual prompt injection (Spanish)'),
     ('pi:multi_fr', re.compile(r'ignore[rz]?\s+(toutes\s+les\s+)?instructions|oublie[rz]?\s+tout|agis\s+comme|tu\s+es\s+maintenant', re.IGNORECASE), 'Multilingual prompt injection (French)'),
+    ('pi:multi_de', re.compile(r'ignoriere\s+(alle\s+)?(anweisungen|instruktionen)|vergiss\s+(alles|jede)|du\s+bist\s+jetzt|handle\s+als', re.IGNORECASE), 'Multilingual prompt injection (German)'),
     ('pi:multi_ru', re.compile(r'забудь\s+.*?(все|инструкции)|игнорируй\s+.*?(все|предыдущие)|действуй\s+как|ты\s+теперь|найди\s+пароли', re.IGNORECASE), 'Multilingual prompt injection (Russian)'),
     ('pi:multi_zh', re.compile(r'忽略.*?(指示|指令|提示)|忘记.*?(指示|指令|一切)|你现在是|初始提示词', re.IGNORECASE), 'Multilingual prompt injection (Chinese)'),
+]
+
+EVASION_RULES: List[Tuple[str, re.Pattern, str]] = [
+    (
+        'evasion:bidi_override',
+        re.compile(r'[‪-‮⁦-⁩]'),
+        'Unicode bidirectional override (Trojan Source evasion attempt)',
+    ),
 ]
 
 INDIRECT_INJECTION_RULES: List[Tuple[str, re.Pattern, str]] = [
@@ -58,7 +68,7 @@ INDIRECT_INJECTION_RULES: List[Tuple[str, re.Pattern, str]] = [
     ),
     (
         'indirect:hidden_tag',
-        re.compile(r'<[a-z0-9]+\b[^>]*\b(?:display\s*:\s*none|visibility\s*:\s*hidden|hidden\b)[^>]*>[\s\S]*?(?:ignore|system|instruction|prompt|bypass|override)', re.IGNORECASE),
+        re.compile(r'<[a-z0-9]+\b[^>]*\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0(?:px)?|color\s*:\s*transparent|text-indent\s*:\s*-[0-9]{3,}px|hidden\b)[^>]*>[\s\S]*?(?:ignore|system|instruction|prompt|bypass|override|exfil|leak)', re.IGNORECASE),
         'Hidden DOM element with injection payload',
     ),
 ]
@@ -111,6 +121,8 @@ def normalize_input(text: str) -> Tuple[str, str]:
         return '', ''
     # 1. Strip zero-width evasion characters
     stripped = ZERO_WIDTH_RE.sub('', text)
+    # 1b. Strip ANSI escape sequences
+    stripped = ANSI_ESCAPE_RE.sub('', stripped)
     # 2. Strip inline C-style comments (e.g. sys/*safe*/tem -> system)
     stripped = C_COMMENT_RE.sub('', stripped)
     # 3. Rejoin words and tokens split across newlines
@@ -145,6 +157,11 @@ def _evaluate_uncached(input_text: str) -> Assessment:
     targets = list(dict.fromkeys([normalized, stripped, input_text]))
 
     for text in targets:
+        # 0. Evasion Rules (BiDi Trojan Source)
+        for rule_id, pat, desc in EVASION_RULES:
+            if pat.search(text):
+                return Assessment(verdict='block', confidence=0.99, rule=rule_id, reason=desc)
+
         # 1. Covert Markdown Image Exfiltration
         for rule_id, pat, desc in MARKDOWN_EXFIL_RULES:
             if pat.search(text):

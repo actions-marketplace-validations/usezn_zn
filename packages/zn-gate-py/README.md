@@ -205,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: tljohnsilver/zn@main
+      - uses: usezn/zn@main
         with:
           path: './prompts'
           fail_on_threat: 'true'

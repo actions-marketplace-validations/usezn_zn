@@ -6,6 +6,10 @@ branding:
   color: 'green'
 
 inputs:
+  version:
+    description: 'zn-gate package version to install'
+    required: false
+    default: '1.4.0'
   path:
     description: 'Path or directory to scan for prompt injections and leaked secrets'
     required: false
@@ -28,7 +32,12 @@ runs:
         python-version: '3.11'
     - name: Install zn-gate
       shell: bash
-      run: python -m pip install zn-gate
+      run: |
+        if [ "${{ inputs.version }}" = "1.4.0" ] && [ -d "${{ github.action_path }}/packages/zn-gate-py" ]; then
+          python -m pip install "${{ github.action_path }}/packages/zn-gate-py"
+        else
+          python -m pip install "zn-gate==${{ inputs.version }}"
+        fi
     - name: Run zn-gate security scan
       shell: bash
       run: |

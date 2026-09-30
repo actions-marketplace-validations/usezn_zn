@@ -12,6 +12,7 @@ import urllib.error
 from typing import Any, Dict, Optional
 
 from .rules import evaluate, Assessment, RULES_VERSION
+from . import __version__
 
 DEFAULT_ENDPOINT = "https://api.usezn.com/v30/analyze"
 
@@ -40,7 +41,7 @@ def analyze_cloud(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key.strip()}",
-        "User-Agent": "zn-gate/1.2.4 (python-stdlib-client)",
+        "User-Agent": f"zn-gate/{__version__} (python-stdlib-client)",
     }
     req = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:

@@ -1,0 +1,15 @@
+name: AI Security Gate
+on: [push, pull_request]
+
+jobs:
+  prompt-security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan AI Agent Prompts & Tools
+        uses: usezn/zn@main
+        with:
+          version: '1.4.0'
+          path: './prompts'
+          fail-on-threat: 'true'
+          format: 'github'

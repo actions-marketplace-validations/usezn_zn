@@ -5,10 +5,10 @@ const path = require('path');
 
 /**
  * zn deterministic rules engine - SINGLE SOURCE OF TRUTH.
- * RULES_VERSION: 2026-09-06.3
+ * RULES_VERSION: 2026-09-29.1
  */
 
-const RULES_VERSION = '2026-09-06.3';
+const RULES_VERSION = '2026-09-29.1';
 
 const INJECTION_RULES = [
   { id: 'pi:ignore_previous', pattern: /ignore\s+(all\s+)?(the\s+)?(previous|prior|above|existing|system)?\s*(instructions|prompts|rules|guidelines|context)?/i, description: 'Override prior instructions' },
@@ -27,6 +27,7 @@ const INJECTION_RULES = [
   { id: 'pi:template_boundary', pattern: /\[INST\]|\[\/INST\]|<<<SYS>>>|<\/<<SYS>>>|<\|im_start\|>|<\|im_end\|>/i, description: 'Chat template boundary injection' },
   { id: 'pi:multi_es', pattern: /ignora\s+(todas\s+las\s+)?(instrucciones|anteriores|previas)|olvida\s+(todo|las\s+instrucciones)|act[uú]a\s+como|ahora\s+eres/iu, description: 'Multilingual prompt injection (Spanish)' },
   { id: 'pi:multi_fr', pattern: /ignore[rz]?\s+(toutes\s+les\s+)?instructions|oublie[rz]?\s+tout|agis\s+comme|tu\s+es\s+maintenant/iu, description: 'Multilingual prompt injection (French)' },
+  { id: 'pi:multi_de', pattern: /ignoriere\s+(alle\s+)?(anweisungen|instruktionen)|vergiss\s+(alles|jede)|du\s+bist\s+jetzt|handle\s+als/iu, description: 'Multilingual prompt injection (German)' },
   { id: 'pi:multi_ru', pattern: /забудь\s+.*?(все|инструкции)|игнорируй\s+.*?(все|предыдущие)|действуй\s+как|ты\s+теперь|найди\s+пароли/iu, description: 'Multilingual prompt injection (Russian)' },
   { id: 'pi:multi_zh', pattern: /忽略.*?(指示|指令|提示)|忘记.*?(指示|指令|一切)|你现在是|初始提示词/u, description: 'Multilingual prompt injection (Chinese)' },
 ];
@@ -39,8 +40,16 @@ const INDIRECT_INJECTION_RULES = [
   },
   {
     id: 'indirect:hidden_tag',
-    pattern: /<[a-z0-9]+\b[^>]*\b(?:display\s*:\s*none|visibility\s*:\s*hidden|hidden\b)[^>]*>[\s\S]*?(?:ignore|system|instruction|prompt|bypass|override)/i,
+    pattern: /<[a-z0-9]+\b[^>]*\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0(?:px)?|color\s*:\s*transparent|text-indent\s*:\s*-[0-9]{3,}px|hidden\b)[^>]*>[\s\S]*?(?:ignore|system|instruction|prompt|bypass|override|exfil|leak)/i,
     description: 'Hidden DOM element with injection payload',
+  },
+];
+
+const EVASION_RULES = [
+  {
+    id: 'evasion:bidi_override',
+    pattern: /[\u202A-\u202E\u2066-\u2069]/,
+    description: 'Unicode bidirectional override (Trojan Source evasion attempt)',
   },
 ];
 
@@ -127,17 +136,20 @@ const HOMOGLYPH_MAP = {
   '\u0410': 'A', '\u0415': 'E', '\u041e': 'O', '\u0420': 'P', '\u0421': 'C',
 };
 const ZERO_WIDTH_RE = /[\u200B-\u200D\uFEFF\u00AD]/g;
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07\x1b]*\x07/g;
 const B64_EXEC_RE = /(?:echo|printf)\s+([A-Za-z0-9+/=]{16,})\s*\|\s*(?:base64\s+-(?:d|-decode)|openssl)/i;
 
 function normalizeInput(str) {
   if (typeof str !== 'string') return { normalized: '', stripped: '' };
   // 1. Strip zero-width evasion characters
   let stripped = str.replace(ZERO_WIDTH_RE, '');
-  // 2. Strip inline C-style comments (e.g. sys/*safe*/tem -> system)
+  // 2. Strip ANSI escape sequences
+  stripped = stripped.replace(ANSI_ESCAPE_RE, '');
+  // 3. Strip inline C-style comments (e.g. sys/*safe*/tem -> system)
   stripped = stripped.replace(/\/\*[\s\S]*?\*\//g, '');
-  // 3. Rejoin words and tokens split across newlines (e.g. sys\ntem -> system, /l\neak -> /leak, Cyrillic & Chinese)
+  // 4. Rejoin words and tokens split across newlines (e.g. sys\ntem -> system, /l\neak -> /leak, Cyrillic & Chinese)
   stripped = stripped.replace(/([\p{L}\p{N}_<|/.-]{1,})\s*[\r\n]+\s*([\p{L}\p{N}_>|/.-]{1,})/gu, '$1$2');
-  // 4. Normalize homoglyphs (Cyrillic to Latin for English hijack detection)
+  // 5. Normalize homoglyphs (Cyrillic to Latin for English hijack detection)
   let normalized = stripped.replace(/[\u0410-\u0456]/g, (m) => HOMOGLYPH_MAP[m] || m);
   return { normalized, stripped };
 }
@@ -172,6 +184,13 @@ function evaluateUncached(input, options = {}) {
   const targets = Array.from(new Set([normalized, stripped, input]));
 
   for (const text of targets) {
+    // 0. Evasion Rules (BiDi Trojan Source)
+    for (const rule of EVASION_RULES) {
+      if (rule.pattern.test(text)) {
+        return { verdict: 'block', confidence: 0.99, reason: rule.description, rule: rule.id, engine: 'oss-local', rules_version: RULES_VERSION };
+      }
+    }
+
     // 1. Covert Markdown Image Exfiltration
     for (const rule of MARKDOWN_EXFIL_RULES) {
       if (rule.pattern.test(text)) {
@@ -311,22 +330,6 @@ function sanitizeToolResult(toolOrResult, content, options = {}) {
   return { sanitized, detections };
 }
 
-module.exports = {
-  evaluate,
-  analyzePrompt: evaluate,
-  loadCustomConfig,
-  redactSecrets,
-  sanitizeToolResult,
-  SECRET_PATTERNS,
-  RULES_VERSION,
-  INJECTION_RULES,
-  INDIRECT_INJECTION_RULES,
-  EXFIL_RULES,
-  SENSITIVE_PATH_RULES,
-  MARKDOWN_EXFIL_RULES,
-};
-
-
 // LRU cache for evaluate(): max 2048 entries keyed on raw input.
 // Invalidated when RULES_VERSION changes or custom config reloads.
 const EVAL_CACHE_MAX = 2048;
@@ -347,3 +350,19 @@ function evaluate(input, options = {}) {
   }
   return { ...res };
 }
+
+module.exports = {
+  evaluate,
+  analyzePrompt: evaluate,
+  loadCustomConfig,
+  redactSecrets,
+  sanitizeToolResult,
+  SECRET_PATTERNS,
+  RULES_VERSION,
+  INJECTION_RULES,
+  INDIRECT_INJECTION_RULES,
+  EVASION_RULES,
+  EXFIL_RULES,
+  SENSITIVE_PATH_RULES,
+  MARKDOWN_EXFIL_RULES,
+};

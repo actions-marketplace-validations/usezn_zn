@@ -6,6 +6,7 @@ Security updates are provided for the following versions:
 
 | Version | Supported          |
 | ------- | ------------------ |
+| 1.4.x   | :white_check_mark: |
 | 1.3.x   | :white_check_mark: |
 | 1.2.x   | :white_check_mark: |
 | < 1.2.0 | :x:                |
@@ -42,9 +43,11 @@ We gratefully acknowledge independent security researchers who have helped prote
 | Date | Identifier | Summary | Researcher |
 | :--- | :--- | :--- | :--- |
 | **2026-09-07** | [SEC-2026-01](docs/advisories/SEC-2026-01.md) | Control-plane authorization gap on policy and consensus handlers | **[WinstonRedGuard (github.com/WRG-11)](https://github.com/WRG-11)** |
+| **2026-09-30** | [SEC-2026-02](docs/advisories/SEC-2026-02.md) | Insufficient session and token revocation on password reset (CWE-613) | **[Ganesh RK](https://www.linkedin.com/in/ganesh-rk-6b827828a/)** |
 
 ---
 
 ## Security Advisories
 
 * [SEC-2026-01](docs/advisories/SEC-2026-01.md) — *Control-plane authorization gap in zn management API (Remediated in commit 6ebce2f)*
+* [SEC-2026-02](docs/advisories/SEC-2026-02.md) — *Insufficient session and token revocation on password reset (Remediated in commit 346ad12)*

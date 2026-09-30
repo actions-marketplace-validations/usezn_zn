@@ -21,7 +21,7 @@ zn is a local-first prompt-injection gate. As an agent, you use it through MCP
 Build once, then register the binary as an MCP server in your client config:
 
 ```bash
-git clone https://github.com/tljohnsilver/zn.git && cd zn
+git clone https://github.com/usezn/zn.git && cd zn
 cargo build --release
 ```
 
@@ -40,8 +40,10 @@ cargo build --release
 
 | Tool | Input | Output |
 |---|---|---|
-| `analyze_prompt` | `{"text": string}` (non-empty, ≤ 64 KB) | Verdict JSON: `{"verdict": "block"\|"allow", "rule": string\|null, "score": 0.0-1.0}` |
-| `version` | none | zn version string |
+| `analyze_prompt` | `{"text": string}` | Verdict JSON: `{"verdict": "block"\|"allow", "confidence": float, "rule": string, "reason": string}` |
+| `check_tool_call` | `{"tool_name": string, "arguments": object}` | Pre-flight tool argument inspection and injection blocker |
+| `check_tool_result` | `{"tool_name": string, "content": string}` | Post-execution tool result sanitization & indirect injection defense |
+| `zn_status` | none | Active engine status, rules version, and cloud/local connectivity |
 
 ## Workflow
 

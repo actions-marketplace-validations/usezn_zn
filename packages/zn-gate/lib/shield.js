@@ -45,9 +45,18 @@ function startMcpShield(command, args, options = {}) {
     process.exit(code !== null ? code : 1);
   });
 
-  // Keep track of pending requests to correlate with responses
+  // Keep track of pending requests to correlate with responses (capped to prevent memory exhaustion - CWE-400)
   // id -> { method, toolName, startTime }
+  const MAX_PENDING_CALLS = 5000;
   const pendingCalls = new Map();
+
+  function trackPendingCall(id, meta) {
+    if (pendingCalls.size >= MAX_PENDING_CALLS) {
+      const oldestKey = pendingCalls.keys().next().value;
+      pendingCalls.delete(oldestKey);
+    }
+    pendingCalls.set(id, meta);
+  }
 
   // 1. Read from client (process.stdin) -> inspect requests -> send to child.stdin
   const clientRl = readline.createInterface({
@@ -72,7 +81,7 @@ function startMcpShield(command, args, options = {}) {
     if (msg && msg.method === 'tools/list') {
       const callId = msg.id;
       log(`Tracking tools/list request [${callId}] for tool poisoning inspection`);
-      pendingCalls.set(callId, {
+      trackPendingCall(callId, {
         method: 'tools/list',
         startTime: Date.now(),
       });
@@ -139,7 +148,7 @@ function startMcpShield(command, args, options = {}) {
       }
 
       // Record pending call for response checking
-      pendingCalls.set(callId, {
+      trackPendingCall(callId, {
         method: 'tools/call',
         toolName,
         startTime: Date.now(),
