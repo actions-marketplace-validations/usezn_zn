@@ -3,9 +3,8 @@
 [![PyPI version](https://img.shields.io/pypi/v/zn-gate.svg)](https://pypi.org/project/zn-gate/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](https://usezn.com)
-[![Latency](https://img.shields.io/badge/latency-%3C0.1ms-success.svg)](https://usezn.com)
 
-**Deterministic, ultra-fast, zero-dependency guardrail engine & DLP secret shield for AI agents, LLM tool calling, and CI/CD pipelines.**
+**Deterministic, zero-dependency, local guardrail engine and secret redaction for AI agents, LLM tool calling, and CI/CD pipelines.**
 
 Built for production multi-agent systems, Model Context Protocol (MCP) servers, LangChain/LangGraph, CrewAI, LlamaIndex, and Promptfoo automated red-teaming.
 
@@ -13,14 +12,24 @@ Built for production multi-agent systems, Model Context Protocol (MCP) servers, 
 
 ## Key Features
 
-- ⚡ **Ultra-Low Latency:** Evaluates prompts, tool arguments, and outputs in `< 0.1 ms` (< 100 microseconds).
+- ⚡ **In-Process, No Network:** Rules run locally in your process. Latency depends on input size: see the [measured table](https://github.com/usezn/zn/blob/main/packages/zn-gate/README.md#performance-local-rules-engine-no-network) (measured on the Node engine) or run `python3 bench/bench_python.py` from the repository.
 - 📦 **Zero External Dependencies:** Built 100% with Python standard library. No bloated PyTorch, HuggingFace transformers, or C-extensions.
 - 🛡️ **Dual-Pass Normalization:** Defeats homoglyph evasions (Cyrillic-to-Latin), zero-width characters, inline C-comment obfuscation, newline token splitting, and Base64 payload smuggling.
-- 🔑 **Auto-DLP & Secret Redaction:** Automatically detects and redacts leaked credentials (AWS keys, OpenAI keys, Anthropic keys, GitHub PATs, JWTs, DB passwords, and private keys) before context assimilation.
+- 🔑 **Secret Redaction:** Detects and redacts credentials (AWS keys, OpenAI keys, Anthropic keys, GitHub tokens, JWTs, DB passwords, and private keys) with `sanitize_tool_result`, `@guard(mask_secrets=True)` and the framework integrations.
 - 🤝 **Native Agent Integrations:** Ready-to-use hooks for **LangChain / LangGraph**, **CrewAI**, and **LlamaIndex**.
 - 🧪 **Promptfoo Red-Team Provider:** Plug-and-play custom provider for automated security evaluation and CI/CD regression testing.
 - 🚀 **GitHub Action (`action.yml`):** Scan prompts, system instructions, and agent definitions in GitHub Pull Requests with inline annotations.
 - 🌐 **Multilingual Defense:** Out-of-the-box detection for English, Spanish, French, Russian, and Chinese prompt injections.
+
+---
+
+## What leaves your machine
+
+**Nothing, by default.** `evaluate`, `guard`, `check_tool_call`, `check_tool_result`, `sanitize_tool_result` and the LangChain / CrewAI / LlamaIndex / Promptfoo integrations are always local.
+
+The only function that can reach the network is `analyze()`, and only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. The text is secret-redacted locally before it is sent. `ZN_API_KEY` alone enables nothing, and `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `zn-gate status` prints what your configuration sends.
+
+> **1.4.0 and earlier:** with `ZN_API_KEY` set, `analyze()` sent the text to `api.usezn.com` without redaction. 1.4.1 makes cloud analysis opt-in (`ZN_CLOUD=1`) and redacted.
 
 ---
 
@@ -83,9 +92,9 @@ print(result["safe_to_ingest"])     # True
 print(result["sanitized_content"])  # "Here is content: [REDACTED_GITHUB_TOKEN]"
 ```
 
-### 3. Cryptographic Evidence Engine & Audit Export (SOC 2 / EU AI Act)
+### 3. Local Audit Log & Export
 
-Log security events with tamper-evident SHA-256 hash chaining, verify ledger integrity from genesis to tip, and export compliance audit reports:
+Log security events to a hash-chained (SHA-256) JSONL file, verify the chain, and export records. The chain detects accidental or partial edits; it is not tamper-proof against someone with write access to the file, who can recompute it. The stored preview is secret-redacted.
 
 ```python
 from zn_gate import log_evidence, verify_evidence_ledger, get_evidence_stats, export_evidence_ledger
@@ -103,9 +112,9 @@ record = log_evidence({
 })
 print(record["record_hash"])  # SHA-256 chained hash
 
-# 2. Cryptographically verify the entire ledger
+# 2. Verify the hash chain
 audit = verify_evidence_ledger()
-print(audit["valid"])     # True (tamper-free)
+print(audit["valid"])     # True if the chain is consistent
 print(audit["verified"])  # Total verified records
 
 # 3. Export audit ledger to CSV or JSONL for compliance audits
@@ -223,25 +232,9 @@ zn-gate scan ./prompts --format json
 
 ---
 
-## Benchmark vs LLM Guardrails
+## What the local rules catch, and what they don't
 
-| Metric | zn-gate | Llama-Guard-3 (8B) | NeMo Guardrails | Lakera Guard |
-| :--- | :--- | :--- | :--- | :--- |
-| **Latency** | **< 0.1 ms** | ~850 ms | ~450 ms | ~120 ms (Network API) |
-| **Memory Footprint** | **< 5 MB** | ~16 GB (GPU) | ~4 GB | Remote Cloud |
-| **Dependencies** | **0 (Stdlib)** | PyTorch, Transformers | Heavy | requests / API key |
-| **Cost per 1M calls**| **$0.00** | ~$25.00 (GPU) | ~$15.00 | $200.00+ |
-| **DLP Secret Masking**| **Built-in** | No | Regex extension | Limited |
-| **Offline / Airgapped**| **Yes (100%)** | Yes | Yes | No |
-
----
-
-## Adversarial Robustness: znRed v2
-
-`zn-gate` has been rigorously evaluated by **znRed v2**, an enterprise combinatoric adversarial fuzzer:
-- Tested against **1,200+ parallel mutations** across high-throughput distributed serverless evaluation clusters.
-- Defeats multi-vector evasion attacks including C-comment token splicing, Unicode homoglyphs, and piped Base64 smuggling.
-- **100.00% defense rate** on the znRed v2 attack battery.
+The engine is a deterministic signature and normalization layer: fast and explainable, but not a semantic classifier. On whole source files it currently produces false positives on ordinary code comments (not fixed in 1.4.1). We don't publish comparison tables against other guardrails or a single accuracy figure until the method and data are public.
 
 ---
 

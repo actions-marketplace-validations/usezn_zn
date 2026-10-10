@@ -8,7 +8,7 @@
 
 <p align="center">
   <strong>Zero-dependency, local-first prompt-injection & tool-poisoning gate for AI agents.</strong><br/>
-  One deterministic, sub-millisecond checkpoint between your agent and untrusted external data.
+  One deterministic, local checkpoint between your agent and untrusted external data.
 </p>
 
 <p align="center">
@@ -16,7 +16,6 @@
   <a href="https://pypi.org/project/zn-gate/"><img src="https://img.shields.io/pypi/v/zn-gate?color=3775a9&logo=pypi&logoColor=white" alt="PyPI version"/></a>
   <a href="https://github.com/marketplace/actions/zn-gate-ai-agent-security-linter"><img src="https://img.shields.io/badge/Marketplace-zn--gate-blue?logo=github" alt="GitHub Marketplace"/></a>
   <a href="https://www.npmjs.com/package/zn-gate"><img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero dependencies"/></a>
-  <a href="https://www.npmjs.com/package/zn-gate"><img src="https://img.shields.io/badge/bundle-15_kB-blue" alt="Bundle size: 15 kB"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"/></a>
   <a href="https://usezn.com/playground/"><img src="https://img.shields.io/badge/Open%20in-Playground-2ea44f?logo=googlechrome" alt="Open in Playground"/></a>
   <a href="https://huggingface.co/datasets/usezn/zn-prompt-injection-bench"><img src="https://img.shields.io/badge/%F0%9F%A4%97_Dataset-23.7k_samples-yellow" alt="Hugging Face Dataset"/></a>
@@ -39,13 +38,30 @@ Autonomous agents (Claude Code, Cursor, Antigravity, OpenCode, Codex, LangChain,
 
 `zn` acts as an **in-process sacrificial security checkpoint** situated directly in front of your LLM and tool execution loops:
 
-- ⚡ **Zero External Dependencies:** Built 100% with standard libraries in both Node.js (15 kB) and Python. No PyTorch, no HuggingFace transformers, no native C compilation required.
-- ⏱️ **Sub-Millisecond Deterministic Latency:** Local signature rules and homoglyph normalization execute in **< 0.3 ms** (in-process standard library execution).
+- ⚡ **Zero External Dependencies:** Built 100% with standard libraries in both Node.js and Python. No PyTorch, no HuggingFace transformers, no native C compilation required.
+- ⏱️ **In-Process, No Network:** Local signature rules and normalization run in your process. Latency depends on input size; see [Performance](packages/zn-gate/README.md#performance-local-rules-engine-no-network) for measured numbers and the script to reproduce them.
 - 🔌 **Native Model Context Protocol (MCP):** Pre-built MCP server and stdio bidirectional proxy (`zn-gate shield`) protecting tool definitions, arguments, and return outputs.
 - 🛡️ **Trojan Source & Evasion Defense:** Neutralizes Unicode bidirectional overrides (CVE-2021-42574), zero-width characters, hidden CSS payloads, Cyrillic homoglyphs, and Base64 smuggling.
-- 🔑 **Built-in DLP & Credential Redaction:** Masks AWS keys, OpenAI/Anthropic tokens, GitHub PATs, database URIs, and JWTs in real-time.
-- 🔒 **Cryptographic Evidence Ledger:** Appends SHA-256 hash-chained audit records to `~/.zn/evidence.jsonl` with CLI verification and export capabilities for local forensic tracing.
-- ☁️ **Optional Neural Cloud Fastpath:** Set `ZN_API_KEY` to upgrade clean traffic to cloud neural models (v30 ONNX) while keeping instant local blocking at 0 latency and $0 cost.
+- 🔑 **Secret Redaction in Tool Outputs:** Masks AWS keys, OpenAI/Anthropic tokens, GitHub tokens, database URL passwords, private keys and JWTs. Node: applied by `check_tool_result`, `check_tool_call` and `zn-gate shield` (since 1.4.1). Python: `sanitize_tool_result` and `@guard(mask_secrets=True)`.
+- 🔒 **Local Audit Log:** Hash-chained (SHA-256) records in `~/.zn/evidence.jsonl`, with CLI verification and export. Detects accidental or partial edits; not tamper-proof against someone with write access to the file.
+- ☁️ **Optional Cloud Check for Prompts:** Off by default. With `ZN_CLOUD=1` and `ZN_API_KEY`, prompts passed to `analyze_prompt` are also checked by the Galvanize classifier, with secrets redacted locally first. Tool outputs and tool-call arguments never leave your machine.
+
+---
+
+## What leaves your machine
+
+**Nothing, by default.**
+
+| Data | Evaluated | Sent anywhere? |
+|---|---|---|
+| Tool results (`check_tool_result`, `shield`) | Locally | **Never**, under any configuration |
+| Tool-call arguments (`check_tool_call`, `shield`) | Locally | **Never**, under any configuration |
+| Tool and parameter descriptions (`shield`) | Locally | **Never**, under any configuration |
+| Prompts (`analyze_prompt`, `zn-gate analyze`, Python `analyze()`) | Locally | Only with **both** `ZN_CLOUD=1` and `ZN_API_KEY`; secrets are redacted locally before sending |
+
+`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `npx -y zn-gate status` prints what your configuration sends.
+
+> **1.4.0 and earlier:** with `ZN_API_KEY` set, the Node package sent tool results and tool-call arguments not blocked locally to `api.usezn.com` without redaction. 1.4.1 removes that path. See the [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -87,8 +103,8 @@ No single regex or single LLM solves prompt injection alone. `zn` uses a layered
 
 | Layer | Engine | Latency | Cost / Deps | What it Catches |
 |---|---|---|---|---|
-| **Tier 1 (OSS Local)** | Deterministic Rules + Normalizer | < 0.3 ms | $0 · 0 deps | Known signatures, exfiltration URLs, BiDi overrides (CVE-2021-42574), hidden CSS payloads, credential leaks (DLP), and `tools/list` poisoning. |
-| **Tier 2 (Cloud / Neural)** | Galvanize-60M Classifier | ~12 ms | Opt-in API | Zero-keyword semantic stories (PuzzleMask), multi-hop reasoning attacks, and fluent adversarial paraphrases. |
+| **Tier 1 (OSS Local)** | Deterministic Rules + Normalizer | [By input size](packages/zn-gate/README.md#performance-local-rules-engine-no-network) | $0 · 0 deps | Known signatures, exfiltration URLs, BiDi overrides (CVE-2021-42574), hidden CSS payloads, credential leaks (DLP), and `tools/list` poisoning. |
+| **Tier 2 (Cloud / Neural)** | Galvanize-60M Classifier | Network-dependent | Opt-in (`ZN_CLOUD=1` + key), prompts only, redacted | Zero-keyword semantic stories (PuzzleMask), multi-hop reasoning attacks, and fluent adversarial paraphrases. |
 | **Tool Proxy Boundary** | `zn-gate shield` (stdio) | Real-time | In-process | Blocks malicious arguments pre-flight and strips data exfiltration post-flight before tokens leave the host. |
 
 ### Monorepo Structure
@@ -104,7 +120,7 @@ No single regex or single LLM solves prompt injection alone. `zn` uses a layered
 ### Option A: Node.js & MCP Agents (0 to Protected in 10s)
 
 #### 1. One-Click Auto-Shielding Across Agent Environments
-Automatically scan, backup, and wrap your active MCP servers in **Claude Desktop**, **Claude Code**, **Cursor**, **Antigravity**, **Codex**, and **OpenCode**:
+Find, back up, and wrap the local MCP servers in your agent configs: **Claude Desktop**, **Claude Code**, **Cursor**, **Codex CLI** (`~/.codex/config.toml`) and **OpenCode** (`~/.config/opencode/opencode.json`), plus best-effort Antigravity and Hermes. See the [file list](packages/zn-gate/README.md#1-wrap-the-mcp-servers-you-already-use).
 
 ```bash
 # Auto-discover, backup configs, and shield all MCP servers
@@ -139,13 +155,13 @@ npx -y zn-gate scan ./prompts
 npx -y zn-gate scan . --include .rst,.xml --exclude vendor,fixtures --code
 ```
 
-#### 4. Run Instant Self-Test Suite (51 Curated Vectors)
-Verify detection rates, false positive immunity, and latency on your machine:
+#### 4. Run the Self-Test (51 Curated Vectors)
+Run a local smoke test and see per-decision latency on your machine:
 
 ```bash
 npx -y zn-gate test
 ```
-*Evaluates 51 real-world attack vectors (DAN, roleplay, LFI, markdown exfil, BiDi, CSS, multilingual) + 25 benign developer scenarios in under 10 ms.*
+*Runs 51 curated vectors (26 attacks, 25 benign) and prints per-decision latency on your machine. It is a smoke test, not a false-positive rate: see [what the local rules catch, and what they don't](#what-the-local-rules-catch-and-what-they-dont).*
 
 ---
 
@@ -234,13 +250,15 @@ In **Settings → Features → MCP Servers → Add New MCP Server**:
 1. `analyze_prompt(text)`: Evaluates a user prompt before passing it to an LLM.
 2. `check_tool_call(tool_name, arguments)`: Inspects tool arguments recursively for injection, evasion, or exfiltration attacks.
 3. `check_tool_result(tool_name, content)`: Inspects tool output for indirect prompt injections and redacts sensitive credentials.
-4. `zn_status()`: Reports engine status, rules version, and cloud/local connectivity.
+4. `zn_status()`: Reports engine status, rules version, and what (if anything) leaves the machine.
+
+`check_tool_call` and `check_tool_result` always run locally.
 
 ---
 
-## Cryptographic Evidence Ledger (Tamper-Evident Audit Logging)
+## Local Audit Log (Hash-Chained)
 
-Every security decision produces an append-only SHA-256 hash-chained record in `~/.zn/evidence.jsonl` for local forensic auditing and inspection:
+`zn-gate shield` appends every decision to `~/.zn/evidence.jsonl` as a hash-chained (SHA-256) record. The stored preview is secret-redacted. This detects accidental or partial edits; it is not tamper-proof against someone with write access to the file, who can recompute the whole chain.
 
 ```bash
 # Verify ledger integrity from genesis to tip
@@ -279,17 +297,14 @@ jobs:
 
 ---
 
-## Comparison vs Alternative Guardrails
+## What the local rules catch, and what they don't
 
-| Metric | zn-gate | Llama-Guard-3 (8B) | NeMo Guardrails | Lakera Guard |
-| :--- | :--- | :--- | :--- | :--- |
-| **Latency** | **< 0.1 ms** (local) | ~850 ms (GPU) | ~450 ms | ~150–350 ms (Cloud API) |
-| **Dependencies** | **0 (Zero)** | PyTorch, Transformers | Heavy Python deps | Remote network client |
-| **Bundle Size** | **15 kB** | ~16 GB weights | ~1.5 GB | Cloud SaaS |
-| **DLP Secret Redaction** | **Built-in (Instant)** | No | Plugin required | Limited |
-| **Offline / Airgapped** | **Yes (100%)** | Yes | Yes | No |
-| **Cost per 1M calls** | **$0.00** | ~$25.00 GPU compute | ~$15.00 compute | $200.00+ |
-| **MCP Native** | **Yes (1-click init)** | No | No | No |
+The local engine is a deterministic signature and normalization layer. It is fast and explainable, but it is not a semantic classifier.
+
+- **Self-test:** 51 curated vectors (26 attacks, 25 benign). Run `npx zn-gate test`.
+- **Known limitation:** on whole source files (as seen by `check_tool_result`), the current normalizer produces false positives on ordinary code comments. This is not fixed in 1.4.1. Until it is, we recommend `check_tool_result` for web and third-party content rather than your own repository files.
+- **Cloud gate (optional):** we don't quote a single accuracy number. Results on a held-out benchmark will be published with method and data before we do.
+- **Performance:** one table, with hardware and a reproduction script, in the [package README](packages/zn-gate/README.md#performance-local-rules-engine-no-network).
 
 ---
 
