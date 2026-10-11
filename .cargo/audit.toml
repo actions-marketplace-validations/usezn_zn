@@ -1,6 +1,6 @@
-# cargo-audit configuration for zn v1.0.0
+# cargo-audit configuration for the legacy Rust gateway in src/.
 # Run locally:  cargo audit
-# CI:           .github/workflows/ci.yml (audit job, strict)
+# Not run in CI today.
 #
 # Policy: every entry below is a dependency that CANNOT be updated today.
 # Each entry lists the pulling crate(s) and why an update or fix is not
@@ -12,8 +12,10 @@ ignore = [
     # Pulled by aws-smithy-http-client 1.4.0 (latest) via aws-config / aws-sdk-kms
     # (both latest). aws-smithy-runtime feature `tls-rustls` hardwires
     # `connector-hyper-0-14-x`; no feature combo avoids h2 0.3 / webpki 0.101
-    # while keeping SDK TLS. DoS-only (unbounded empty DATA frames), no
-    # confidentiality impact. Re-check on next aws-sdk bump.
+    # while keeping SDK TLS. h2: DoS only (unbounded empty DATA frames).
+    # rustls-webpki 0.101.7: a CRL-parsing panic and two name-constraint
+    # bypasses, reachable only through the AWS SDK TLS path.
+    # Re-check on next aws-sdk bump.
     "RUSTSEC-2026-0258", # h2 0.3.27: unbounded empty DATA frames (via AWS SDK hyper-0.14 client)
     "RUSTSEC-2026-0104", # rustls-webpki 0.101.7: reachable panic in CRL parsing (via rustls 0.21, AWS SDK)
     "RUSTSEC-2026-0099", # rustls-webpki 0.101.7: wildcard name-constraint bypass (via rustls 0.21, AWS SDK)

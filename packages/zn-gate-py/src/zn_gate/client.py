@@ -81,7 +81,7 @@ def analyze(
     """
     key = api_key or os.environ.get("ZN_API_KEY")
 
-    # 1. Local fast-path (<10µs, $0 cost)
+    # 1. Local fast path (no network)
     local_eval = evaluate(input_text)
     if not local_eval.allowed:
         return {

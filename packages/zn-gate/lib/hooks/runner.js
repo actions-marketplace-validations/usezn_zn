@@ -72,7 +72,7 @@ function failModeOf(opts) {
 }
 
 const REINSTALL = 'The zn scrubber engine is missing from this installation (lib/scrub/engine.js), so zn cannot check this. ' +
-  'Reinstall zn-gate (npm install -g zn-gate@next) and run `zn hooks install` again. To let events pass unchecked while it is missing, ' +
+  'Reinstall zn-gate (from the repository until the beta is published) and run `zn hooks install` again. To let events pass unchecked while it is missing, ' +
   'set {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json.';
 
 /** Map every string leaf of a JSON value through an async function, keeping the shape. */

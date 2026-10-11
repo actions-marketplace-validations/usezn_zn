@@ -300,7 +300,7 @@ async fn main() -> Result<()> {
     }
 
     // 1. Branding Header
-    intro("🛡️ zn v1.0 | usezn.com | Developed with love and patience by ZN | x.com/use_zn")?;
+    intro("🛡️ zn | usezn.com")?;
 
     // 2. Initialize Tracing & OTLP
     init_tracing()?;
@@ -509,7 +509,7 @@ async fn start_proxy(args: Args) -> Result<()> {
             }
             Err(e) => {
                 log::warning(format!(
-                    "⚠️ Neural Core Failed to Start: {}. Running in lobotomized mode.",
+                    "⚠️ Neural Core Failed to Start: {}.",
                     e
                 ))?;
                 panic!("Critical: Neural Core (Candle) failed to load: {}", e);
@@ -814,7 +814,7 @@ impl AnalyzerPipeline {
             &self.config.fusion,
         );
         if fused_blocked && !rules_hit {
-            // Neural camera alone blocks (the negation case EXP-024 found).
+            // Neural camera alone blocks: the negation case that rules miss.
             verdict = "block";
             matched_rule = Some("fusion_neural".to_string());
             risk_score = fusion_ev.as_ref().map_or(1.0, |ev| ev.neural_score as f64);
@@ -1154,7 +1154,7 @@ async fn process_mcp_message(
                         let duration = start_neural.elapsed();
                         metrics::record_neural_embed(duration.as_secs_f64());
 
-                        // D-1: the classifier probability is an independent
+                        // The classifier probability is an independent
                         // signal — it fires even when the anomaly is quiet or
                         // the agent memory is empty. `None` in anomaly-only
                         // mode (no head.json).
@@ -1962,7 +1962,7 @@ mod fusion_wiring_tests {
         let tau = p.config.fusion.tau;
 
         // Highest-scoring calibration vector ({tool}: {input}) whose RULES
-        // camera misses — exactly the framing-only gap EXP-024 found.
+        // camera misses: the framing-only gap that rules alone do not catch.
         let fixture: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))

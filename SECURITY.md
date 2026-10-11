@@ -50,4 +50,4 @@ We gratefully acknowledge independent security researchers who have helped prote
 ## Security Advisories
 
 * [SEC-2026-01](docs/advisories/SEC-2026-01.md) — *Control-plane authorization gap in zn management API (Remediated in commit 6ebce2f)*
-* [SEC-2026-02](docs/advisories/SEC-2026-02.md) — *Insufficient session and token revocation on password reset (Remediated in commit 346ad12)*
+* [SEC-2026-02](docs/advisories/SEC-2026-02.md) — *Insufficient session and token revocation on password reset (Remediated in the usezn.com platform, which is not part of this repository)*

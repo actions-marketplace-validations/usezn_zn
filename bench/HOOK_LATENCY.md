@@ -13,7 +13,7 @@ node bench/hook_latency.js --runs 30 --json hook_latency.json
 
 ## Results (2026-10-11)
 
-Target from the scrubber spec: PostToolUse with 64 KB of output, p50 <= 60 ms.
+Target for the beta: PostToolUse with 64 KB of output, p50 <= 60 ms.
 **Not met on either machine.** The floor is Node's own start-up time, which
 already takes 42 to 50 ms before any zn code runs.
 
@@ -51,7 +51,7 @@ the desktop). That moves the scanner into the process that holds the vault, so
 it needs its own review. It is not part of the beta; the beta ships with the
 numbers above.
 
-## Decision for 1.5.0-beta.1
+## Decision for the scrubber beta
 
 The beta accepts the measured cost: about **78 ms p50 per hook call** on the
 Windows desktop (PostToolUse, 64 KB with secrets) and about 124 ms on the
