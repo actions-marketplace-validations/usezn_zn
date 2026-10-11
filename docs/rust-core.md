@@ -1,21 +1,18 @@
-# zn Native Rust Core Engine
+# Rust gateway (legacy, not released)
 
-The root `src/` directory contains an enterprise-grade, high-throughput Rust engine (`zn`).
+The root `src/` directory contains the original Rust gateway (`zn`) from the 1.0.0 line: an HTTP management API and MCP proxy on `localhost:9090`, a rules engine, an optional local ONNX classifier (Candle), a SQLite audit log, WASM policies and a terminal UI.
 
-## When to Use the Rust Engine
+It is kept for reference and for future work on a local classifier. It is not published on crates.io, has no published container image, is not part of the npm or PyPI packages, and is not built or tested in CI. `zn mcp` exposes two MCP tools: `analyze_prompt` and `version`.
 
-- **High-throughput API Gateway:** Processing > 50,000 requests/sec with minimal memory footprint.
-- **Enterprise Edge Proxy:** Standalone sidecar service (`localhost:9090`) with gRPC, SSE, WebSockets, and OpenTelemetry tracing.
-- **Hardware-accelerated Neural Inference:** Embedded Candle / ONNX runtime for on-premise classification without external cloud calls.
+The Rust gateway reads `ZN_API_KEY` as the key for its own management API. It never contacts `api.usezn.com`.
 
-> **Note for Open-Source Users:**  
-> For everyday AI agent protection (Claude Code, Cursor, Antigravity, OpenCode, LangChain, CrewAI), use `zn-gate` (Node.js) or `zn-gate-py` (Python). They require zero compilation and install in seconds.
+> For agent protection (Claude Code, Codex CLI, Cursor, OpenCode, LangChain, CrewAI), use `zn-gate` (Node.js) or `zn-gate` on PyPI (Python). They need no compilation.
 
 ## Building from Source
 
 ### Prerequisites
-- Rust 1.75+ (`cargo`)
-- `protobuf-compiler` (v29+ recommended)
+- Rust stable (`cargo`); the Dockerfile builds with `rust:1-bookworm`
+- `protoc` 29 or later
 - OpenSSL / libssl-dev
 
 ```bash

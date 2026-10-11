@@ -4,17 +4,17 @@ Thank you for your interest in contributing to **zn**! We welcome bug reports, r
 
 ## Architecture Overview
 
-`zn` is designed as a local-first, zero-dependency security gate:
-- `packages/zn-gate/`: Node.js SDK, CLI, MCP Server, and stdio Shield proxy (Zero external dependencies).
-- `packages/zn-gate-py/`: Python SDK, CLI, and agent framework integrations (Zero external dependencies).
-- `src/`: High-throughput Rust core engine for enterprise edge deployments.
+`zn` is designed as a local-first security gate with minimal dependencies:
+- `packages/zn-gate/`: Node.js SDK, CLI, MCP Server, and stdio Shield proxy. Its only runtime dependency is `age-encryption` (with its `@noble`/`@scure` dependencies) for the secret vault, bundled in the package.
+- `packages/zn-gate-py/`: Python SDK, CLI, and agent framework integrations (Python standard library only).
+- `src/`: legacy Rust gateway (see [docs/rust-core.md](docs/rust-core.md)); not released and not built in CI.
 
 ## Development Setup
 
 ### Prerequisites
 - Node.js >= 18.0.0
 - Python >= 3.8
-- (Optional for Rust core) Rust toolchain 1.75+, `protoc`
+- (Optional, legacy Rust gateway) Rust stable, `protoc` 29 or later
 
 ### Running Tests Locally
 

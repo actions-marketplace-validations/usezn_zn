@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.5.0-beta.1] - Unreleased
+## [Unreleased]
 
 Beta of the secrets scrubber and broker: secret values stay out of what your
 coding agent sends to its model. Walkthrough: [docs/secrets.md](docs/secrets.md).
@@ -157,7 +157,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
   - High-throughput un-cached execution exceeds **114,000 req/s** (Node) and **17,000 req/s** (Python).
 
 ### Fixed & Hardened (Security)
-- **znRed v2 Adversarial Fuzzing Hardening**:
+- **Adversarial Fuzzing Hardening**:
   - Hardened `pi:ignore_previous`, `pi:disregard`, and `pi:override` against 1,500 fuzzer mutations.
   - Achieved **97.93% overall block rate** on evasion vectors (100% on zero-width, markdown wrapping, casing/spacing, and semantic framing).
 - **False Positive Elimination on Developer Tool Outputs**:
@@ -174,3 +174,10 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 ## [1.2.0] - 2026-08-26
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
+
+[Unreleased]: https://github.com/usezn/zn/compare/v1.4.1...next
+[1.4.1]: https://github.com/usezn/zn/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/usezn/zn/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/usezn/zn/compare/v1.2.4...v1.3.0
+[1.2.4]: https://github.com/usezn/zn/compare/v1.2.3...v1.2.4
+[1.2.3]: https://github.com/usezn/zn/releases/tag/v1.2.3
