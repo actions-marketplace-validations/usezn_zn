@@ -36,7 +36,13 @@ reads, command output, search results, MCP results and pasted prompts.
 
 Hooks are a guardrail, not a sandbox: a determined process can find another
 way to read a file. The point is that the agent's normal tools do not hand
-values to the model.
+values to the model. The hooks also block the agent's file tools and shell
+commands from writing `~/.zn` and the agents' own hook and plugin settings
+(`.claude/settings*.json`, `.codex/`, `.cursor/hooks.json`, the OpenCode plugin
+and `opencode.json`). Paths are checked after `~`, variables and symlinks are
+resolved, and globs and brace lists are checked against what they could name.
+A path written inside inline code (`python -c "open(...)"`) is only checked
+where it appears as a word of the command.
 
 ## What the vault daemon protects, and what it does not
 
@@ -76,9 +82,18 @@ right before starting it, and starts that path; it never looks the name up on
 - **Scripts (`#!`) on any system** are run by their interpreter, which opens
   the script again by its path after zn's last check. A process of your user
   that can write the script's directory could replace it in that short
-  window.
+  window. A line `#!/usr/bin/env X` looks X up on the `PATH` of the caller, and
+  the check covers the script, not the interpreter it finds there.
 - **Every program on macOS and Windows** is started by path right after the
   last check, so the same short window exists.
+- **Dynamic loader variables** (`LD_*`, `DYLD_*`) are removed from the
+  program's environment whenever secret values are injected, and `zn run` says
+  so once. Without injected values the environment is passed unchanged.
+- **Interpreter variables are a limit.** `NODE_OPTIONS`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `RUBYOPT`, `PERL5LIB`, `PERL5OPT` and `BASH_ENV` make an
+  interpreter load code of their own choosing, and zn does not remove them.
+  Approve interpreters only with that in mind: zn already warns that they run
+  any code they are given.
 
 zn warns when you approve a program (in the dialog and in `zn secret allow`)
 if your user can write the program or any directory above it. Version
@@ -131,8 +146,10 @@ stop malware running as the same user (see above).
 - **Scrubber error:** fails closed. The tool call is denied, the output
   withheld or the prompt blocked. A missing engine also fails closed, and the
   message explains how to reinstall. To let events pass while it is missing,
-  set `{"hooks": {"whenUnavailable": "allow"}}` in `~/.zn/config.json`
-  (agents cannot write there).
+  set `{"hooks": {"whenUnavailable": "allow"}}` in `~/.zn/config.json` (the
+  hooks block the agent's file tools from writing there). The environment
+  variable `ZN_HOOK_FAIL_MODE` can only make this stricter (`closed`); it does
+  not reopen fail-open.
 - **The hook process does not start at all** (for example, Node moved after an
   upgrade and the hook command points to the old path, or the hook times out):
   most agents then carry on without the hook. Run `zn hooks install` again
@@ -148,10 +165,13 @@ stop malware running as the same user (see above).
 - **The Windows named pipe has no explicit DACL.** Every connection
   authenticates both ways with an HMAC over a session key that only the user
   can read, so another account cannot use it.
-- **Dependencies:** the vault uses `age-encryption` and its `@noble` and
-  `@scure` dependencies (MIT). They ship inside the npm package at the exact
+- **Dependencies:** the vault uses `age-encryption` (BSD-3-Clause) and its
+  `@noble` and `@scure` dependencies (MIT). They ship inside the npm package at the exact
   versions of the lockfile (`bundleDependencies`), so installing zn-gate does
   not resolve them from the registry. No other runtime dependency.
+- **Monitor commands** run as `bash -c` behind the scrubber's pipe. The
+  functions and aliases of the agent's shell snapshot are not loaded there, so a
+  monitor that depends on them will not work.
 - **Rollback of the vault file:** restoring an older, genuine copy of
   `secrets.age` is accepted, and brings back the approvals and policy it had.
   Keep backups of `~/.zn` private.

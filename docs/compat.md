@@ -9,12 +9,13 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
 | Install | `zn hooks install claude-code` | `zn hooks install codex`, then trust in `/hooks` | `zn hooks install cursor` | `zn hooks install opencode` |
 | Mechanism | Hooks (`settings.json`) | Hooks (`hooks.json`) | Hooks (`hooks.json`) | Plugin (`plugins/zn-gate.js`) |
 | Block reads of `.env` with values, credential files, `~/.zn` | Yes (Read, Grep, LSP, shell) | Yes (shell, `apply_patch` into `~/.zn`) | Yes (file reads, shell) | Yes (all tools) |
+| Block writes to `~/.zn` and to the agents' hook and plugin configuration | Yes (Write, Edit, shell) | Yes (`apply_patch`, checked file by file; shell) | **Best effort**: Write, Delete and Grep through `preToolUse`; shell through `beforeShellExecution` | Yes (write, edit, `apply_patch`, shell) |
 | Scrub tool output before the model sees it | **Yes, every tool** (Bash, PowerShell, Read, Grep, LSP, WebFetch, MCP, MCP resources; Monitor through a streaming filter) | **Yes, lossy**: the result is replaced by its scrubbed text | **MCP output only**; shell and file output cannot be rewritten | **Yes, every tool** (and the TUI preview) |
 | Block a pasted secret in the prompt | Yes | Yes | Yes | Yes (OpenCode shows it as an error) |
 | Commands with `__ZN_<NAME>__`: through `zn run` | Rewritten automatically, shown to you for confirmation | The agent is told the exact `zn run -- …` line to use | The agent is told the exact `zn run -- …` line to use; Cursor asks you once wrapped | Rewritten automatically; OpenCode's own permission rules apply |
 | Restore detected tokens into local commands and git-ignored files | Yes, shown in the confirmation dialog | No (tokens stay) | No (tokens stay) | No (tokens stay) |
 | `secrets` MCP server | Yes (registered on install) | Yes (snippet printed) | Yes (snippet printed) | Yes (snippet printed) |
-| Windows | Yes, including the PowerShell tool | Not tested | Not tested | Not tested (wrapping is written for bash) |
+| Windows | Yes, including the PowerShell tool | The hook command was run by hand from PowerShell and from cmd.exe (not in CI) | Not tested | Not tested (wrapping is written for bash) |
 | End-to-end run, 0 values sent to the provider | **Yes** | **Yes** | Not run (no CLI with hooks to drive) | **Yes** |
 
 ## Why the differences
@@ -33,10 +34,19 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
     result.
   - Codex's own session log keeps the original output.
   - Hooks are a guardrail, not an enforcement boundary (Codex's own words).
-- **Cursor**:
-  - `beforeReadFile` can only allow or deny.
+- **Cursor** (best effort: its hook documentation leaves the input of some
+  tools open, and zn fails closed where it cannot read a path):
+  - `beforeReadFile` can only allow or deny. zn sets `failClosed: true` on it
+    and on `beforeSubmitPrompt`, so a hook that crashes or times out blocks the
+    read or the prompt.
+  - `preToolUse` (Write, Delete, Grep) checks the file a call names with the
+    same rules as the other tools. Cursor does not document the input keys of
+    these tools, so zn looks for the usual names (`file_path`, `path`,
+    `target_file`). A write whose file cannot be read is refused.
   - `postToolUse` can only replace the output of MCP tools.
   - `preToolUse` rewrites only together with `allow`, and does not enforce `ask`.
+  - Not covered: a secret written inside inline code (for example
+    `python -c "open(...)"`) is checked only where zn can read the path as a word.
   - **A secret printed by a shell command, or in a file the agent reads that is
     not blocked, reaches the model.** Shadow your `.env` files and keep secrets
     in the vault.
@@ -55,6 +65,23 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
   - On Windows, the `zn run` wrapping is written for bash: with PowerShell as
     OpenCode's shell, a command with a marker fails instead of running (no
     value is exposed).
+
+## Files a `--project` install writes
+
+A project install names `zn` on your PATH (`zn hook <agent>`), not the paths of
+your user, so these files can be committed. Add them to `.gitignore` if you
+want them to stay on your machine. Each agent's own hook trust still applies
+(Codex asks you to review project hooks in `/hooks`).
+
+| Agent | File |
+|---|---|
+| Claude Code | `.claude/settings.json` |
+| Codex CLI | `.codex/hooks.json` |
+| Cursor | `.cursor/hooks.json` |
+| OpenCode | `.opencode/plugins/zn-gate.js` |
+
+A user install writes the same files under your home directory and names the
+node and runner paths of that install.
 
 ## Limits that apply to every agent
 
