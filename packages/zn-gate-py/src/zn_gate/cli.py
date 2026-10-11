@@ -34,16 +34,22 @@ def cmd_test(args: argparse.Namespace) -> int:
             out["redacted_preview"] = clean_text
         print(json.dumps(out, indent=2))
     else:
-        status_icon = "🛡️ ALLOW" if assessment.allowed and not secrets else "🚨 BLOCK"
+        # The icon follows the injection verdict only. A secret found by the
+        # DLP filter is reported on its own line and does not turn an ALLOW
+        # into a BLOCK.
+        status_icon = "🛡️ ALLOW" if assessment.allowed else "🚨 BLOCK"
         print(f"\n{status_icon} | Verdict: {assessment.verdict.upper()} (latency: {latency_us:.1f}µs)")
         print(f"Rule:       {assessment.rule}")
         if assessment.reason:
             print(f"Reason:     {assessment.reason}")
         if secrets:
-            print(f"DLP Alert:  Found {len(secrets)} sensitive credentials! Redacted: {clean_text}")
+            noun = "secret" if len(secrets) == 1 else "secrets"
+            print(f"DLP Alert:  {len(secrets)} {noun} detected (verdict unchanged). Redacted: {clean_text}")
         print(f"Confidence: {assessment.confidence * 100:.1f}%")
         print(f"Engine:     {assessment.engine} (rules: {assessment.rules_version})\n")
 
+    # Exit code: 0 only when nothing was flagged (no block and no secret), so
+    # the command can be used as a check in scripts.
     return 0 if (assessment.allowed and not secrets) else 1
 
 
