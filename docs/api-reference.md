@@ -13,14 +13,18 @@ const { logEvidence, verifyEvidenceLedger } = require('zn-gate/lib/evidence');
 - Returns: `{ verdict: 'allow' | 'block', confidence: number, rule: string, reason: string | null }`
 
 ### `analyze(text, options)`
-- Hybrid evaluation: runs local rules first; escalates to cloud gate if `apiKey` is provided.
+- Prompt evaluation: runs local rules first. Queries the cloud classifier only when the user opted in with both an API key (`apiKey` or `ZN_API_KEY`) and `ZN_CLOUD=1`, and `ZN_LOCAL_ONLY` is not `true`. The text is secret-redacted locally before it is sent.
 - Returns: `Promise<AssessmentResult>`
 
 ### `sanitizeToolResult(toolName, content, options)`
 - Deep sanitization of external tool outputs. Blocks indirect prompt injections and redacts sensitive credentials (AWS keys, OpenAI tokens, DB passwords).
 
+### `checkToolResult(toolName, content, options)`
+- Local only; never touches the network. Inspects tool output before it enters the model context and always redacts secrets.
+- Returns: `Promise<{ tool_name, safe_to_ingest, secrets_redacted, sanitized_content, assessment }>`
+
 ### `verifyEvidenceLedger(filePath)`
-- Verifies the cryptographic integrity of the SHA-256 hash chain in `~/.zn/evidence.jsonl`.
+- Verifies the SHA-256 hash chain in `~/.zn/evidence.jsonl`. It detects accidental or partial edits; it is not tamper-proof against someone with write access to the file.
 
 ---
 
@@ -33,10 +37,10 @@ from zn_gate.evidence import verify_evidence_ledger
 ```
 
 ### `evaluate(text: str) -> Assessment`
-- Pure Python in-memory deterministic evaluation (< 10 µs).
+- Pure Python in-memory deterministic evaluation. Never touches the network.
 - Returns: `Assessment(verdict='allow'|'block', confidence=1.0, rule='...', reason='...')`
 
-### `@guard(on_block='raise'|'return', check_args=True, check_result=False, mask_secrets=True)`
+### `@guard(on_block='raise'|'return', check_args=True, check_result=False, mask_secrets=False)`
 - Python decorator protecting sync and async agent functions and tool handlers.
 
 ### `check_tool_call(tool_name: str, arguments: Any) -> Assessment`

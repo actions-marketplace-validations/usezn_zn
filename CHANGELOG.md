@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.5.0-beta.1] - Unreleased
+## [Unreleased]
 
 Beta of the secrets scrubber and broker: secret values stay out of what your
 coding agent sends to its model. Walkthrough: [docs/secrets.md](docs/secrets.md).
@@ -36,6 +36,11 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
   - Claude Code coverage includes Bash, PowerShell, Monitor (through a streaming filter), Read, Grep, LSP, WebFetch, MCP tools and MCP resources.
 - **Out-of-band confirmation**: the first use of a secret by a command, and any change that widens a secret's policy, are confirmed in the vault's own terminal (`zn unlock --foreground`) or a system dialog. They are never confirmed in the agent's terminal.
 - End-to-end runs with Claude Code, Codex and OpenCode against a scripted provider, with 0 values sent (`bench/e2e/`). Hook latency figures are in `bench/HOOK_LATENCY.md`.
+
+### Changed
+- The npm package no longer ships the test suite (`test/`); run the tests from the repository. `zn-gate test` (the built-in self-test) is unchanged.
+- The npm package now includes `THIRD_PARTY_NOTICES.md` with the licenses of the bundled `age-encryption`, `@noble` and `@scure` packages.
+- CI packs the npm tarball, checks its contents, installs it in an empty project and runs the CLI from it; it also builds the Python sdist and wheel, runs `twine check` and installs the wheel in a clean virtualenv. Every supported Node.js version (18, 20, 22, 24) runs the full `npm test`.
 
 ### Security
 - `secrets_http_request` puts a value only in request headers unless the secret allows the URL or the body (`zn secret allow NAME --in query|body`).
@@ -160,7 +165,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
   - High-throughput un-cached execution exceeds **114,000 req/s** (Node) and **17,000 req/s** (Python).
 
 ### Fixed & Hardened (Security)
-- **znRed v2 Adversarial Fuzzing Hardening**:
+- **Adversarial Fuzzing Hardening**:
   - Hardened `pi:ignore_previous`, `pi:disregard`, and `pi:override` against 1,500 fuzzer mutations.
   - Achieved **97.93% overall block rate** on evasion vectors (100% on zero-width, markdown wrapping, casing/spacing, and semantic framing).
 - **False Positive Elimination on Developer Tool Outputs**:
@@ -177,3 +182,10 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 ## [1.2.0] - 2026-08-26
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
+
+[Unreleased]: https://github.com/usezn/zn/compare/v1.4.1...next
+[1.4.1]: https://github.com/usezn/zn/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/usezn/zn/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/usezn/zn/compare/v1.2.4...v1.3.0
+[1.2.4]: https://github.com/usezn/zn/compare/v1.2.3...v1.2.4
+[1.2.3]: https://github.com/usezn/zn/releases/tag/v1.2.3

@@ -34,7 +34,7 @@
 
 **For:** developers using Claude Code, Codex CLI, Cursor, OpenCode or any MCP client, and teams building agents with MCP, LangChain, CrewAI or LlamaIndex.
 
-**What it does today:** checks what your agent reads and calls for prompt injection, redacts secrets from tool output before the model sees it, and audits prompts, skills and configs. Runs locally, needs no account, has zero runtime dependencies.
+**What it does today:** checks what your agent reads and calls for prompt injection, redacts secrets from tool output before the model sees it, and audits prompts, skills and configs. Runs locally and needs no account. The Python package has no runtime dependencies; the npm package's only one is `age-encryption` (with its `@noble`/`@scure` dependencies) for the secret vault, bundled in the package.
 
 ## Install
 
@@ -199,7 +199,7 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 - `packages/zn-gate`: Node.js CLI, MCP server and `shield` proxy (npm).
 - `packages/zn-gate-py`: Python SDK and CLI (PyPI).
-- `src/`: Rust gateway daemon.
+- `src/`: legacy Rust gateway, not released ([docs/rust-core.md](docs/rust-core.md)).
 - `bench/`: benchmark scripts and results.
 - `assets/brand/`: logo files (SVG master and light/dark variants, PNG lockup and banners).
 
@@ -225,4 +225,4 @@ Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT. Copyright (c) 2026 usezn ([usezn.com](https://usezn.com)). The Galvanize-60M weights are Apache-2.0. The [zn-prompt-injection-bench](https://huggingface.co/datasets/usezn/zn-prompt-injection-bench) dataset is CC-BY-4.0.
+MIT. Copyright (c) 2026 usezn ([usezn.com](https://usezn.com)). The Galvanize-60M weights are Apache-2.0. The [zn-prompt-injection-bench](https://huggingface.co/datasets/usezn/zn-prompt-injection-bench) dataset is CC-BY-4.0. The npm package bundles third-party code listed in [THIRD_PARTY_NOTICES.md](packages/zn-gate/THIRD_PARTY_NOTICES.md).
