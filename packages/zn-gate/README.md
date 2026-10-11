@@ -212,3 +212,5 @@ Report vulnerabilities to [security@usezn.com](mailto:security@usezn.com). Polic
 ## License
 
 MIT © [usezn](https://usezn.com)
+
+The package bundles age-encryption (BSD-3-Clause) and its @noble / @scure dependencies (MIT); see [THIRD_PARTY_NOTICES.md](https://github.com/usezn/zn/blob/main/packages/zn-gate/THIRD_PARTY_NOTICES.md).

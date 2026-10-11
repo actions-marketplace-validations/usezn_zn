@@ -46,4 +46,14 @@ Thumbs.db
 
 # Leak bench output
 bench/leak_bench_results.json
-leak_bench_results.jsonn
+leak_bench_results.json
+
+# Secrets and local data (never commit real credentials)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+/data/

@@ -37,6 +37,11 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - **Out-of-band confirmation**: the first use of a secret by a command, and any change that widens a secret's policy, are confirmed in the vault's own terminal (`zn unlock --foreground`) or a system dialog. They are never confirmed in the agent's terminal.
 - End-to-end runs with Claude Code, Codex and OpenCode against a scripted provider, with 0 values sent (`bench/e2e/`). Hook latency figures are in `bench/HOOK_LATENCY.md`.
 
+### Changed
+- The npm package no longer ships the test suite (`test/`); run the tests from the repository. `zn-gate test` (the built-in self-test) is unchanged.
+- The npm package now includes `THIRD_PARTY_NOTICES.md` with the licenses of the bundled `age-encryption`, `@noble` and `@scure` packages.
+- CI packs the npm tarball, checks its contents, installs it in an empty project and runs the CLI from it; it also builds the Python sdist and wheel, runs `twine check` and installs the wheel in a clean virtualenv. Every supported Node.js version (18, 20, 22, 24) runs the full `npm test`.
+
 ### Security
 - `secrets_http_request` puts a value only in request headers unless the secret allows the URL or the body (`zn secret allow NAME --in query|body`).
 - First-use approvals are bound to the executable's real path and file identity. A replaced or retargeted binary loses its approval. Binaries inside the project never receive values.
