@@ -19,7 +19,7 @@ reads, command output, search results, MCP results and pasted prompts.
 | The agent approves a new command for a secret, or widens its policy | **Yes**, against tool-driven attempts | First use and policy changes are confirmed by the vault on its own channel (its terminal or a system dialog), never on the terminal of the command that asked |
 | An approved binary is swapped (PATH shadowing, rewritten in place, retargeted symlink) | **Yes**, with the limit described under "Starting the approved program" | Approvals are bound to the real path and file identity of the executable; `zn run` checks the file it opened and starts that path |
 | An approved program changes (update, reinstall, or something else) | **You are asked again** | The dialog says the program changed since you approved it, with the old and new size and change time |
-| A secret written into a file by `secrets_render_file` outside the project, or over an existing file | **You are asked** | Only new files inside the project are written without confirmation |
+| A secret written into a file by `secrets_render_file` outside the project, over an existing file, or into a credential file | **You are asked** | Only new files inside the project, other than credential files, are written without confirmation. The agents' hook and plugin settings and zn's own state are refused outright. An overwrite is done in place through the checked descriptor, so a power cut during it can leave a truncated file; a file with other hard links is refused |
 | The API reflects the token in its response | **Yes** | Responses are masked and scrubbed |
 | The vault file is forged with the public key, edited, or deleted | **Fails closed** | Integrity tag keyed by the identity; a missing vault with existing history is refused |
 
@@ -37,12 +37,19 @@ reads, command output, search results, MCP results and pasted prompts.
 Hooks are a guardrail, not a sandbox: a determined process can find another
 way to read a file. The point is that the agent's normal tools do not hand
 values to the model. The hooks also block the agent's file tools and shell
-commands from writing `~/.zn` and the agents' own hook and plugin settings
-(`.claude/settings*.json`, `.codex/`, `.cursor/hooks.json`, the OpenCode plugin
-and `opencode.json`). Paths are checked after `~`, variables and symlinks are
-resolved, and globs and brace lists are checked against what they could name.
-A path written inside inline code (`python -c "open(...)"`) is only checked
-where it appears as a word of the command.
+commands from writing `~/.zn` and the agents' own hook and plugin settings:
+the files (`.claude/settings*.json`, `.codex/` files, `.cursor/hooks.json`, the
+OpenCode plugin and `opencode.json`) and the directories that hold them
+(`~/.claude`, `~/.codex`, `~/.cursor`, `~/.config/opencode`, the same in the
+project, and the locations `CODEX_HOME`, `OPENCODE_CONFIG`,
+`OPENCODE_CONFIG_DIR` and `XDG_CONFIG_HOME` name). A command that moves,
+removes or enters one of those directories is refused, and so is a write to a
+file in it. This is best effort: a write the hooks cannot read as a word of the
+command (a path built inside a script, in inline code such as
+`python -c "open(...)"`, or with a variable set earlier in the same command) is
+not seen. Paths are checked after `~`, variables and symlinks are resolved,
+and globs and brace lists are checked against the files that exist now and
+against the names they could match.
 
 ## What the vault daemon protects, and what it does not
 
@@ -86,9 +93,13 @@ right before starting it, and starts that path; it never looks the name up on
   the check covers the script, not the interpreter it finds there.
 - **Every program on macOS and Windows** is started by path right after the
   last check, so the same short window exists.
-- **Dynamic loader variables** (`LD_*`, `DYLD_*`) are removed from the
-  program's environment whenever secret values are injected, and `zn run` says
-  so once. Without injected values the environment is passed unchanged.
+- **Dynamic loader variables** (`LD_*`, `DYLD_*`) and the glibc variables that
+  load files or modules of the caller's choosing (`GCONV_PATH`,
+  `GLIBC_TUNABLES`, `LOCPATH`, `NLSPATH`, `HOSTALIASES`, `RES_OPTIONS`) are
+  removed from the program's environment whenever secret values are injected,
+  and `zn run` says so once. Without injected values the environment is passed
+  unchanged. On Windows, a program that loads DLLs from its own directory is not
+  covered; that is not documented per program here.
 - **Interpreter variables are a limit.** `NODE_OPTIONS`, `PYTHONPATH`,
   `PYTHONSTARTUP`, `RUBYOPT`, `PERL5LIB`, `PERL5OPT` and `BASH_ENV` make an
   interpreter load code of their own choosing, and zn does not remove them.
@@ -150,6 +161,14 @@ stop malware running as the same user (see above).
   hooks block the agent's file tools from writing there). The environment
   variable `ZN_HOOK_FAIL_MODE` can only make this stricter (`closed`); it does
   not reopen fail-open.
+- **An event that cannot be read is refused:** when stdin is empty or is not
+  JSON, the hook writes the reason to stderr and exits with code 2. Claude Code
+  and Codex block the call on exit code 2 (Codex only feeds the reason back
+  after a tool has run). Cursor documents exit code 2 as a block for
+  `preToolUse`, `beforeShellExecution` and `beforeReadFile`; zn also prints its
+  deny answer, which covers `beforeSubmitPrompt`. `whenUnavailable: "allow"`
+  lets such events pass, with a note on stderr. A PowerShell byte order mark is
+  accepted, so a pipe from PowerShell is read.
 - **The hook process does not start at all** (for example, Node moved after an
   upgrade and the hook command points to the old path, or the hook times out):
   most agents then carry on without the hook. Run `zn hooks install` again

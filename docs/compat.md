@@ -43,6 +43,10 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
     same rules as the other tools. Cursor does not document the input keys of
     these tools, so zn looks for the usual names (`file_path`, `path`,
     `target_file`). A write whose file cannot be read is refused.
+  - A call zn has no objection to gets no answer, not `allow`: an `allow` could
+    skip Cursor's own confirmations. A Grep without a `path` searches the whole
+    workspace, so files that zn would shadow or refuse can be found that way;
+    zn does not filter those results.
   - `postToolUse` can only replace the output of MCP tools.
   - `preToolUse` rewrites only together with `allow`, and does not enforce `ask`.
   - Not covered: a secret written inside inline code (for example
@@ -83,7 +87,16 @@ want them to stay on your machine. Each agent's own hook trust still applies
 A user install writes the same files under your home directory and names the
 node and runner paths of that install.
 
+A teammate who clones the project without zn on PATH gets no checks from these
+files: the hook command fails, and in Claude Code and Codex the call goes ahead.
+Install zn on every machine that runs the agent.
+
 ## Limits that apply to every agent
+
+- **An event zn cannot read is refused.** Empty stdin, or stdin that is not
+  JSON, exits with code 2 and the reason on stderr. Claude Code and Codex block
+  the call on exit code 2; Cursor also gets its deny answer. Setting
+  `whenUnavailable` to `"allow"` in `~/.zn/config.json` lets such events pass.
 
 - **The unlocked vault answers any program of your user.** A command the
   agent runs can ask the vault daemon for a stored secret by name; the
