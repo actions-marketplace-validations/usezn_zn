@@ -191,8 +191,21 @@ function readPrivateFile(file) {
 async function readEncrypted(file, identity) {
   const buf = readPrivateFile(file);
   if (buf === null) return null;
-  const text = await decryptWith(identity, new Uint8Array(buf));
-  return JSON.parse(text);
+  let text;
+  try {
+    text = await decryptWith(identity, new Uint8Array(buf));
+    return JSON.parse(text);
+  } catch (err) {
+    throw znError(CODES.LOCKED, 'vault file ' + path.basename(file) + ' is corrupted or was encrypted to another key (' +
+      String((err && err.message) || err).slice(0, 80) + '). Restore it from a backup; zn will not read or replace it.');
+  }
+}
+
+/** true when this ZN_HOME already has history: an audit log or project maps. */
+function hasPriorState(opts) {
+  const p = paths(opts);
+  try { if (fs.statSync(p.auditFile).size > 0) return true; } catch (err) { /* none */ }
+  try { return fs.readdirSync(p.vaultDir).some((n) => PROJECT_FILE_RE.test(n)); } catch (err) { return false; }
 }
 
 /** Encrypt JSON to the recipient and write it atomically (0600). */
@@ -250,6 +263,7 @@ module.exports = {
   decryptWithPassphrase,
   readEncrypted,
   writeEncrypted,
+  hasPriorState,
   writePrivateFile,
   readPrivateFile,
   pruneStale,

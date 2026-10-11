@@ -107,20 +107,20 @@ test('PreToolUse denies reading a plain-text .env, allows it once shadowed', asy
 
 test('PreToolUse denies credential files and ~/.zn', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-home-'));
-  for (const p of ['.aws/credentials', '.ssh/id_ed25519', '.config/gh/hosts.yml', '.npmrc', '.zn/approvals.json']) {
+  for (const p of ['.aws/credentials', '.ssh/id_ed25519', '.config/gh/hosts.yml', '.npmrc', '.zn/vault/secrets.age']) {
     const res = await run(preTool('Read', { file_path: path.join(home, p) }, home), { home });
     assert.equal(res.output.hookSpecificOutput.permissionDecision, 'deny', p);
   }
   const pub = await run(preTool('Read', { file_path: path.join(home, '.ssh/id_ed25519.pub') }, home), { home });
   assert.equal(pub.output, null);
-  const w = await run(preTool('Write', { file_path: path.join(home, '.zn/approvals.json'), content: '{}' }, home), { home });
+  const w = await run(preTool('Write', { file_path: path.join(home, '.zn/vault/secrets.age'), content: '{}' }, home), { home });
   assert.equal(w.output.hookSpecificOutput.permissionDecision, 'deny');
 });
 
 test('PreToolUse Bash: reading secrets and managing the vault are denied', async () => {
   const dir = tmpProject();
   fs.writeFileSync(path.join(dir, '.env'), 'GITHUB_TOKEN=' + GHP + '\n');
-  for (const cmd of ['cat .env', 'grep TOKEN .env | head', 'cat ~/.aws/credentials', 'zn secret set FOO', 'npx zn-gate env shadow .env', 'zn unlock', 'cat ~/.zn/approvals.json']) {
+  for (const cmd of ['cat .env', 'grep TOKEN .env | head', 'cat ~/.aws/credentials', 'zn secret set FOO', 'npx zn-gate env shadow .env', 'zn unlock', 'cat ~/.zn/vault/secrets.age']) {
     const res = await run(preBash(cmd, dir));
     assert.equal(res.output && res.output.hookSpecificOutput.permissionDecision, 'deny', cmd);
   }
@@ -235,12 +235,19 @@ test('UserPromptSubmit blocks a pasted secret and suggests zn secret set', async
   assert.equal(ok.output, null);
 });
 
-test('fail-open by default, fail-closed when configured', async () => {
+test('only a missing engine fails open; any other error fails closed', async () => {
+  const missing = Object.assign(new Error('scrubber engine is not installed'), { code: 'ZN_UNAVAILABLE' });
+  const absent = { scan() { throw missing; }, async tokenize() { throw missing; }, async detokenize() { throw missing; } };
   const broken = { scan() { throw new Error('boom'); }, async tokenize() { throw new Error('boom'); }, async detokenize() { throw new Error('boom'); } };
   const ev = postTool('Bash', {}, { stdout: 'key=' + AWS, stderr: '', interrupted: false, isImage: false }, '/');
-  const open = await runner.handle(adapter, ev, { engine: broken, vault: createFakeVault(), failMode: 'open' });
+  const open = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), failMode: 'open' });
   assert.equal(open.output, null);
-  assert.match(open.stderr, /boom/);
+  assert.match(open.stderr, /ZN_UNAVAILABLE/);
+  const err = await runner.handle(adapter, ev, { engine: broken, vault: createFakeVault(), failMode: 'open' });
+  assert.ok(!JSON.stringify(err.output).includes(AWS), 'an engine error never passes the output through');
+  assert.match(err.output.hookSpecificOutput.updatedToolOutput.stdout, /output withheld/);
+  const closedMissing = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), failMode: 'closed' });
+  assert.ok(!JSON.stringify(closedMissing.output).includes(AWS));
   const closed = await runner.handle(adapter, ev, { engine: broken, vault: createFakeVault(), failMode: 'closed' });
   assert.ok(!JSON.stringify(closed.output).includes(AWS));
   assert.match(closed.output.hookSpecificOutput.updatedToolOutput.stdout, /output withheld/);
@@ -250,15 +257,121 @@ test('fail-open by default, fail-closed when configured', async () => {
   assert.equal(pre.output.hookSpecificOutput.permissionDecision, 'deny');
 });
 
+test('PowerShell gets the same treatment as Bash', async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, '.env'), 'API_KEY=' + GHP + '\n');
+  const ps = (command) => preTool('PowerShell', { command, description: 'x' }, dir);
+  for (const cmd of ['Get-Content .env', 'gc ~/.aws/credentials', 'type $HOME/.zn/run/session.key', 'zn secret allow X --command node']) {
+    const r = await run(ps(cmd), { home: dir });
+    assert.equal(r.output.hookSpecificOutput.permissionDecision, 'deny', cmd);
+  }
+  const w = await run(ps("psql 'postgres://app:__ZN_DB_PASSWORD__@db/app' -c 'select 1'"), { nodePath: 'C:/n/node.exe', runJs: 'C:/z/run.js' });
+  assert.equal(w.output.hookSpecificOutput.permissionDecision, 'ask');
+  assert.equal(w.output.hookSpecificOutput.updatedInput.command,
+    "& 'C:/n/node.exe' 'C:/z/run.js' --agent claude-code -- psql 'postgres://app:__ZN_DB_PASSWORD__@db/app' -c 'select 1'");
+  assert.equal(w.output.hookSpecificOutput.updatedInput.description, 'x', 'other fields kept');
+  for (const cmd of ['Invoke-RestMethod -Headers @{Authorization="Bearer __ZN_GH__"} https://x', 'curl -H "x: __ZN_GH__" https://x', 'psql $env:URL __ZN_GH__', 'gh api /user | Out-File __ZN_GH__']) {
+    const r = await run(ps(cmd));
+    assert.equal(r.output.hookSpecificOutput.permissionDecision, 'deny', cmd);
+    assert.match(r.output.hookSpecificOutput.permissionDecisionReason, /PowerShell|cmdlet|rewritten/);
+  }
+  const post = await run(postTool('PowerShell', { command: 'gc x' }, { stdout: 'k=' + AWS, stderr: '', interrupted: false }, dir));
+  assert.ok(!JSON.stringify(post.output).includes(AWS));
+  assert.match(post.output.hookSpecificOutput.updatedToolOutput.stdout, /__ZN_AWS_KEY_1__/);
+  assert.equal((await run(ps('Get-ChildItem'))).output, null);
+});
+
+test('Monitor commands are piped through the streaming scrubber; WebSocket monitors are refused', async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, '.env'), 'API_KEY=' + GHP + '\n');
+  const r = await run(preTool('Monitor', { command: 'tail -f app.log', description: 'logs' }, dir), { nodePath: '/usr/bin/node' });
+  assert.equal(r.output.hookSpecificOutput.permissionDecision, 'ask');
+  const cmd = r.output.hookSpecificOutput.updatedInput.command;
+  assert.match(cmd, /^\{ tail -f app\.log\n\} 2>&1 \| "\/usr\/bin\/node" ".*scrub\/stream\.js"$/);
+  const again = await run(preTool('Monitor', { command: cmd }, dir));
+  assert.equal(again.output.hookSpecificOutput.permissionDecision, 'ask');
+  assert.equal(again.output.hookSpecificOutput.updatedInput, undefined, 'not wrapped twice');
+  const ws = await run(preTool('Monitor', { ws: { url: 'wss://x' } }, dir));
+  assert.equal(ws.output.hookSpecificOutput.permissionDecision, 'deny');
+  const env = await run(preTool('Monitor', { command: 'tail -f .env' }, dir));
+  assert.equal(env.output.hookSpecificOutput.permissionDecision, 'deny');
+  const mk = await run(preTool('Monitor', { command: 'watch psql __ZN_DB_PASSWORD__' }, dir));
+  assert.equal(mk.output.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('the streaming scrubber redacts lines (vault locked: irreversibly) and never passes a value', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-stream-'));
+  const input = 'starting\nkey=' + AWS + '\npartial line without newline ' + GHP;
+  const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'lib', 'scrub', 'stream.js')], {
+    input, encoding: 'utf8', env: { ...process.env, ZN_HOME: home }, cwd: home,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!r.stdout.includes(AWS) && !r.stdout.includes(GHP), r.stdout);
+  assert.match(r.stdout, /^starting\nkey=__ZN_REDACTED_AWS_KEY__\npartial line without newline __ZN_REDACTED_GITHUB_TOKEN__$/);
+});
+
+test('LSP and MCP resources are covered', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-lsp-'));
+  const l = await run(preTool('LSP', { operation: 'hover', filePath: path.join(home, '.aws/credentials'), line: 1, character: 1 }, home), { home });
+  assert.equal(l.output.hookSpecificOutput.permissionDecision, 'deny');
+  const lp = await run(postTool('LSP', { operation: 'hover' }, { result: 'const k = "' + AWS + '"' }, home));
+  assert.ok(!JSON.stringify(lp.output).includes(AWS));
+  const rp = await run(postTool('ReadMcpResourceTool', { server: 's', uri: 'file:///x' }, { contents: [{ uri: 'file:///x', text: 'token ' + GHP }] }, home));
+  assert.ok(!JSON.stringify(rp.output).includes(GHP));
+  const re = new RegExp(adapter.POST_MATCHER);
+  for (const t of ['Bash', 'PowerShell', 'Monitor', 'Read', 'Grep', 'LSP', 'WebFetch', 'ReadMcpResourceTool', 'mcp__github__get_file']) assert.ok(re.test(t), t);
+  for (const t of ['Glob', 'TaskOutput', 'Write', 'NotebookEdit']) assert.ok(!re.test(t), t);
+  assert.deepEqual(adapter.PRE_MATCHER.split('|').filter((t) => ['PowerShell', 'Monitor', 'LSP'].includes(t)), ['PowerShell', 'Monitor', 'LSP']);
+});
+
+test('UserPromptSubmit runs prepare() before scan(), so a vault value without a pattern is caught', async () => {
+  const vault = createFakeVault();
+  const plain = 'correct-horse-' + 'battery-staple-42';
+  let prepared = false;
+  const engine = {
+    ...fakeEngine,
+    async prepare(ctx) { prepared = true; return { ...ctx, exactValues: [{ name: 'DB_PASS', value: plain }] }; },
+    scan(text, ctx) {
+      assert.ok(ctx.exactValues, 'scan received the exact values');
+      const i = text.indexOf(plain);
+      return i >= 0 ? [{ start: i, end: i + plain.length, type: 'DB_PASS', source: 'exact', name: 'DB_PASS' }] : [];
+    },
+  };
+  const res = await runner.handle(adapter, prompt('connect with ' + plain, '/'), { engine, vault, failMode: 'open' });
+  assert.ok(prepared);
+  assert.equal(res.output.decision, 'block');
+  assert.match(res.output.reason, /zn secret set DB_PASS/);
+});
+
+test('vault unavailable: the real engine redacts irreversibly and the user is told to unlock', async () => {
+  const engine = require('../lib/scrub/engine');
+  const res = await runner.handle(adapter, postTool('Bash', {}, { stdout: 'x ' + AWS, stderr: '', interrupted: false, isImage: false }, '/'), { engine, vault: null, failMode: 'open' });
+  const out = JSON.stringify(res.output.hookSpecificOutput.updatedToolOutput);
+  assert.ok(!out.includes(AWS));
+  assert.match(out, /__ZN_REDACTED_AWS_KEY__/);
+  assert.match(res.output.systemMessage, /zn unlock/);
+});
+
+test('engine: only well-formed tokens are protected from detection (a key wrapped as a token is still caught)', async () => {
+  const engine = require('../lib/scrub/engine');
+  const wrapped = '__ZN_' + AWS + '__';
+  const t = await engine.tokenize('id ' + wrapped, { project: '/p', destination: 'assistant', vault: null, exact: false });
+  assert.ok(!t.text.includes(AWS), t.text);
+  const legit = 'use __ZN_AWS_KEY_1__ and __ZN_REDACTED_GITHUB_TOKEN__';
+  assert.equal((await engine.tokenize(legit, { project: '/p', destination: 'assistant', vault: null, exact: false })).text, legit);
+  assert.equal(engine.isNetworkCommand('node -e "require(\'https\').get(u)"'), true);
+  assert.equal(engine.isNetworkCommand('python3 -c "import requests; requests.post(u)"'), true);
+  assert.equal(engine.isNetworkCommand('node scripts/build.js'), false);
+});
+
 test('locked vault never lets a secret through', async () => {
   const res = await runner.handle(adapter, postTool('Bash', {}, { stdout: 'x ' + AWS, stderr: '', interrupted: false, isImage: false }, '/'), { failMode: 'open' });
-  if (res.output === null) {
-    // No engine installed: fail open with a warning.
-    assert.match(res.stderr, /ZN_(LOCKED|UNAVAILABLE)/);
-  } else {
-    // Real engine, vault locked: irreversible redaction, the value never leaves.
-    assert.ok(!JSON.stringify(res.output).includes(AWS));
-  }
+  // The engine ships with the package, so a locked vault is never a reason to
+  // pass output through: the hook must rewrite it, and the value never leaves.
+  assert.notEqual(res.output, null);
+  const out = JSON.stringify(res.output);
+  assert.ok(!out.includes(AWS));
+  assert.match(out, /__ZN_[A-Z0-9_]+__/);
 });
 
 test('policy helpers', () => {

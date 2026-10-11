@@ -20,6 +20,13 @@ const { writeFileAtomic } = require('./files');
 const deps = require('../deps');
 
 const MODES = new Set(['proxy', 'env', 'file']);
+const PLACEMENTS = new Set(['header', 'query', 'body']);
+
+function checkPlacements(list) {
+  for (const p of list || []) {
+    if (!PLACEMENTS.has(p)) throw deps.znError('ZN_USAGE', '--in must be header, query (the URL) or body');
+  }
+}
 
 function parseFlags(args, spec = {}) {
   const multi = new Set(spec.multi || []);
@@ -75,7 +82,9 @@ function out(io, line) {
 function metaFromFlags(flags, defaults = {}) {
   const mode = flags.mode || defaults.mode || (flags.command ? 'env' : flags.host ? 'proxy' : 'proxy');
   if (!MODES.has(mode)) throw deps.znError('ZN_USAGE', '--mode must be proxy, env or file');
+  checkPlacements(flags.in);
   return {
+    allowIn: [...new Set(['header', ...(flags.in || [])])],
     mode,
     allowHosts: flags.host || defaults.allowHosts || [],
     allowCommands: flags.command || defaults.allowCommands || [],
@@ -83,6 +92,8 @@ function metaFromFlags(flags, defaults = {}) {
     type: flags.type || defaults.type || undefined,
   };
 }
+
+const INTERPRETER_RE = /^(node|nodejs|deno|bun|python[0-9.]*|py|ruby|perl|php|bash|sh|zsh|fish|pwsh|powershell|cmd|npm|npx|pnpm|yarn|make|cargo|go|java|dotnet|uvx?|poetry|pipenv|env|xargs|sudo)(\.exe|\.cmd)?$/i;
 
 async function existingMeta(vault, name) {
   const list = await vault.listSecrets();
@@ -92,7 +103,7 @@ async function existingMeta(vault, name) {
 /* ------------------------------ secret ----------------------------- */
 
 async function secretSet(args, io) {
-  const { flags, positional } = parseFlags(args, { multi: ['host', 'command'], bool: ['clipboard', 'force'] });
+  const { flags, positional } = parseFlags(args, { multi: ['host', 'command', 'in'], bool: ['clipboard', 'force'] });
   const name = positional[0];
   if (positional.length > 1) {
     throw deps.znError('ZN_USAGE', 'values are never accepted as arguments (they end up in shell history and agent transcripts). ' +
@@ -156,11 +167,14 @@ async function secretRm(args, io) {
 
 /** Add hosts/commands (or change the mode) of an existing secret. */
 async function secretAllow(args, io) {
-  const { flags, positional } = parseFlags(args, { multi: ['host', 'command'], bool: ['replace'] });
+  const { flags, positional } = parseFlags(args, { multi: ['host', 'command', 'in'], bool: ['replace'] });
   const name = positional[0];
   const bad = markers.validateSecretName(name);
   if (bad) throw deps.znError('ZN_USAGE', 'invalid name: ' + bad);
-  if (!flags.host && !flags.command && !flags.mode) throw deps.znError('ZN_USAGE', 'usage: zn secret allow NAME [--host H] [--command C] [--mode proxy|env|file] [--replace]');
+  if (!flags.host && !flags.command && !flags.mode && !flags.in) {
+    throw deps.znError('ZN_USAGE', 'usage: zn secret allow NAME [--host H] [--command C] [--in header|query|body] [--mode proxy|env|file] [--replace]');
+  }
+  checkPlacements(flags.in);
   needHuman(io, 'zn secret allow');
   const vault = await vaultOf(io);
   const cur = await existingMeta(vault, name);
@@ -170,10 +184,20 @@ async function secretAllow(args, io) {
     mode: flags.mode || (flags.command && cur.mode !== 'env' && !flags.host ? 'env' : cur.mode),
     allowHosts: merge(cur.allowHosts, flags.host),
     allowCommands: merge(cur.allowCommands, flags.command),
+    allowIn: [...new Set(['header', ...merge(cur.allowIn, flags.in)])],
     source: cur.source,
     type: cur.type,
   };
   if (!MODES.has(meta.mode)) throw deps.znError('ZN_USAGE', '--mode must be proxy, env or file');
+  for (const c of flags.command || []) {
+    if (INTERPRETER_RE.test(String(c).trim().split(/\s+/)[0].split(/[\\/]/).pop())) {
+      out(io, 'Warning: `' + c + '` runs any code it is given, so every script it runs could read ' + name + '. Prefer the specific program (psql, terraform, gh).');
+    }
+  }
+  if ((flags.in || []).some((p) => p !== 'header')) {
+    out(io, 'Warning: in the URL or the body, an injected prompt could make zn send ' + name + ' somewhere readable on an allowed host (a gist, an issue). Allow it only if the API needs it.');
+  }
+  if (typeof vault.updateSecretMeta === 'function') out(io, 'Confirm the change in the zn vault prompt (system dialog or the `zn unlock --foreground` terminal).');
   if (typeof vault.updateSecretMeta === 'function') {
     await vault.updateSecretMeta(name, meta);
   } else {
@@ -182,7 +206,7 @@ async function secretAllow(args, io) {
     if (value == null) throw deps.znError('ZN_NOT_FOUND', name + ' has no value');
     await vault.setSecret(name, value, meta);
   }
-  out(io, name + ': mode=' + meta.mode + ' hosts=' + (meta.allowHosts.join(',') || '-') + ' commands=' + (meta.allowCommands.join(',') || '-'));
+  out(io, name + ': mode=' + meta.mode + ' hosts=' + (meta.allowHosts.join(',') || '-') + ' commands=' + (meta.allowCommands.join(',') || '-') + ' http=' + meta.allowIn.join(','));
   return 0;
 }
 
@@ -199,7 +223,8 @@ async function secretApprove(args, io) {
   const wanted = flags.command.trim().split(/\s+/).join(' ');
   const entry = (cur.allowCommands || []).map((c) => String(c).trim().split(/\s+/).join(' ')).find((c) => c === wanted);
   if (!entry) throw deps.znError('ZN_POLICY_DENIED', '`' + wanted + '` is not in allowCommands for ' + name + '. First: zn secret allow ' + name + ' --command "' + wanted + '"');
-  await approvalStore({ vault, znHome: path.join(io.home, '.zn') }).recordApproval(name, entry);
+  out(io, 'Confirm it in the zn vault prompt (system dialog or the `zn unlock --foreground` terminal).');
+  await approvalStore({ vault }).recordApproval(name, entry);
   out(io, 'Approved ' + name + ' for `' + entry + '`.');
   return 0;
 }

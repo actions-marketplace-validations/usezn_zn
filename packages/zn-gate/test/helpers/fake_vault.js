@@ -52,6 +52,7 @@ function createFakeVault(opts = {}) {
         mode: s.meta.mode || 'proxy',
         allowHosts: s.meta.allowHosts || [],
         allowCommands: s.meta.allowCommands || [],
+        allowIn: s.meta.allowIn || ['header'],
         source: s.meta.source || 'local',
         lastUsed: null,
       }));
@@ -71,8 +72,20 @@ function createFakeVault(opts = {}) {
     },
   };
   if (opts.withApprovals) {
+    // Like the daemon: recording an approval asks the user on the vault's own
+    // channel (opts.confirm, default yes) and refuses when they decline.
+    const confirm = opts.confirm || (async () => true);
+    vault.confirmations = 0;
     vault.isApproved = async (s, c) => approvals.some((a) => a.s === s && a.c === c);
-    vault.recordApproval = async (s, c) => { approvals.push({ s, c }); };
+    vault.recordApproval = async (s, c) => {
+      vault.confirmations++;
+      if (!(await confirm({ kind: 'approval', secret: s, command: c }))) {
+        const err = new Error('declined by the user');
+        err.code = 'ZN_POLICY_DENIED';
+        throw err;
+      }
+      approvals.push({ s, c });
+    };
   }
   return vault;
 }

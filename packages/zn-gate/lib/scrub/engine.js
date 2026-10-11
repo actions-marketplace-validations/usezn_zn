@@ -37,7 +37,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { findPatterns, findPii, hintsIn } = require('./patterns');
+const { findPatterns, findPii, hintsIn, SECRET_TYPES, PII_TYPES } = require('./patterns');
 const { collectSources, buildMatcher } = require('./exact');
 const { CODES } = require('../errors');
 
@@ -66,13 +66,32 @@ function matcherFor(ctx) {
   return null;
 }
 
-function tokenRanges(text) {
+const KNOWN_TYPES = new Set([...SECRET_TYPES, ...PII_TYPES].map((t) => normalizeType(t)));
+
+/* Only tokens zn could have written are protected from re-detection:
+ * __ZN_<TYPE>_<n>__ and __ZN_REDACTED_<TYPE>__ for a known detector type or
+ * a vault name, and __ZN_<NAME>__ for a vault name. Anything else with the
+ * same shape (e.g. a key wrapped as __ZN_<key>__ to slip past) is scanned. */
+function tokenRanges(text, names) {
   const ranges = [];
   if (text.indexOf('__ZN_') < 0) return ranges;
   const re = new RegExp(TOKEN_SOURCE, 'g');
   let m;
-  while ((m = re.exec(text)) !== null) ranges.push([m.index, m.index + m[0].length]);
+  while ((m = re.exec(text)) !== null) {
+    const inner = m[1];
+    const red = /^REDACTED_(.+)$/.exec(inner);
+    const ord = /^(.+)_[1-9][0-9]{0,8}$/.exec(inner);
+    const known = (t) => KNOWN_TYPES.has(t) || names.has(t);
+    if ((red && known(red[1])) || (ord && known(ord[1])) || names.has(inner)) ranges.push([m.index, m.index + m[0].length]);
+  }
   return ranges;
+}
+
+function namesOf(ctx) {
+  const names = new Set();
+  for (const e of (ctx && Array.isArray(ctx.exactValues) ? ctx.exactValues : EMPTY)) if (e && e.name) names.add(String(e.name));
+  for (const n of (ctx && Array.isArray(ctx.secretNames) ? ctx.secretNames : EMPTY)) names.add(String(n));
+  return names;
 }
 
 function insideRange(span, ranges) {
@@ -136,7 +155,7 @@ function scan(text, ctx) {
   spans = spans.concat(findPatterns(text, opts));
   if (c.pii !== false) spans = spans.concat(findPii(text, opts));
   if (spans.length === 0) return spans;
-  const ranges = tokenRanges(text);
+  const ranges = tokenRanges(text, namesOf(c));
   if (ranges.length > 0) spans = spans.filter((s) => !insideRange(s, ranges));
   return resolveOverlaps(spans).map((s) => {
     const out = { start: s.start, end: s.end, type: normalizeType(s.type), source: s.source };
@@ -341,11 +360,23 @@ const NET_COMMANDS = new RegExp('(?:^|[\\s;&|()`$\'"])(?:' + [
 const NET_SUBCOMMANDS = /\b(?:git\s+(?:push|fetch|pull|clone|ls-remote|remote\s+(?:add|set-url)|submodule)|docker\s+(?:push|login|pull)|podman\s+(?:push|login)|npm\s+(?:publish|login|adduser)|yarn\s+(?:publish|npm\s+publish)|pnpm\s+publish|twine\s+upload|openssl\s+s_client)\b/i;
 const NET_URL = /\b(?:https?|ftps?|wss?|sftp|ssh|git|smb|ldaps?|mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqps?):\/\/[^\s/]*[A-Za-z0-9]/i;
 const NET_SOCKET = /\/dev\/(?:tcp|udp)\/|\b(?:Net\.WebClient|System\.Net\.|urllib\.request|http\.client|requests\.(?:get|post|put|patch|delete)|socket\.socket|net\.connect|fetch\s*\()/;
+// HTTP and socket libraries in inline code (node -e, python -c, ruby -e ...),
+// where no URL or network command appears on the command line.
+const NET_CODE = new RegExp([
+  'require\\s*\\(\\s*[\'"`](?:node:)?(?:https?|http2|net|tls|dgram|dns|undici|axios|node-fetch|got|ws|request)[\'"`]\\s*\\)',
+  'import\\s*\\(?\\s*[\'"`](?:node:)?(?:https?|http2|net|tls|dgram|undici|axios|node-fetch|got|ws)[\'"`]',
+  'from\\s+[\'"`](?:node:)?(?:https?|http2|net|tls|dgram|undici|axios|node-fetch|got|ws)[\'"`]',
+  '\\b(?:import|from)\\s+(?:requests|urllib3?|httpx|aiohttp|socket|http\\.client|httplib2|pycurl|smtplib|ftplib|websockets?)\\b',
+  '\\b(?:https?|http2|net|tls|dgram)\\.(?:request|get|connect|createConnection|createSocket)\\s*\\(',
+  '\\b(?:axios|got|superagent|undici)(?:\\.\\w+)?\\s*\\(',
+  '\\b(?:XMLHttpRequest|WebSocket|EventSource)\\b',
+  '\\bNet::HTTP\\b|\\bTCPSocket\\b|\\bopen-uri\\b|\\bIO::Socket\\b|\\bLWP::|\\bHTTP::Tiny\\b|\\bfile_get_contents\\s*\\(\\s*[\'"]https?:',
+].join('|'));
 
 /** true when a shell command shows network signals (commands, URLs, sockets). */
 function isNetworkCommand(cmd) {
   if (typeof cmd !== 'string' || !cmd) return false;
-  return NET_COMMANDS.test(cmd) || NET_SUBCOMMANDS.test(cmd) || NET_URL.test(cmd) || NET_SOCKET.test(cmd);
+  return NET_COMMANDS.test(cmd) || NET_SUBCOMMANDS.test(cmd) || NET_URL.test(cmd) || NET_SOCKET.test(cmd) || NET_CODE.test(cmd);
 }
 
 function effectiveDestination(ctx, text) {

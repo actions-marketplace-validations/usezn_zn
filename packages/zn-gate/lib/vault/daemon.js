@@ -34,6 +34,7 @@ const { spawn } = require('child_process');
 const store = require('./store');
 const keychain = require('./keychain');
 const audit = require('./audit');
+const confirmMod = require('./confirm');
 const { variants } = require('../scrub/exact');
 const { CODES, znError } = require('../errors');
 
@@ -49,6 +50,16 @@ const TOKEN_RE = /^__ZN_([A-Z0-9](?:[A-Z0-9_]*[A-Z0-9])?)__$/;
 const HOST_RE = /^(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*(?::\d{1,5})?$/;
 const COMMAND_RE = /^[A-Za-z0-9_.+\-/ *]{1,128}$/;
 const DENIED_RESOLVE = new Set(['bash_network', 'mcp_input', 'write_tracked']);
+const ALLOW_IN = ['header', 'query', 'body'];
+// Commands that run arbitrary code given to them: approving one lets any
+// script it runs read the secret. The confirmation says so.
+const INTERPRETERS = new Set(['node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'python2', 'py', 'ruby', 'perl', 'php',
+  'bash', 'sh', 'zsh', 'fish', 'dash', 'ksh', 'pwsh', 'powershell', 'cmd', 'npm', 'npx', 'pnpm', 'yarn', 'make', 'cargo', 'go',
+  'java', 'dotnet', 'uv', 'uvx', 'poetry', 'pipenv', 'rake', 'bundle', 'gradle', 'mvn', 'env', 'xargs', 'sudo', 'osascript']);
+
+function commandHead(c) {
+  return String(c || '').trim().split(/\s+/)[0].split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
+}
 
 const { endpoint, hmac, safeEqualHex, createClient } = require('./client');
 
@@ -75,12 +86,34 @@ class VaultState {
     return next;
   }
 
+  /* Integrity tag of secrets.age. age does not authenticate the sender:
+   * anyone who can write ~/.zn/vault could encrypt a forged vault to the
+   * public recipient. The tag is an HMAC keyed by the identity, which only
+   * the daemon holds, so a forged or edited vault is refused. */
+  tagOf(data) {
+    const key = crypto.createHmac('sha256', String(this.identity)).update('zn-vault-integrity-v1').digest();
+    const body = Object.assign({}, data);
+    delete body.mac;
+    return crypto.createHmac('sha256', key).update(JSON.stringify(body)).digest('hex');
+  }
+
   async loadSecrets() {
     if (this.secrets) return this.secrets;
     let data = await store.readEncrypted(this.paths.secretsFile, this.identity);
     if (!data) {
+      // A missing vault next to an existing audit log or project maps means
+      // it was deleted or lost: never start over silently with a new audit key.
+      if (store.hasPriorState(this.opts)) {
+        throw znError(CODES.LOCKED, 'vault file secrets.age is missing but this vault has history (audit log or project maps). ' +
+          'Restore secrets.age from a backup. To start over on purpose, first move ~/.zn/audit.jsonl and the project maps ~/.zn/vault/<hash>.age somewhere else.');
+      }
       data = { v: 1, auditKey: crypto.randomBytes(32).toString('hex'), auditHead: null, secrets: {} };
+      data.mac = this.tagOf(data);
       await store.writeEncrypted(this.paths.secretsFile, data, this.recipient);
+    } else if (typeof data.mac !== 'string' || !/^[0-9a-f]{64}$/.test(data.mac) ||
+        !crypto.timingSafeEqual(Buffer.from(data.mac, 'hex'), Buffer.from(this.tagOf(data), 'hex'))) {
+      throw znError(CODES.LOCKED, 'vault file secrets.age failed its integrity check: it was edited, forged with the public key, ' +
+        'or written by a pre-release build. Restore it from a backup.');
     }
     if (!data.secrets || typeof data.secrets !== 'object') data.secrets = {};
     if (!/^[0-9a-f]{64}$/.test(data.auditKey || '')) data.auditKey = crypto.randomBytes(32).toString('hex');
@@ -90,6 +123,7 @@ class VaultState {
 
   async saveSecrets() {
     if (!this.secrets) return;
+    this.secrets.mac = this.tagOf(this.secrets);
     await store.writeEncrypted(this.paths.secretsFile, this.secrets, this.recipient);
     this.dirtySecrets = false;
   }
@@ -158,6 +192,8 @@ function cleanMeta(meta) {
   out.allowHosts = Array.isArray(m.allowHosts) ? m.allowHosts.map((h) => String(h).toLowerCase()).filter((h) => HOST_RE.test(h)).slice(0, 64) : [];
   out.allowCommands = Array.isArray(m.allowCommands) ? m.allowCommands.map(String).filter((c) => COMMAND_RE.test(c)).slice(0, 64) : [];
   if (['header', 'query', 'body'].includes(m.injectAt)) out.injectAt = m.injectAt;
+  // Where secrets_http_request may put the value. Absent means headers only.
+  if (Array.isArray(m.allowIn)) out.allowIn = ALLOW_IN.filter((k) => m.allowIn.map(String).includes(k));
   out.source = typeof m.source === 'string' && /^(?:local|op:\/\/[^\s]{1,200}|bws:[^\s]{1,200}|infisical:[^\s]{1,200}|import:[^\s]{1,200})$/.test(m.source) ? m.source : 'local';
   return out;
 }
@@ -185,8 +221,52 @@ function approvalKey(project, secret, argv0) {
   return store.projectKey(String(project == null ? '' : project)) + ':' + s + ':' + normArgv0(argv0);
 }
 
+/* File identity of an executable. ctime changes on any rewrite or chmod and
+ * cannot be set back by an unprivileged user, so an approved binary that is
+ * replaced in place (or a symlink retargeted) loses its approval. */
+function fingerprint(exePath) {
+  try {
+    const st = fs.statSync(exePath);
+    if (!st.isFile()) return null;
+    return [st.dev, st.ino, st.size, Math.round(st.ctimeMs)].join(':');
+  } catch (err) {
+    return null;
+  }
+}
+
+/* What a policy change adds. Only additions need confirmation. */
+function widening(prev, next) {
+  const added = (a, b) => (b || []).filter((x) => !(a || []).includes(x));
+  const out = [];
+  if (next.mode !== prev.mode) out.push('mode ' + (prev.mode || '-') + ' -> ' + next.mode);
+  const h = added(prev.allowHosts, next.allowHosts);
+  if (h.length) out.push('hosts + ' + h.join(', '));
+  const c = added(prev.allowCommands, next.allowCommands);
+  if (c.length) out.push('commands + ' + c.join(', '));
+  const i = added(prev.allowIn || ['header'], next.allowIn || ['header']);
+  if (i.length) out.push('HTTP placement + ' + i.join(', '));
+  return out;
+}
+
 function makeOps(state, ctl) {
   const auditFile = state.paths.auditFile;
+  const channel = ctl.channel;
+
+  /* Ask the user on the daemon's own channel. Resolves true or throws. */
+  async function confirmOutOfBand(req, auditEvent) {
+    let ok = false;
+    try {
+      ok = await channel.confirm(req);
+    } catch (err) {
+      writeAudit(Object.assign({}, auditEvent, { decision: 'deny', reason: err && err.noChannel ? 'no_confirmation_channel' : 'confirmation_failed' }));
+      throw znError(CODES.POLICY_DENIED, String((err && err.message) || 'confirmation failed').slice(0, 300));
+    }
+    if (ok !== true) {
+      writeAudit(Object.assign({}, auditEvent, { decision: 'deny', reason: 'declined_by_user' }));
+      throw znError(CODES.POLICY_DENIED, 'declined by the user');
+    }
+    return true;
+  }
 
   /* Synchronous on purpose: audit.append is synchronous file I/O, so two
    * appends can never interleave and break the chain. */
@@ -201,7 +281,7 @@ function makeOps(state, ctl) {
 
   return {
     async status() {
-      return { unlocked: true, protocol: PROTOCOL, pid: process.pid, expiresAt: new Date(ctl.expiresAt).toISOString(), idleMs: ctl.idleMs };
+      return { unlocked: true, protocol: PROTOCOL, pid: process.pid, expiresAt: new Date(ctl.expiresAt).toISOString(), idleMs: ctl.idleMs, confirm: channel.kind };
     },
 
     async mapToken(project, type, value) {
@@ -261,16 +341,35 @@ function makeOps(state, ctl) {
     },
 
     /* Change a secret's policy without touching (or reading) its value. */
+    /* A change that widens the policy (new hosts, commands, HTTP placements
+     * or another mode) is confirmed by the user on the daemon's channel. */
     async updateSecretMeta(name, meta) {
       const n = str(name, 'name', 64);
+      const proposed = (prev) => cleanMeta(Object.assign(
+        { type: prev.type, mode: prev.mode, allowHosts: prev.allowHosts, allowCommands: prev.allowCommands, injectAt: prev.injectAt, allowIn: prev.allowIn, source: prev.source },
+        meta && typeof meta === 'object' ? meta : {}));
+      const before = (await state.loadSecrets()).secrets[n];
+      if (!before) throw znError(CODES.NOT_FOUND, 'no secret named ' + n);
+      const target = proposed(before);
+      const adds = widening(before, target);
+      if (adds.length) {
+        const interp = (target.allowCommands || []).filter((c) => !(before.allowCommands || []).includes(c) && INTERPRETERS.has(commandHead(c)));
+        await confirmOutOfBand({
+          kind: 'policy',
+          title: 'change the policy of secret ' + n + '?',
+          message: 'Secret: ' + n + '\nChange: ' + adds.join('; ') +
+            (interp.length ? '\nWarning: ' + interp.join(', ') + ' runs any code it is given; every script it runs could read ' + n + '.' : '') +
+            '\nIf you did not just ask for this in your own terminal, choose Deny.',
+        }, { secret: n, mode: 'set' });
+      }
       return state.serial(async () => {
         const secrets = await state.loadSecrets();
         const prev = secrets.secrets[n];
         if (!prev) throw znError(CODES.NOT_FOUND, 'no secret named ' + n);
-        const current = { type: prev.type, mode: prev.mode, allowHosts: prev.allowHosts, allowCommands: prev.allowCommands, injectAt: prev.injectAt, source: prev.source };
-        const merged = cleanMeta(Object.assign(current, meta && typeof meta === 'object' ? meta : {}));
+        const merged = proposed(prev);
+        if (widening(prev, merged).some((x) => !adds.includes(x))) throw znError(CODES.POLICY_DENIED, 'the policy changed while waiting for confirmation; try again');
         secrets.secrets[n] = Object.assign(merged, { value: prev.value, created: prev.created, lastUsed: prev.lastUsed || null });
-        writeAudit({ secret: n, mode: 'set', decision: 'allow', reason: 'policy_updated' });
+        writeAudit({ secret: n, mode: 'set', decision: 'allow', reason: adds.length ? 'policy_widened_confirmed' : 'policy_updated' });
         await state.saveSecrets();
         return true;
       });
@@ -287,18 +386,37 @@ function makeOps(state, ctl) {
         writeAudit({ secret: String(secret), mode: 'env', argv0, decision: 'deny', reason: exePath ? 'exe_changed' : 'exe_not_found' });
         return false;
       }
+      if (!rec.fp || rec.fp !== fingerprint(exePath)) {
+        writeAudit({ secret: String(secret), mode: 'env', argv0, decision: 'deny', reason: 'exe_modified' });
+        return false;
+      }
       return true;
     },
 
+    /* Recording one is confirmed by the user on the daemon's channel, showing
+     * the real executable that will receive the value. */
     async recordApproval(project, secret, argv0, exePath) {
       const key = approvalKey(project, secret, argv0);
-      if (typeof exePath !== 'string' || !exePath || exePath.length > 4096) {
+      if (typeof exePath !== 'string' || !exePath || exePath.length > 4096 || !path.isAbsolute(exePath)) {
         throw znError(CODES.NOT_FOUND, 'command not found on PATH: ' + normArgv0(argv0));
       }
+      const fp = fingerprint(exePath);
+      if (!fp) throw znError(CODES.NOT_FOUND, 'command not found: ' + normArgv0(argv0));
+      const cmd = normArgv0(argv0);
+      if (!(await state.loadSecrets()).secrets[String(secret)]) throw znError(CODES.NOT_FOUND, 'no secret named ' + secret);
+      await confirmOutOfBand({
+        kind: 'approval',
+        title: 'let `' + cmd + '` use secret ' + secret + '?',
+        message: 'Secret: ' + secret + ' (the value goes into the process)\n' +
+          'Command: ' + cmd + '\nRuns: ' + exePath + '\nProject: ' + String(project) +
+          (INTERPRETERS.has(cmd.toLowerCase()) ? '\nWarning: ' + cmd + ' runs any code it is given; every script it runs could read ' + secret + '.' : '') +
+          '\nIf you did not just start this command, choose Deny.',
+      }, { secret: String(secret), mode: 'env', argv0: cmd });
       return state.serial(async () => {
         const secrets = await state.loadSecrets();
+        if (fingerprint(exePath) !== fp) throw znError(CODES.POLICY_DENIED, 'the executable changed while waiting for confirmation');
         if (!secrets.approvals || typeof secrets.approvals !== 'object') secrets.approvals = {};
-        secrets.approvals[key] = { ts: new Date().toISOString(), exe: exePath };
+        secrets.approvals[key] = { ts: new Date().toISOString(), exe: exePath, fp };
         writeAudit({ secret: String(secret), mode: 'env', argv0, decision: 'ask:yes', reason: 'first_use_approved' });
         await state.saveSecrets();
         return true;
@@ -309,7 +427,7 @@ function makeOps(state, ctl) {
       const secrets = await state.loadSecrets();
       return Object.entries(secrets.secrets).map(([name, s]) => ({
         name, type: s.type || 'SECRET', mode: s.mode, allowHosts: s.allowHosts || [], allowCommands: s.allowCommands || [],
-        injectAt: s.injectAt, source: s.source, lastUsed: s.lastUsed || null,
+        allowIn: s.allowIn || ['header'], injectAt: s.injectAt, source: s.source, lastUsed: s.lastUsed || null,
       })).sort((a, b) => a.name.localeCompare(b.name));
     },
 
@@ -394,7 +512,10 @@ async function serve(opts) {
   const sessionKey = crypto.randomBytes(32);
   const ttlMs = o.ttlMs || DEFAULT_TTL_MS;
   const idleMs = o.idleMs || DEFAULT_IDLE_MS;
-  const ctl = { expiresAt: Date.now() + ttlMs, idleMs, shutdown: null };
+  // Confirmation channel: injected (tests), chosen by the caller, or none.
+  const channel = typeof o.confirm === 'function' ? { kind: 'injected', confirm: o.confirm }
+    : (o.channel && typeof o.channel.confirm === 'function' ? o.channel : confirmMod.noneChannel());
+  const ctl = { expiresAt: Date.now() + ttlMs, idleMs, shutdown: null, channel };
   const ops = makeOps(state, ctl);
   const sockets = new Set();
   let closed = false;
@@ -583,7 +704,33 @@ async function unlock(opts) {
   child.removeAllListeners('exit');
   if (child.connected) child.disconnect();
   child.unref();
-  return { pid: child.pid, expiresAt: info.expiresAt, created };
+  return { pid: child.pid, expiresAt: info.expiresAt, created, confirm: info.confirm || 'none' };
+}
+
+/**
+ * unlockForeground({passphrase, backend, ttlMs, idleMs, home, input, output, init})
+ * Runs the daemon in this process, attached to the user's terminal: it asks
+ * there before a secret is used for the first time or a policy widens.
+ * Resolves with {expiresAt, created, done} where done resolves on exit.
+ */
+async function unlockForeground(opts) {
+  const o = opts || {};
+  if (await isRunning(o)) throw znError(CODES.POLICY_DENIED, 'vault already unlocked');
+  let created = false;
+  let identity;
+  if (!keychain.readMeta(o)) {
+    if (o.init === false) throw znError(CODES.NOT_FOUND, 'vault not initialised');
+    identity = (await keychain.initIdentity(o)).identity;
+    created = true;
+  } else {
+    identity = await keychain.loadIdentity(o);
+  }
+  const channel = confirmMod.ttyChannel({ input: o.input || process.stdin, output: o.output || process.stderr });
+  let finish;
+  const done = new Promise((resolve) => { finish = resolve; });
+  const srv = await serve({ identity, home: o.home, ttlMs: o.ttlMs, idleMs: o.idleMs, channel, onExit: (reason) => finish(reason) });
+  identity = null;
+  return { expiresAt: new Date(srv.expiresAt).toISOString(), created, close: srv.close, done };
 }
 
 /** lock({home}) -> true if a daemon was running. */
@@ -610,9 +757,12 @@ async function daemonMain(argv) {
   try { identity = JSON.parse(input).identity; } catch (err) { identity = null; }
   input = '';
   try {
-    const srv = await serve({ identity, ttlMs: opt('--ttl-ms'), idleMs: opt('--idle-ms'), onExit: () => process.exit(0) });
+    // Detached: no terminal of its own, so confirmations use a native dialog
+    // when the platform has one, otherwise they are refused.
+    const channel = confirmMod.chooseChannel({ foreground: false });
+    const srv = await serve({ identity, ttlMs: opt('--ttl-ms'), idleMs: opt('--idle-ms'), channel, onExit: () => process.exit(0) });
     identity = null;
-    if (process.send) process.send({ ready: true, expiresAt: new Date(srv.expiresAt).toISOString() });
+    if (process.send) process.send({ ready: true, expiresAt: new Date(srv.expiresAt).toISOString(), confirm: channel.kind });
     if (process.connected) process.disconnect();
   } catch (err) {
     if (process.send) process.send({ ready: false, code: err.code || 'ZN_ERROR', message: String(err.message || err).slice(0, 200) });
@@ -624,4 +774,4 @@ if (require.main === module && process.argv.includes('--serve')) {
   daemonMain(process.argv.slice(2));
 }
 
-module.exports = { serve, unlock, lock, isRunning, endpoint, DEFAULT_TTL_MS, DEFAULT_IDLE_MS, PROTOCOL };
+module.exports = { serve, unlock, unlockForeground, lock, isRunning, endpoint, DEFAULT_TTL_MS, DEFAULT_IDLE_MS, PROTOCOL };
