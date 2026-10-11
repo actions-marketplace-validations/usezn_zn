@@ -451,7 +451,7 @@ function makeOps(state, ctl) {
       if (typeof file !== 'string' || !file || file.length > 4096 || !path.isAbsolute(file)) throw znError(CODES.POLICY_DENIED, 'invalid file path');
       const list = (Array.isArray(names) ? names : []).map(String).filter((n) => NAME_RE.test(n)).slice(0, 32);
       if (list.length === 0) throw znError(CODES.POLICY_DENIED, 'no secret names');
-      const why = ['the file already exists and would be overwritten', 'the file is outside the project'].includes(reason) ? reason : 'not a new file inside the project';
+      const why = ['the file already exists and would be overwritten', 'the file is outside the project', 'the file is a credential file'].includes(reason) ? reason : 'not a new file inside the project';
       const secrets = await state.loadSecrets();
       for (const n of list) if (!secrets.secrets[n]) throw znError(CODES.NOT_FOUND, 'no secret named ' + n);
       await confirmOutOfBand({

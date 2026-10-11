@@ -288,14 +288,20 @@ function createSecretsServer(opts = {}) {
       return { refused: 'could not open ' + out + ' (' + err.code + '); nothing was written' };
     }
     let real = out;
+    let fst = null;
     let why = null;
     let where = null;
     try {
       real = path.join(fs.realpathSync(path.dirname(out)), path.basename(out));
-      const fst = fs.fstatSync(fd);
+      fst = fs.fstatSync(fd);
       const lst = fs.lstatSync(real);
+      const dest = policy.classifyPath(real, { home, cwd });
       if (!lst.isFile() || lst.isSymbolicLink() || fst.dev !== lst.dev || fst.ino !== lst.ino) {
         why = 'the file changed while it was being opened';
+      } else if (exists && fst.nlink > 1) {
+        why = 'it has other hard links, so it could be another file';
+      } else if (dest && (dest.kind === 'agent_config' || dest.kind === 'zn_state')) {
+        why = 'the location is agent or zn configuration';
       } else if (approvedAt === null && !markers.isInside(path.dirname(real), realOrSelf(project))) {
         why = 'its directory resolves outside the project';
       } else if (approvedAt !== null && real !== approvedAt) {
@@ -309,8 +315,10 @@ function createSecretsServer(opts = {}) {
     }
     if (why) {
       fs.closeSync(fd);
-      // Only a file this call created is removed; an existing one is not ours to delete.
-      if (!exists) { try { fs.unlinkSync(real); } catch (_) { /* already gone */ } }
+      // Only the file this call created is removed, and only while it is still
+      // that file: a name swapped meanwhile is someone else's file.
+      const ours = fst && (() => { try { const l = fs.lstatSync(real); return l.dev === fst.dev && l.ino === fst.ino; } catch (_) { return false; } })();
+      if (!exists && ours) { try { fs.unlinkSync(real); } catch (_) { /* already gone */ } }
       return { refused: out + ': ' + why + '; nothing was written.' };
     }
     return { fd, real, where };
@@ -322,10 +330,11 @@ function createSecretsServer(opts = {}) {
     if (!args.template || !args.out) return denied('template and out are required');
     const readDeny = policy.readDenial(tpl, { cwd, home });
     if (readDeny) return denied(readDeny);
-    if (policy.classifyPath(out, { cwd, home })) {
-      const c = policy.classifyPath(out, { cwd, home });
-      if (c.kind === 'zn_state') return denied('cannot write into ~/.zn');
-    }
+    const dest = policy.classifyPath(out, { cwd, home });
+    if (dest && dest.kind === 'zn_state') return denied('cannot write into ~/.zn');
+    // The agents' hook and plugin settings are never written from here: a
+    // secret there could switch off the checks that protect it.
+    if (dest && dest.kind === 'agent_config') return denied('cannot write agent hook or plugin configuration (' + dest.reason + ')');
     let exists = false;
     try {
       const st = fs.lstatSync(out);
@@ -338,8 +347,11 @@ function createSecretsServer(opts = {}) {
     // its nearest existing directory (symlinks resolved) must be inside the
     // project's real path. Anything else is confirmed by the user on the
     // vault's own channel, like the first use of a command.
+    // A credential file is written only after the user confirms it, wherever it is.
     const needsConfirm = exists ? 'the file already exists and would be overwritten'
-      : (!insideProject(out) ? 'the file is outside the project' : null);
+      : !insideProject(out) ? 'the file is outside the project'
+        : dest && dest.kind === 'credential' ? 'the file is a credential file'
+          : null;
     const where = gitStatusOf(out);
     if (where !== 'ignored' && where !== 'outside') {
       return denied(out + ' is ' + (where === 'unknown' ? 'in an unknown git state (git not available)' : 'tracked by git (it could be committed)') +

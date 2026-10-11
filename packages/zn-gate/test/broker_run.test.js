@@ -163,12 +163,12 @@ test('zn run drops dynamic loader variables when secret values are injected, and
   const stdout = sink();
   const stderr = sink();
   const loaderEnv = { ...nodeEnv, LD_PRELOAD: '/nonexistent/hook.so', DYLD_INSERT_LIBRARIES: '/nonexistent/hook.dylib', LD_ZN_KEPT_WITHOUT_VALUES: 'kept' };
-  const probe = 'console.log(["LD_PRELOAD","DYLD_INSERT_LIBRARIES"].map((k) => process.env[k] === undefined ? "gone" : "present").join(" "))';
+  const probe = 'console.log(["LD_PRELOAD","DYLD_INSERT_LIBRARIES","GCONV_PATH"].map((k) => process.env[k] === undefined ? "gone" : "present").join(" "))';
   const code = await runBroker(['--secrets', 'DB_PASSWORD', '--', NODE, '-e', probe], {
-    vault, env: loaderEnv, stdout, stderr, stdin: { isTTY: false }, approvals: { isApproved: async () => true, recordApproval: async () => {} },
+    vault, env: { ...loaderEnv, GCONV_PATH: '/nonexistent/gconv' }, stdout, stderr, stdin: { isTTY: false }, approvals: { isApproved: async () => true, recordApproval: async () => {} },
   });
   assert.equal(code, 0, stderr.text());
-  assert.equal(stdout.text().trim(), 'gone gone');
+  assert.equal(stdout.text().trim(), 'gone gone gone');
   assert.equal((stderr.text().match(/removed .*LD_PRELOAD/g) || []).length, 1, 'said once');
   assert.ok(!stderr.text().includes('/nonexistent/hook'), 'the values of the variables are not printed');
 });

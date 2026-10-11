@@ -35,8 +35,10 @@ const { znError, loadVault, findProjectRoot } = require('../deps');
 
 const USAGE = 'usage: zn run [--secrets NAME[,NAME...]] [--agent ID] -- <command> [args...]';
 
-// Linux and macOS dynamic loader settings (LD_PRELOAD, DYLD_INSERT_LIBRARIES, ...).
-const LOADER_VAR = /^(LD_|DYLD_)/i;
+// Dynamic loader settings (LD_PRELOAD, DYLD_INSERT_LIBRARIES, ...) and glibc
+// settings that load code or files of the caller's choosing (GCONV_PATH loads
+// converter modules).
+const LOADER_VAR = /^(LD_|DYLD_)|^(GCONV_PATH|GLIBC_TUNABLES|LOCPATH|NLSPATH|HOSTALIASES|RES_OPTIONS)$/i;
 
 function splitList(v) {
   return String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -135,7 +137,7 @@ async function prepare(parsed, opts) {
   const meta = new Map((list || []).map((s) => [s.name, s]));
   const approvals = opts.approvals || approvalStore({ vault, znHome: opts.znHome });
   const found = exe.resolveExecutable(argv0, env);
-  const planted = markers.checkResolvedExecutable(found ? found.path : null, project);
+  const planted = markers.checkResolvedExecutable(found ? found.path : null, project, found ? found.real : undefined);
   // Open the file now: approvals are checked against this descriptor's
   // fingerprint, and the same descriptor is checked again before start.
   let opened = null;

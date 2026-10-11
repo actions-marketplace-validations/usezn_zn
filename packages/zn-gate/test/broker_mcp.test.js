@@ -165,7 +165,10 @@ test('secrets_render_file writes only to git-ignored paths and only file-mode se
   spawnSync('git', ['init', '-q'], { cwd: dir });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.npmrc\n');
   fs.writeFileSync(path.join(dir, 'npmrc.tpl'), '//registry.npmjs.org/:_authToken=__ZN_NPM_TOKEN__\n');
-  const srv = createSecretsServer({ vault: await vaultWith(), engine: fakeEngine, cwd: dir, home: dir });
+  // .npmrc holds a registry token: a credential file, so the user is asked.
+  const vault = await vaultWith();
+  vault.confirmFileWrite = async () => true;
+  const srv = createSecretsServer({ vault, engine: fakeEngine, cwd: dir, home: dir });
   const ok = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out: '.npmrc' });
   assert.equal(ok.isError, false, JSON.stringify(ok.data));
   assert.equal(fs.readFileSync(path.join(dir, '.npmrc'), 'utf8'), '//registry.npmjs.org/:_authToken=' + NPM + '\n');

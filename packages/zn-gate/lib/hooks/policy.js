@@ -76,20 +76,31 @@ const AGENT_CONFIG_RES = [
   [/(^|\/)\.opencode\/plugins?\//, 'OpenCode plugins'],
 ];
 
-// Windows and macOS file systems are case-insensitive by default.
-const CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin';
-const keyOf = (s) => (CASE_INSENSITIVE ? s.toLowerCase() : s);
+// Windows and macOS file systems are case-insensitive by default. Read on each
+// call, so tests can simulate those platforms on any system.
+function caseInsensitive() {
+  return process.platform === 'win32' || process.platform === 'darwin';
+}
+const keyOf = (s) => (caseInsensitive() ? s.toLowerCase() : s);
+/** The pattern, ignoring case where the platform does. */
+const ci = (re) => (caseInsensitive() && !re.flags.includes('i') ? new RegExp(re.source, re.flags + 'i') : re);
 
-/** $NAME, ${NAME}, $env:NAME and %NAME% from env. Unset credential variables are reported by name. */
+// Environment variables that name agent configuration. Unset, they cannot be
+// resolved here, so a path that uses them is treated as agent configuration.
+const AGENT_ENV = new Set(['CODEX_HOME', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
+
+/** $NAME, ${NAME}, $env:NAME and %NAME% from env. Unset credential or agent variables are reported by name. */
 function expandEnv(p, env) {
   let credentialVar = null;
+  let agentVar = null;
   const text = p.replace(ENV_REF_RE, (m, a, b, c, d) => {
     const name = a || b || c || d;
     if (env[name]) return env[name];
     if (CRED_ENV.includes(name.toUpperCase())) credentialVar = name.toUpperCase();
+    if (AGENT_ENV.has(name.toUpperCase())) agentVar = name.toUpperCase();
     return m;
   });
-  return { text, credentialVar };
+  return { text, credentialVar, agentVar };
 }
 
 /** Credential paths the environment names, as files and as directories (keys, not spelled as typed). */
@@ -107,21 +118,72 @@ function credentialEnvPaths(env, home, cwd) {
   return { files, dirs: [...dirs] };
 }
 
+/** The project root above cwd (the directory with .git), or cwd when there is none. */
+function projectRootOf(cwd) {
+  let cur = path.resolve(cwd);
+  for (;;) {
+    if (fs.existsSync(path.join(cur, '.git'))) return cur;
+    const parent = path.dirname(cur);
+    if (parent === cur) return path.resolve(cwd);
+    cur = parent;
+  }
+}
+
+/** Keys of a path as typed and where it really leads. */
+function keysOf(p) {
+  return [...new Set([keyOf(slash(p)), keyOf(slash(realTargetOf(p)))])];
+}
+
 /**
- * Classify a resolved absolute path. `creds` comes from credentialEnvPaths.
+ * Agent configuration: the directories that hold hook and plugin settings
+ * (in the home directory, the project and the locations the environment
+ * names), and the single files the environment names.
  */
-function classifyResolved(abs, { home, creds }) {
+function agentContext(home, cwd, env) {
+  const dirs = new Set();
+  const files = new Set();
+  const rel = ['.claude', '.codex', '.cursor', '.opencode', path.join('.config', 'opencode')];
+  for (const root of [home, projectRootOf(cwd)]) {
+    for (const r of rel) for (const k of keysOf(path.join(root, r))) dirs.add(k);
+  }
+  const at = (p) => path.resolve(cwd, expandHome(p, home));
+  if (env.CODEX_HOME) for (const k of keysOf(at(env.CODEX_HOME))) dirs.add(k);
+  if (env.OPENCODE_CONFIG_DIR) for (const k of keysOf(at(env.OPENCODE_CONFIG_DIR))) dirs.add(k);
+  if (env.XDG_CONFIG_HOME) for (const k of keysOf(path.join(at(env.XDG_CONFIG_HOME), 'opencode'))) dirs.add(k);
+  if (env.OPENCODE_CONFIG) for (const k of keysOf(at(env.OPENCODE_CONFIG))) files.add(k);
+  return { dirs: [...dirs], files };
+}
+
+/** Everything a classification needs, from the options of one call. */
+function contextOf(opts = {}) {
+  const home = opts.home || os.homedir();
+  const cwd = opts.cwd || process.cwd();
+  const env = opts.env || process.env;
+  return { home, cwd, env, creds: credentialEnvPaths(env, home, cwd), agent: agentContext(home, cwd, env) };
+}
+
+/**
+ * Classify a resolved absolute path. `ctx` comes from contextOf.
+ */
+function classifyResolved(abs, ctx) {
+  const { home, creds, agent } = ctx;
   const s = keyOf(slash(abs));
   const h = keyOf(slash(path.resolve(home)));
   if (s === h + '/.zn' || s.startsWith(h + '/.zn/')) return { kind: 'zn_state', reason: 'zn keeps its vault and audit log in ~/.zn' };
-  for (const [re, reason] of AGENT_CONFIG_RES) if (re.test(s)) return { kind: 'agent_config', reason };
+  for (const [re, reason] of AGENT_CONFIG_RES) if (ci(re).test(s)) return { kind: 'agent_config', reason };
+  // The directory itself (`cd ~/.claude`, `mv ~/.codex`, `rm -r ~/.cursor`) and the files directly in it.
+  if (agent.dirs.includes(s)) return { kind: 'agent_config', reason: 'an agent configuration directory' };
+  if (agent.dirs.some((d) => s.startsWith(d + '/') && !s.slice(d.length + 1).includes('/'))) {
+    return { kind: 'agent_config', reason: 'a file in an agent configuration directory' };
+  }
+  if (agent.files.has(s)) return { kind: 'agent_config', reason: 'the agent configuration file the environment names' };
   if (s.endsWith('.pub')) return null;
   if (creds.files.has(s)) return { kind: 'credential', reason: 'a file named by a credential environment variable' };
   for (const d of creds.dirs) if (s === d || s.startsWith(d + '/')) return { kind: 'credential', reason: 'a directory named by a credential environment variable' };
-  for (const [re, reason] of CREDENTIAL_RES) if (re.test(s)) return { kind: 'credential', reason };
+  for (const [re, reason] of CREDENTIAL_RES) if (ci(re).test(s)) return { kind: 'credential', reason };
   if (s === h + '/.npmrc' || s === h + '/.pypirc') return { kind: 'credential', reason: 'package registry token' };
   const base = path.basename(abs);
-  if (DOTENV_BASENAME_RE.test(base) && !DOTENV_SAFE_RE.test(base)) return { kind: 'dotenv', reason: '.env file' };
+  if (ci(DOTENV_BASENAME_RE).test(base) && !ci(DOTENV_SAFE_RE).test(base)) return { kind: 'dotenv', reason: '.env file' };
   return null;
 }
 
@@ -141,17 +203,17 @@ function resolvedOf(p, opts = {}) {
  */
 function classifyPath(p, opts = {}) {
   if (typeof p !== 'string' || !p) return null;
-  const home = opts.home || os.homedir();
-  const cwd = opts.cwd || process.cwd();
-  const env = opts.env || process.env;
-  const expanded = expandEnv(expandHome(p, home), env);
+  const ctx = contextOf(opts);
+  const expanded = expandEnv(expandHome(p, ctx.home), ctx.env);
   if (expanded.credentialVar) {
     return { kind: 'credential', reason: 'the path comes from $' + expanded.credentialVar + ', which names a credential file' };
   }
-  const abs = path.resolve(cwd, expanded.text);
-  const creds = credentialEnvPaths(env, home, cwd);
+  if (expanded.agentVar) {
+    return { kind: 'agent_config', reason: 'the path comes from $' + expanded.agentVar + ', the agent configuration location' };
+  }
+  const abs = path.resolve(ctx.cwd, expanded.text);
   for (const candidate of new Set([abs, realTargetOf(abs)])) {
-    const c = classifyResolved(candidate, { home, creds });
+    const c = classifyResolved(candidate, ctx);
     if (c) return c;
   }
   return null;
@@ -198,8 +260,12 @@ function globRegExp(pattern) {
 // is treated as naming that kind of file. Under the home directory and the project.
 const GLOB_EXAMPLES = ['.aws/credentials', '.aws/config', '.ssh/id_rsa', '.ssh/id_ed25519', '.ssh/my_key', '.netrc', '_netrc',
   '.docker/config.json', '.config/gh/hosts.yml', '.git-credentials', '.pgpass', '.kube/config', '.config/gcloud/credentials.db',
-  '.azure/accessTokens.json', '.npmrc', '.pypirc', '.zn/secrets.age', '.claude/settings.json', '.codex/hooks.json',
-  '.cursor/hooks.json', '.config/opencode/opencode.json', '.config/opencode/plugins/zn.js'];
+  '.config/gcloud/access_tokens.db', '.config/gcloud/application_default_credentials.json',
+  '.azure/accessTokens.json', '.azure/msal_token_cache.json', '.npmrc', '.pypirc', '.zn/secrets.age', '.claude/settings.json',
+  '.codex/hooks.json', '.cursor/hooks.json', '.config/opencode/opencode.json', '.config/opencode/plugins/zn.js'];
+
+// Most entries a glob may read from the disk before it is refused as too broad.
+const GLOB_DISK_LIMIT = 5000;
 const PROJECT_EXAMPLES = ['.env', '.env.local', '.claude/settings.json', 'opencode.json'];
 
 /**
@@ -208,25 +274,69 @@ const PROJECT_EXAMPLES = ['.env', '.env.local', '.claude/settings.json', 'openco
  */
 function globClass(word, opts = {}) {
   if (!GLOB_RE.test(word)) return null;
-  const home = opts.home || os.homedir();
-  const cwd = opts.cwd || process.cwd();
-  const env = opts.env || process.env;
+  const ctx = contextOf(opts);
   const alts = expandBraces(word);
   if (alts === null) return { kind: 'credential', reason: 'a brace pattern too broad to check' };
-  const creds = credentialEnvPaths(env, home, cwd);
-  const examples = [...GLOB_EXAMPLES.map((e) => path.join(home, e)), ...PROJECT_EXAMPLES.map((e) => path.join(cwd, e))];
+  const examples = [...GLOB_EXAMPLES.map((e) => path.join(ctx.home, e)), ...PROJECT_EXAMPLES.map((e) => path.join(ctx.cwd, e))];
   for (const alt of alts) {
-    const e = expandEnv(expandHome(alt, home), env);
+    const e = expandEnv(expandHome(alt, ctx.home), ctx.env);
     if (e.credentialVar) return { kind: 'credential', reason: 'a pattern built from $' + e.credentialVar };
-    const re = globRegExp(keyOf(slash(path.resolve(cwd, e.text))));
+    if (e.agentVar) return { kind: 'agent_config', reason: 'a pattern built from $' + e.agentVar };
+    const abs = slash(path.resolve(ctx.cwd, e.text));
+    // Any pattern whose last name starts with .env names a .env file.
+    if (keyOf(path.posix.basename(abs)).startsWith('.env')) return { kind: 'credential', reason: 'a pattern that matches a .env file' };
+    const re = globRegExp(keyOf(abs));
     for (const ex of examples) {
-      const c = classifyResolved(ex, { home, creds });
+      const c = classifyResolved(ex, ctx);
       if (c && re.test(keyOf(slash(ex)))) {
         return c.kind === 'dotenv' ? { kind: 'credential', reason: 'a pattern that matches a .env file' } : c;
       }
     }
+    // What the pattern matches on the disk now, read with a limit.
+    const hits = globOnDisk(abs);
+    if (hits === 'too-broad') return { kind: 'credential', reason: 'a pattern too broad to check' };
+    for (const hit of hits || []) {
+      for (const cand of new Set([hit, realTargetOf(hit)])) {
+        const c = classifyResolved(cand, ctx);
+        if (c) return c.kind === 'dotenv' ? { kind: 'credential', reason: 'a pattern that matches a .env file' } : c;
+      }
+    }
   }
   return null;
+}
+
+/**
+ * The paths a glob matches on the disk now: its literal start is read, and
+ * each glob component is matched against the names in its directory.
+ * Returns the matches, 'too-broad' past GLOB_DISK_LIMIT entries, or null.
+ */
+function globOnDisk(abs) {
+  const parts = abs.split('/');
+  let i = 0;
+  while (i < parts.length && !GLOB_RE.test(parts[i])) i++;
+  if (i === parts.length) return [abs];
+  let dirs = [parts.slice(0, i).join('/') || '/'];
+  let budget = GLOB_DISK_LIMIT;
+  const join = (d, n) => (d.endsWith('/') ? d + n : d + '/' + n);
+  for (; i < parts.length; i++) {
+    const seg = parts[i];
+    const next = [];
+    if (!GLOB_RE.test(seg)) {
+      for (const d of dirs) next.push(join(d, seg));
+    } else {
+      const segRe = globRegExp(keyOf(seg));
+      for (const d of dirs) {
+        let names;
+        try { names = fs.readdirSync(d); } catch (_) { continue; }
+        budget -= names.length;
+        if (budget < 0) return 'too-broad';
+        for (const n of names) if (segRe.test(keyOf(n))) next.push(join(d, n));
+      }
+    }
+    dirs = next;
+    if (dirs.length === 0) return null;
+  }
+  return dirs;
 }
 
 /** A typed word: a path, or a glob that could name one. */
@@ -284,7 +394,7 @@ const DQ_ESCAPABLE = /["\\$`\n]/;
  *   substitution: true if $( or ` appears inside the first command
  *   words[].text is the word with quotes removed (approximation of bash)
  */
-function scanFirstCommand(cmd) {
+function scanFirstCommand(cmd, posix = false) {
   const s = String(cmd);
   const words = [];
   let i = 0;
@@ -322,7 +432,8 @@ function scanFirstCommand(cmd) {
       if (s[i + 1] === '\n') { i++; continue; }
       // A backslash before a letter or a dot is kept: on Windows it is the path
       // separator (C:\Users\me\.aws\credentials), and the escape would eat it.
-      if (!ESCAPABLE.test(s[i + 1])) { pushChar(ch, i); continue; }
+      // bashDenial scans both readings (posix: every backslash escapes).
+      if (!posix && !ESCAPABLE.test(s[i + 1])) { pushChar(ch, i); continue; }
       pushChar(s[i + 1], i);
       i++;
       continue;
@@ -345,12 +456,12 @@ function scanFirstCommand(cmd) {
 }
 
 /** Every word of the whole command (rough), with a flag for > / >> targets and the command name of its segment. */
-function allWords(cmd) {
+function allWords(cmd, posix = false) {
   const out = [];
   let rest = String(cmd);
   let guard = 0;
   while (rest.length && guard++ < 1000) {
-    const scan = scanFirstCommand(rest);
+    const scan = scanFirstCommand(rest, posix);
     const head = commandName(scan.words);
     for (let k = 0; k < scan.words.length; k++) {
       const w = scan.words[k];
@@ -370,8 +481,9 @@ function commandName(words) {
 }
 
 // Commands that only read their arguments. Any other command may write them.
-const READ_ONLY_CMDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ls', 'stat', 'wc', 'diff',
-  'file', 'bat', 'jq', 'type', 'gc', 'get-content', 'select-string', 'findstr', 'dir', 'tree', 'pwd', 'echo']);
+// (less and tree are not here: tree writes its output with -o, less can run commands.)
+const READ_ONLY_CMDS = new Set(['cat', 'head', 'tail', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ls', 'stat', 'wc', 'diff',
+  'file', 'bat', 'jq', 'type', 'gc', 'get-content', 'select-string', 'findstr', 'dir', 'pwd', 'echo']);
 const AGENT_CONFIG_MENTION_RE = /\.claude\/settings|\.codex\/|\.cursor\/hooks|opencode\.jsonc?|\.opencode\/|\.config\/opencode\//i;
 
 const RESERVED_WORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', '{', '}', '!', '[[', 'time', 'coproc', 'select', 'eval', 'exec', 'source', '.', 'sudo', 'doas', 'env', 'xargs', 'nohup', 'command', 'builtin', 'export', 'declare', 'local', 'readonly', 'typeset', 'alias', 'set', 'unset', 'let']);
@@ -549,7 +661,9 @@ function bashDenial(cmd, opts = {}) {
     return 'zn: `zn ' + admin + '` manages secret values and must be run by the user in their own terminal, not by an agent. ' +
       'Ask the user to run it.';
   }
-  const words = allWords(cmd);
+  // The command is read twice: a backslash before a letter is a Windows path
+  // separator, or a bash escape. A word protected in either reading is refused.
+  const words = [...allWords(cmd, false), ...allWords(cmd, true)];
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   if (/\$\(|`/.test(String(cmd))) {

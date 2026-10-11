@@ -101,7 +101,8 @@ function respond(d) {
       const msg = 'zn: could not read the file this call writes, so zn cannot check it. Name the file explicitly.';
       return { permission: 'deny', user_message: msg, agent_message: msg };
     }
-    return { permission: 'allow' };
+    // No opinion, not "allow": an allow could skip Cursor's own confirmations.
+    return null;
   }
   if (h === 'beforeReadFile') {
     if (d.decision === 'deny') return { permission: 'deny', user_message: d.message || 'Blocked by zn' };

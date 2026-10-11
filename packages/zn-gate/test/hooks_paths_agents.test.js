@@ -201,8 +201,9 @@ test('Cursor preToolUse checks the file a write, delete or grep names, and fails
   assert.equal(del.output.permission, 'deny');
   const grep = await run(cursor, pre('Grep', { pattern: 'x', path: path.join(home, '.aws', 'credentials') }), { home });
   assert.equal(grep.output.permission, 'deny');
+  // An allowed write gets no answer: "allow" could skip Cursor's own confirmations.
   const ok = await run(cursor, pre('Write', { file_path: path.join(proj, 'src', 'a.js'), content: 'x' }), { home });
-  assert.equal(ok.output.permission, 'allow');
+  assert.equal(ok.output, null);
   const noPath = await run(cursor, pre('Write', { content: 'x' }), { home });
   assert.equal(noPath.output.permission, 'deny', 'a write whose path cannot be read is refused');
 });

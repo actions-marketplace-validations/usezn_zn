@@ -248,8 +248,9 @@ function isInterpreter(command) {
 }
 
 /**
- * The program that actually runs (the resolved real path, so a symlink or a
- * renamed copy is judged by what it is, not by what it was called).
+ * The program that actually runs: the resolved real path, so a symlink is
+ * judged by the file it points to. A copy under another name is judged by
+ * its own name only.
  */
 function isInterpreterPath(file) {
   return INTERPRETER_BASES.has(programBase(file));

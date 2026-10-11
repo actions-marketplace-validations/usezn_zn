@@ -128,9 +128,10 @@ function isInside(child, parent) {
  * (`npx prisma`, `npm run migrate`), which zn flags as an interpreter.
  * Returns an error message or null.
  */
-function checkResolvedExecutable(resolved, projectRoot) {
+function checkResolvedExecutable(resolved, projectRoot, resolvedReal) {
   if (!resolved) return 'command not found on PATH';
-  const real = realOf(resolved);
+  // The caller passes the real path it already resolved, so it is not resolved twice.
+  const real = resolvedReal || realOf(resolved);
   const tmp = realOf(os.tmpdir());
   if (isInside(real, tmp)) return 'resolves to a file in the temp directory';
   // Both the name as found on PATH and the real file are compared with the

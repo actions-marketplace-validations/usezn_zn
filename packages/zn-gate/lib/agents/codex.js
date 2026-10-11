@@ -54,7 +54,8 @@ const HOOK_TIMEOUT_S = 30;
 /* apply_patch: the files it touches and the text it adds. */
 function patchFiles(patch) {
   const files = [];
-  const re = /^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm;
+  // Indented markers count too: a patch that puts spaces before them is still applied.
+  const re = /^\s*\*\*\* (?:Add|Update|Delete) File: (.+)$|^\s*\*\*\* Move to: (.+)$/gm;
   let m;
   while ((m = re.exec(String(patch || ''))) !== null) files.push((m[1] || m[2]).trim());
   return files;
