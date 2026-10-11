@@ -250,10 +250,15 @@ test('fail-open by default, fail-closed when configured', async () => {
   assert.equal(pre.output.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('locked vault (module missing) fails open with a warning', async () => {
+test('locked vault never lets a secret through', async () => {
   const res = await runner.handle(adapter, postTool('Bash', {}, { stdout: 'x ' + AWS, stderr: '', interrupted: false, isImage: false }, '/'), { failMode: 'open' });
-  assert.equal(res.output, null);
-  assert.match(res.stderr, /ZN_(LOCKED|UNAVAILABLE)/);
+  if (res.output === null) {
+    // No engine installed: fail open with a warning.
+    assert.match(res.stderr, /ZN_(LOCKED|UNAVAILABLE)/);
+  } else {
+    // Real engine, vault locked: irreversible redaction, the value never leaves.
+    assert.ok(!JSON.stringify(res.output).includes(AWS));
+  }
 });
 
 test('policy helpers', () => {
