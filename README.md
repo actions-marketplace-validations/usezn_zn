@@ -1,5 +1,11 @@
 <p align="center">
-  <img src="assets/banner.png" alt="zn" width="100%"/>
+  <a href="https://usezn.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/zn-banner-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="assets/brand/zn-banner-light.png">
+      <img src="assets/brand/zn-banner-light.png" alt="zn" width="100%">
+    </picture>
+  </a>
 </p>
 
 <h1 align="center">zn-gate</h1>
@@ -72,8 +78,8 @@ pip install zn-gate
 Send a tool output with a fake AWS key (AWS's documentation example) and a database password through zn-gate, exactly as your agent would. Requires zn-gate 1.4.1 or later.
 
 ```bash
-printf '%s
-' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_tool_result","arguments":{"tool_name":"read_file","content":"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nDATABASE_URL=postgres://app:hunter2@db:5432/main"}}}' \n  | npx -y zn-gate@latest mcp | jq -r '.result.content[0].text'
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_tool_result","arguments":{"tool_name":"read_file","content":"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nDATABASE_URL=postgres://app:hunter2@db:5432/main"}}}' \
+  | npx -y zn-gate@latest mcp | jq -r '.result.content[0].text'
 ```
 
 `jq` only pretty-prints; without it, look for `sanitized_content` in the raw JSON. That field is what the model would see:
@@ -96,6 +102,22 @@ npx -y zn-gate test
 
 ## What each piece does
 
+Where zn-gate sits in a tool call, as an MCP server or as the `shield` proxy around other servers:
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant Z as zn-gate (on your machine)
+    participant T as Tool or MCP server
+    A->>Z: analyze_prompt
+    Z-->>A: allow, or block with the rule that fired
+    A->>Z: check_tool_call (name, arguments)
+    Z-->>A: allow with secrets masked, or block
+    A->>T: run the tool
+    T-->>Z: output (check_tool_result, or through shield)
+    Z-->>A: output with secrets redacted, or neutralized if it carries an injection
+```
+
 ### Scrubber: secrets stay out of the model's context
 - **Today:** redacts AWS keys, OpenAI and Anthropic keys, GitHub tokens, JWTs, private keys and database URL passwords in everything that passes through zn-gate: tool output checked with `check_tool_result`, tool arguments checked with `check_tool_call`, and output of MCP servers wrapped by `zn-gate shield` / `init`. Python: `sanitize_tool_result`, `@guard(mask_secrets=True)` and the framework integrations.
 - **Not covered today:** your agent's built-in tools (for example a native file read in Claude Code) unless their output goes through zn-gate.
@@ -113,6 +135,21 @@ npx -y zn-gate test
 ## What leaves your machine
 
 **Nothing, by default.**
+
+```mermaid
+flowchart LR
+    subgraph local["Your machine"]
+        A["Agent"]
+        Z["zn-gate<br/>rules engine + secret redaction"]
+        T["Tools and MCP servers<br/>files, shell, web, databases"]
+    end
+    C["api.usezn.com<br/>Galvanize-60M classifier"]
+    A -- "tool calls and prompts" --> Z
+    Z -- "allowed calls, secrets masked" --> T
+    T -- "tool output" --> Z
+    Z -- "redacted output, verdicts" --> A
+    Z -. "prompts only, redacted,<br/>only with ZN_CLOUD=1 and ZN_API_KEY" .-> C
+```
 
 | Data | Evaluated | Sent anywhere? |
 |---|---|---|
@@ -152,7 +189,7 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 ```yaml
 - uses: usezn/zn@main
   with:
-    version: '1.4.0'
+    version: '1.4.1'
     path: './prompts'
     fail-on-threat: 'true'
     format: 'github'
@@ -164,6 +201,7 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 - `packages/zn-gate-py`: Python SDK and CLI (PyPI).
 - `src/`: Rust gateway daemon.
 - `bench/`: benchmark scripts and results.
+- `assets/brand/`: logo files (SVG master and light/dark variants, PNG lockup and banners).
 
 ## FAQ
 

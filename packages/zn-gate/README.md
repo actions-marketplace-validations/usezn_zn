@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="https://usezn.com"><img src="https://raw.githubusercontent.com/usezn/zn/main/assets/brand/zn-logo-lime-on-forest.png" alt="zn" width="200"></a>
+</p>
+
 # zn-gate
 
 [![CI](https://github.com/usezn/zn/actions/workflows/ci.yml/badge.svg)](https://github.com/usezn/zn/actions/workflows/ci.yml)
@@ -133,7 +137,7 @@ npx -y zn-gate test
 | MCP tool and parameter descriptions (`shield`) | Locally | **Never**, in any configuration |
 | Prompts (`analyze_prompt`, `zn-gate analyze`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. Secrets are redacted locally before sending. |
 
-`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1`. `npx -y zn-gate status` prints what your configuration sends.
+`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1`. `npx -y zn-gate status` prints what your configuration sends. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
 
 > **1.4.0 and earlier:** with `ZN_API_KEY` set, tool output and tool-call arguments not blocked locally were sent to `api.usezn.com` without redaction. 1.4.1 removes that path. See the [CHANGELOG](https://github.com/usezn/zn/blob/main/CHANGELOG.md).
 

@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="https://usezn.com"><img src="https://raw.githubusercontent.com/usezn/zn/main/assets/brand/zn-logo-lime-on-forest.png" alt="zn" width="200"></a>
+</p>
+
 # zn-gate (Python)
 
 [![CI](https://github.com/usezn/zn/actions/workflows/ci.yml/badge.svg)](https://github.com/usezn/zn/actions/workflows/ci.yml)
@@ -70,7 +74,7 @@ print(r.verdict)           # allow
 
 **Nothing, by default.** `evaluate`, `guard`, `check_tool_call`, `check_tool_result`, `sanitize_tool_result`, `redact_secrets` and the LangChain / CrewAI / LlamaIndex / Promptfoo integrations are always local.
 
-The only function that can reach the network is `analyze()`, and only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. The text is secret-redacted locally before it is sent. `ZN_API_KEY` alone enables nothing, and `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `zn-gate status` prints what your configuration sends.
+The only function that can reach the network is `analyze()`, and only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. The text is secret-redacted locally before it is sent. `ZN_API_KEY` alone enables nothing, and `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `zn-gate status` prints what your configuration sends. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
 
 > **1.4.0 and earlier:** with `ZN_API_KEY` set, `analyze()` sent the text to `api.usezn.com` without redaction. 1.4.1 makes cloud analysis opt-in (`ZN_CLOUD=1`) and redacted.
 
