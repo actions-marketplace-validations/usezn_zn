@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const exe = require('../exe');
 
 const NAME_SOURCE = '[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*';
 const MARKER_SOURCE = '__ZN_(' + NAME_SOURCE + ')__';
@@ -112,21 +113,7 @@ function matchAllowCommands(allowCommands, argv) {
 
 /** Locate an executable on PATH (PATHEXT aware on Windows). */
 function whichSync(cmd, envPath) {
-  if (hasPathSeparator(cmd)) return fs.existsSync(cmd) ? path.resolve(cmd) : null;
-  const dirs = String(envPath || '').split(path.delimiter).filter(Boolean);
-  const exts = process.platform === 'win32'
-    ? ['', ...String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').map((e) => e.toLowerCase())]
-    : [''];
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const full = path.join(dir, cmd + ext);
-      try {
-        const st = fs.statSync(full);
-        if (st.isFile()) return full;
-      } catch (_) { /* keep looking */ }
-    }
-  }
-  return null;
+  return exe.whichSync(cmd, envPath);
 }
 
 function isInside(child, parent) {

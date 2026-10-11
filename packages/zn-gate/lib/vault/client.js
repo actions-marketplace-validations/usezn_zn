@@ -14,8 +14,8 @@
  *   updateSecretMeta(name, meta)                  policy change; the value is not touched.
  *       A change that widens the policy waits for the user to confirm it
  *       on the daemon's channel (see lib/vault/confirm.js).
- *   isApproved(project, secret, argv0) -> bool     first-use approval of a command
- *   recordApproval(project, secret, argv0)
+ *   isApproved(project, secret, argv0[, executable]) -> bool   first-use approval of a command
+ *   recordApproval(project, secret, argv0[, executable])
  *       Also accepted: (secret, command), the broker's form; the project is
  *       then the nearest parent of the current directory with .git.
  *       Recording one waits for the user to confirm it on the daemon's
@@ -23,6 +23,9 @@
  *       The approval is bound to the real path of the executable that argv0
  *       resolves to on this PATH; if it later resolves elsewhere (a shadowing
  *       binary, a replaced symlink), the approval no longer applies.
+ *       `zn run` passes executable = {real, fp}: the real path it resolved
+ *       and the fingerprint of the file it opened, so the daemon checks the
+ *       very file that will be started.
  *
  * Extras: status(), isUnlocked(), lock(), auditVerify(), createClient({home}), close().
  *
@@ -36,6 +39,7 @@ const net = require('net');
 const path = require('path');
 const crypto = require('crypto');
 const store = require('./store');
+const exe = require('../exe');
 const { CODES, znError } = require('../errors');
 
 const PROTOCOL = 1;
@@ -68,39 +72,11 @@ function safeEqualHex(a, b) {
   return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
 
-/* First word of a command, skipping VAR=value assignments. */
-function commandWord(command) {
-  const words = String(command || '').trim().split(/\s+/);
-  for (const w of words) if (w && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) return w.replace(/^["']|["']$/g, '');
-  return '';
-}
-
-/* Real path of the executable argv0 runs, on the given PATH; null if none. */
+/* Real path of the executable argv0 runs, on the given PATH; null if none.
+ * Same resolver as `zn run` (lib/exe.js), in the form approvals use. */
 function resolveExecutable(argv0, env) {
-  const e = env || process.env;
-  const name = commandWord(argv0);
-  if (!name) return null;
-  const isWin = process.platform === 'win32';
-  const exts = isWin ? ['', ...String(e.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)] : [''];
-  const candidates = [];
-  if (name.includes('/') || (isWin && name.includes('\\'))) {
-    for (const x of exts) candidates.push(path.resolve(name + x));
-  } else {
-    for (const dir of String(e.PATH || e.Path || '').split(path.delimiter)) {
-      if (!dir) continue;
-      for (const x of exts) candidates.push(path.join(dir, name + x));
-    }
-  }
-  for (const c of candidates) {
-    try {
-      const st = fs.statSync(c);
-      if (!st.isFile()) continue;
-      if (!isWin) fs.accessSync(c, fs.constants.X_OK);
-      const real = fs.realpathSync(c);
-      return isWin ? real.toLowerCase() : real;
-    } catch (err) { /* next */ }
-  }
-  return null;
+  const r = exe.resolveExecutable(argv0, env);
+  return r ? exe.approvalPath(r.real) : null;
 }
 
 function findProjectRoot(dir) {
@@ -113,15 +89,23 @@ function findProjectRoot(dir) {
   }
 }
 
-/* (project, secret, argv0) or the broker's (secret, command). */
+/* (project, secret, argv0[, executable]) or the broker's (secret, command).
+ * executable = {real, fp}: the file `zn run` already resolved and opened.
+ * The daemon then checks that exact file (and, with fp, the descriptor zn
+ * run holds) instead of resolving the name again. */
 function approvalArgs(args) {
   let project;
   let secret;
   let command;
-  if (args.length >= 3 && args[2] !== undefined) [project, secret, command] = args;
+  let executable = null;
+  if (args.length >= 3 && args[2] !== undefined) [project, secret, command, executable] = args;
   else { [secret, command] = args; project = findProjectRoot(process.cwd()); }
-  const argv0 = commandWord(command);
-  return [project, secret, argv0.split(/[\\/]/).pop(), resolveExecutable(argv0)];
+  const argv0 = exe.commandWord(command);
+  const name = argv0.split(/[\\/]/).pop();
+  if (executable && typeof executable === 'object' && typeof executable.real === 'string') {
+    return [project, secret, name, exe.approvalPath(executable.real), typeof executable.fp === 'string' ? executable.fp : null];
+  }
+  return [project, secret, name, resolveExecutable(argv0)];
 }
 
 function lockedError(detail) {
@@ -246,6 +230,7 @@ class VaultClient {
   exactValues(project) { return this.call('exactValues', [project]); }
   audit(event) { return this.call('audit', [event || {}]); }
   updateSecretMeta(name, meta) { return this.call('updateSecretMeta', [name, meta || {}]); }
+  // Optional fourth argument: {real, fp} of the executable zn run resolved.
   isApproved(project, secret, argv0) { return this.call('isApproved', approvalArgs(Array.from(arguments))); }
   recordApproval(project, secret, argv0) { return this.call('recordApproval', approvalArgs(Array.from(arguments))); }
   status() { return this.call('status', []); }

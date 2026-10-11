@@ -35,9 +35,45 @@ const { spawn } = require('child_process');
 
 const DEFAULT_TIMEOUT_MS = 120000;
 const MAX_TEXT = 1500;
+const MAX_FIELD = 300;
 
+// Control, line-break and invisible formatting characters (bidi overrides,
+// zero-width, soft hyphen): they could fake extra lines or reorder text.
+const INVISIBLE = '\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff\\ufff9-\\ufffb';
+const INVISIBLE_RE = new RegExp('[' + INVISIBLE + ']', 'g');
+const CLEAN_RE = new RegExp('[' + INVISIBLE.replace('\\u0000-\\u001f', '\\u0000-\\u0009\\u000b-\\u001f') + ']', 'g');
+
+/* Free text written by zn itself: keeps newlines, drops other controls. */
 function clean(text) {
-  return String(text || '').replace(/[\u0000-\u0008\u000b-\u001f\u007f\u001b]/g, ' ').slice(0, MAX_TEXT);
+  return String(text || '').replace(/\r\n?/g, '\n').replace(CLEAN_RE, ' ').slice(0, MAX_TEXT);
+}
+
+/* A value that came from a client (a path, a project): one visible line,
+ * invisible characters shown as \uXXXX, long values shortened in the middle
+ * so both ends stay visible. */
+function field(value, max) {
+  const limit = max || MAX_FIELD;
+  let s = String(value == null ? '' : value).replace(INVISIBLE_RE, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+  if (s.length > limit) {
+    const keep = limit - 3;
+    s = s.slice(0, Math.ceil(keep / 2)) + '...' + s.slice(s.length - Math.floor(keep / 2));
+  }
+  return s;
+}
+
+/**
+ * Text of a request. Structured requests ({warnings, fields, footer}) put
+ * the warnings first and in full, then one line per field: no field can add
+ * lines or push the warnings out. Plain requests ({message}) are cleaned.
+ */
+function render(req) {
+  const r = req || {};
+  if (!Array.isArray(r.fields)) return clean(r.message);
+  const lines = [];
+  for (const w of r.warnings || []) lines.push(field(w, 600));
+  for (const [label, value] of r.fields) lines.push(field(label, 40) + ': ' + field(value));
+  if (r.footer) lines.push(field(r.footer, 200));
+  return lines.join('\n');
 }
 
 /* ------------------------------ none ------------------------------ */
@@ -90,7 +126,7 @@ function ttyChannel(opts = {}) {
       };
       const timer = setTimeout(() => { output.write('\n  (no answer)'); finish(false); }, timeoutMs);
       if (timer.unref) timer.unref();
-      output.write('\n\u0007zn: ' + clean(req.title) + '\n' + clean(req.message).replace(/^/gm, '    ') + '\n  Allow? [y/N] ');
+      output.write('\n\u0007zn: ' + field(req.title, 200) + '\n' + render(req).replace(/^/gm, '    ') + '\n  Allow? [y/N] ');
       if (typeof input.setEncoding === 'function') input.setEncoding('utf8');
       input.on('data', onData);
       if (typeof input.resume === 'function') input.resume();
@@ -131,8 +167,8 @@ function guiCommand(req, opts = {}) {
   const platform = opts.platform || process.platform;
   const has = opts.exists || exists;
   const seconds = Math.max(5, Math.round((opts.timeoutMs || DEFAULT_TIMEOUT_MS) / 1000));
-  const title = 'zn: ' + clean(req.title).slice(0, 120);
-  const text = clean(req.message);
+  const title = 'zn: ' + field(req.title, 120);
+  const text = render(req);
   if (platform === 'darwin') {
     if (!has('/usr/bin/osascript')) return null;
     const script = [
@@ -230,6 +266,8 @@ module.exports = {
   chooseChannel,
   guiCommand,
   guiAvailable,
+  render,
+  field,
   NO_CHANNEL,
   DEFAULT_TIMEOUT_MS,
 };

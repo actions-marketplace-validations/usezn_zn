@@ -23,10 +23,14 @@ function approvalStore({ vault } = {}) {
       },
     };
   }
+  // ctx = {project, executable: {real, fp}} from `zn run`: the project it
+  // computed and the file it resolved and opened. The daemon checks that
+  // file, not whatever the name resolves to in the daemon or the client.
+  const full = (s, c, ctx) => (ctx && ctx.project != null ? [ctx.project, s, c, ctx.executable || undefined] : [s, c]);
   return {
     kind: 'vault',
-    isApproved: (s, c) => vault.isApproved(s, c),
-    recordApproval: (s, c) => vault.recordApproval(s, c),
+    isApproved: (s, c, ctx) => vault.isApproved(...full(s, c, ctx)),
+    recordApproval: (s, c, ctx) => vault.recordApproval(...full(s, c, ctx)),
   };
 }
 

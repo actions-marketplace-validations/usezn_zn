@@ -76,8 +76,17 @@ function createFakeVault(opts = {}) {
     // channel (opts.confirm, default yes) and refuses when they decline.
     const confirm = opts.confirm || (async () => true);
     vault.confirmations = 0;
-    vault.isApproved = async (s, c) => approvals.some((a) => a.s === s && a.c === c);
-    vault.recordApproval = async (s, c) => {
+    vault.calls = [];
+    // (secret, command) or the client's (project, secret, command, executable).
+    const args = (a) => (a.length >= 3 ? { s: a[1], c: a[2], project: a[0], executable: a[3] } : { s: a[0], c: a[1] });
+    vault.isApproved = async (...a) => {
+      const { s, c } = args(a);
+      vault.calls.push({ op: 'isApproved', ...args(a) });
+      return approvals.some((x) => x.s === s && x.c === c);
+    };
+    vault.recordApproval = async (...a) => {
+      const { s, c } = args(a);
+      vault.calls.push({ op: 'recordApproval', ...args(a) });
       vault.confirmations++;
       if (!(await confirm({ kind: 'approval', secret: s, command: c }))) {
         const err = new Error('declined by the user');

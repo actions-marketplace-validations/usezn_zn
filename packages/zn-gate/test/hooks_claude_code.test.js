@@ -235,11 +235,32 @@ test('UserPromptSubmit blocks a pasted secret and suggests zn secret set', async
   assert.equal(ok.output, null);
 });
 
-test('only a missing engine fails open; any other error fails closed', async () => {
+test('every error fails closed, a missing engine too unless the user allows it', async () => {
   const missing = Object.assign(new Error('scrubber engine is not installed'), { code: 'ZN_UNAVAILABLE' });
   const absent = { scan() { throw missing; }, async tokenize() { throw missing; }, async detokenize() { throw missing; } };
   const broken = { scan() { throw new Error('boom'); }, async tokenize() { throw new Error('boom'); }, async detokenize() { throw new Error('boom'); } };
   const ev = postTool('Bash', {}, { stdout: 'key=' + AWS, stderr: '', interrupted: false, isImage: false }, '/');
+  // Default (no option, no config): closed, with reinstall guidance for the user.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-failmode-'));
+  const saved = process.env.ZN_HOOK_FAIL_MODE;
+  delete process.env.ZN_HOOK_FAIL_MODE;
+  try {
+    const def = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), home });
+    assert.ok(!JSON.stringify(def.output).includes(AWS));
+    assert.match(def.output.hookSpecificOutput.updatedToolOutput.stdout, /output withheld/);
+    assert.match(def.output.systemMessage, /Reinstall zn-gate/);
+    const defPre = await runner.handle(adapter, preBash('node a.js __ZN_AWS_KEY_1__', '/'), { engine: absent, vault: createFakeVault(), home, znRunPrefix: PREFIX });
+    assert.equal(defPre.output.hookSpecificOutput.permissionDecision, 'deny');
+    fs.mkdirSync(path.join(home, '.zn'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.zn', 'config.json'), JSON.stringify({ hooks: { whenUnavailable: 'allow' } }));
+    const allowed = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), home });
+    assert.equal(allowed.output, null);
+    fs.writeFileSync(path.join(home, '.zn', 'config.json'), JSON.stringify({ hooks: { whenUnavailable: 'deny' } }));
+    const denied = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), home });
+    assert.ok(!JSON.stringify(denied.output).includes(AWS));
+  } finally {
+    if (saved !== undefined) process.env.ZN_HOOK_FAIL_MODE = saved;
+  }
   const open = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), failMode: 'open' });
   assert.equal(open.output, null);
   assert.match(open.stderr, /ZN_UNAVAILABLE/);
@@ -287,8 +308,8 @@ test('Monitor commands are piped through the streaming scrubber; WebSocket monit
   const r = await run(preTool('Monitor', { command: 'tail -f app.log', description: 'logs' }, dir), { nodePath: '/usr/bin/node' });
   assert.equal(r.output.hookSpecificOutput.permissionDecision, 'ask');
   const cmd = r.output.hookSpecificOutput.updatedInput.command;
-  assert.match(cmd, /^\{ tail -f app\.log\n\} 2>&1 \| "\/usr\/bin\/node" ".*scrub\/stream\.js"$/);
-  const again = await run(preTool('Monitor', { command: cmd }, dir));
+  assert.match(cmd, /^set -o pipefail; bash -c 'tail -f app\.log' 2>&1 \| '\/usr\/bin\/node' '.*scrub\/stream\.js'$/);
+  const again = await run(preTool('Monitor', { command: cmd }, dir), { nodePath: '/usr/bin/node' });
   assert.equal(again.output.hookSpecificOutput.permissionDecision, 'ask');
   assert.equal(again.output.hookSpecificOutput.updatedInput, undefined, 'not wrapped twice');
   const ws = await run(preTool('Monitor', { ws: { url: 'wss://x' } }, dir));
@@ -297,6 +318,33 @@ test('Monitor commands are piped through the streaming scrubber; WebSocket monit
   assert.equal(env.output.hookSpecificOutput.permissionDecision, 'deny');
   const mk = await run(preTool('Monitor', { command: 'watch psql __ZN_DB_PASSWORD__' }, dir));
   assert.equal(mk.output.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('Monitor: no command can step out of the scrubber pipe', { skip: process.platform === 'win32' && 'needs bash' }, async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, 'cfg.txt'), 'aws_access_key_id = ' + AWS + '\ntoken: ' + GHP + '\n');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-mon-'));
+  const streamJs = path.join(__dirname, '..', 'lib', 'scrub', 'stream.js');
+  const cases = [
+    'cat cfg.txt',
+    'true; }; cat cfg.txt; { true', // closing a { } group
+    "true'; cat cfg.txt; echo '", // closing the quotes
+    'cat cfg.txt # ' + streamJs, // mentioning the scrubber
+    'set -o pipefail; bash -c \'true\' 2>&1 | cat; cat cfg.txt; bash -c \'\' 2>&1 | \'' + process.execPath + '\' \'' + streamJs + '\'',
+  ];
+  for (const original of cases) {
+    const r = await run(preTool('Monitor', { command: original }, dir), { nodePath: process.execPath });
+    const d = r.output.hookSpecificOutput;
+    assert.equal(d.permissionDecision, 'ask', original);
+    const cmd = d.updatedInput ? d.updatedInput.command : original;
+    assert.ok(d.updatedInput, 'rewritten: ' + original);
+    const out = spawnSync('bash', ['-c', cmd], { cwd: dir, encoding: 'utf8', env: { ...process.env, HOME: home, ZN_HOME: path.join(home, '.zn') } });
+    const text = out.stdout + out.stderr;
+    assert.ok(!text.includes(AWS) && !text.includes(GHP), 'scrubbed: ' + original + ' -> ' + text);
+  }
+  const failing = await run(preTool('Monitor', { command: 'exit 3' }, dir), { nodePath: process.execPath });
+  const st = spawnSync('bash', ['-c', failing.output.hookSpecificOutput.updatedInput.command], { cwd: dir, encoding: 'utf8', env: { ...process.env, HOME: home, ZN_HOME: path.join(home, '.zn') } });
+  assert.equal(st.status, 3, 'pipefail keeps the exit status');
 });
 
 test('the streaming scrubber redacts lines (vault locked: irreversibly) and never passes a value', () => {
@@ -308,6 +356,28 @@ test('the streaming scrubber redacts lines (vault locked: irreversibly) and neve
   assert.equal(r.status, 0, r.stderr);
   assert.ok(!r.stdout.includes(AWS) && !r.stdout.includes(GHP), r.stdout);
   assert.match(r.stdout, /^starting\nkey=__ZN_REDACTED_AWS_KEY__\npartial line without newline __ZN_REDACTED_GITHUB_TOKEN__$/);
+});
+
+test('the streaming scrubber keeps a value written in two bursts together', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-stream2-'));
+  const { spawn } = require('child_process');
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'lib', 'scrub', 'stream.js')], { env: { ...process.env, ZN_HOME: home }, cwd: home });
+  let out = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (d) => { out += d; });
+  const half = Math.floor(GHP.length / 2);
+  child.stdin.write('token: ' + GHP.slice(0, half));
+  await new Promise((r) => setTimeout(r, 300)); // longer than the partial-line flush
+  const early = out;
+  child.stdin.write(GHP.slice(half) + ' done\n' + 'x'.repeat(5000) + ' ' + GHP.slice(0, half));
+  await new Promise((r) => setTimeout(r, 400));
+  child.stdin.end(GHP.slice(half) + '\n');
+  await new Promise((r) => child.on('close', r));
+  assert.ok(!early.includes(GHP.slice(0, half)), 'nothing of the partial value was written early');
+  const joined = out.replace(/\n/g, '');
+  assert.ok(!joined.includes(GHP), out);
+  assert.ok(!out.includes(GHP.slice(0, half)) && !out.includes(GHP.slice(half)), 'no half of the value either');
+  assert.match(out, /^token: __ZN_REDACTED_GITHUB_TOKEN__ done\nx{5000} __ZN_REDACTED_GITHUB_TOKEN__\n$/);
 });
 
 test('LSP and MCP resources are covered', async () => {
