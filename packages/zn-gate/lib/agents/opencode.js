@@ -14,7 +14,10 @@
  *  - "tool.execute.after"(input {tool, sessionID, callID, args},
  *    output {title, output, metadata}): mutating output.output in place
  *    changes what the model sees. MCP tools hand over the raw MCP result
- *    (content[].text), which is rewritten in place too.
+ *    (content[].text), which is rewritten in place too, and so is
+ *    output.metadata (the TUI's preview of the output, kept in OpenCode's
+ *    local database). Metadata that OpenCode writes while a command is still
+ *    running is stored before the hook runs and is out of its reach.
  *  - "chat.message"(input, output {message, parts}): runs before the user's
  *    message is stored and sent; throwing stops it.
  *  - Tool ids and arguments: bash {command}, read {filePath},
@@ -78,6 +81,9 @@ function normalize(raw) {
     const output = {};
     if (typeof raw.output === 'string') output.output = raw.output;
     if (Array.isArray(raw.content)) output.content = raw.content;
+    // metadata holds the TUI's copy of the output (previews, display text),
+    // which OpenCode stores in its local database.
+    if (raw.metadata && typeof raw.metadata === 'object') output.metadata = raw.metadata;
     // The runner only scrubs tools it knows; everything else counts as MCP.
     return { ...base, event: 'post_tool', tool: tool === 'write' || tool === 'edit' ? 'read' : tool, toolName: t, input, output };
   }
@@ -99,7 +105,7 @@ function respond(d) {
     return { action: 'args', args, message: d.message };
   }
   if (ev.event === 'post_tool' && d.updatedOutput !== undefined) {
-    return { action: 'output', output: d.updatedOutput.output, content: d.updatedOutput.content, message: d.message };
+    return { action: 'output', output: d.updatedOutput.output, content: d.updatedOutput.content, metadata: d.updatedOutput.metadata, message: d.message };
   }
   return { action: 'none' };
 }
@@ -118,6 +124,15 @@ import { spawn } from "node:child_process";
 const NODE = ${node};
 const RUNNER = ${runner};
 const TIMEOUT_MS = 20000;
+
+// Copy scrubbed string leaves from src into target, in place.
+function applyStrings(target, src) {
+  if (!target || !src || typeof target !== "object" || typeof src !== "object") return;
+  for (const k of Object.keys(src)) {
+    if (typeof src[k] === "string" && typeof target[k] === "string") target[k] = src[k];
+    else if (src[k] && typeof src[k] === "object") applyStrings(target[k], src[k]);
+  }
+}
 
 function runHook(event) {
   return new Promise((resolve) => {
@@ -154,15 +169,18 @@ export const ZnGate = async ({ directory }) => ({
     const r = await runHook({
       hook: "tool.execute.after", tool: input.tool, sessionID: input.sessionID, cwd: directory, args: input.args,
       output: typeof output.output === "string" ? output.output : undefined,
+      metadata: output.metadata && typeof output.metadata === "object" ? output.metadata : undefined,
       content: content ? content.map((c) => (c && typeof c.text === "string" ? { type: c.type, text: c.text } : { type: c && c.type })) : undefined,
     });
     if (r.action === "error") {
       if (typeof output.output === "string") output.output = "[zn: output withheld: the secret scrubber is not working]";
+      if (output.metadata && typeof output.metadata === "object") output.metadata = {};
       if (content) for (const c of content) if (c && typeof c.text === "string") c.text = "[zn: output withheld]";
       return;
     }
     if (r.action !== "output") return;
     if (typeof r.output === "string" && typeof output.output === "string") output.output = r.output;
+    if (r.metadata) applyStrings(output.metadata, r.metadata);
     if (content && Array.isArray(r.content)) r.content.forEach((c, i) => { if (c && typeof c.text === "string" && content[i]) content[i].text = c.text; });
   },
   "chat.message": async (input, output) => {

@@ -191,10 +191,12 @@ test('opencode: the installed plugin, driven like OpenCode does, blocks, rewrite
     assert.equal(out1.args, args, 'mutated in place, not replaced');
     assert.match(args.command, /run\.js" -- psql __ZN_DB_PASSWORD__$/);
     assert.equal(args.description, 'x');
-    const res = { title: 't', output: 'line\nAWS_ACCESS_KEY_ID=' + AWS + '\n', metadata: {} };
+    const res = { title: 't', output: 'line\nAWS_ACCESS_KEY_ID=' + AWS + '\n', metadata: { preview: 'AWS_ACCESS_KEY_ID=' + AWS, display: { type: 'file', text: AWS }, truncated: false } };
     await hooks['tool.execute.after']({ tool: 'bash', sessionID: 's', callID: 'c', args: {} }, res);
     assert.ok(!res.output.includes(AWS));
     assert.match(res.output, /__ZN_REDACTED_AWS_KEY__/);
+    assert.ok(!JSON.stringify(res.metadata).includes(AWS), 'metadata (TUI preview) scrubbed too');
+    assert.equal(res.metadata.truncated, false);
     const mcpRes = { content: [{ type: 'text', text: 'tok ' + GHP }, { type: 'image', data: 'x' }] };
     await hooks['tool.execute.after']({ tool: 'gh_get', sessionID: 's', callID: 'c', args: {} }, mcpRes);
     assert.ok(!mcpRes.content[0].text.includes(GHP));
