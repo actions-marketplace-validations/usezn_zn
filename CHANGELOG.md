@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0-beta.1] - Unreleased
+
+Beta of the secrets scrubber and broker: secret values stay out of what your
+coding agent sends to its model. Walkthrough: [docs/secrets.md](docs/secrets.md).
+Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
+[docs/compat.md](docs/compat.md).
+
+### Added
+- **Scrubber engine** (`lib/scrub/`), 100 % local, in three layers:
+  - known values from the vault and from local `.env` files;
+  - about 30 secret formats (cloud keys, tokens, private keys, connection-string passwords);
+  - PII with checksum validation (cards, IBAN, DNI/NIE, SSN; e-mail, phone, IPv4).
+  Values become deterministic tokens such as `__ZN_AWS_KEY_1__`. Gated in CI by the leak bench: 0 leaks, at most 0.1 % of benign files changed.
+- **Encrypted local vault** (`zn unlock` / `zn lock`, `lib/vault/`):
+  - [age](https://age-encryption.org) encryption, with the identity in the OS keychain (macOS, Windows, Secret Service) or behind a passphrase;
+  - a short-lived daemon on a private socket or pipe, with mutual authentication;
+  - an HMAC-chained audit log that holds no values (`zn audit`, `zn vault verify`).
+- **Secrets broker**:
+  - `zn secret set|list|rm|allow|approve|import|adopt` and `zn env shadow|unshadow` (move `.env` values into the vault and leave markers);
+  - `zn run -- <command>` fills values only into allowed commands and masks their output;
+  - the `secrets` MCP server (`secrets_http_request`, `secrets_render_file`, `secrets_request`), which has no tool that returns a value.
+- **Agent hooks**: `zn hooks install claude-code|codex|cursor|opencode`.
+  - They block reads of `.env` files with values, credential files and `~/.zn`.
+  - They scrub tool output and block pasted secrets.
+  - They route commands that use stored secrets through `zn run`.
+  - What each agent allows differs: see `docs/compat.md`.
+  - Claude Code coverage includes Bash, PowerShell, Monitor (through a streaming filter), Read, Grep, LSP, WebFetch, MCP tools and MCP resources.
+- **Out-of-band confirmation**: the first use of a secret by a command, and any change that widens a secret's policy, are confirmed in the vault's own terminal (`zn unlock --foreground`) or a system dialog. They are never confirmed in the agent's terminal.
+- End-to-end runs with Claude Code, Codex and OpenCode against a scripted provider, with 0 values sent (`bench/e2e/`). Hook latency figures are in `bench/HOOK_LATENCY.md`.
+
+### Security
+- `secrets_http_request` puts a value only in request headers unless the secret allows the URL or the body (`zn secret allow NAME --in query|body`).
+- First-use approvals are bound to the executable's real path and file identity. A replaced or retargeted binary loses its approval. Binaries inside the project never receive values.
+- The vault file carries an integrity tag. A forged, corrupted or deleted vault fails closed.
+
+### Known limitations
+- Cursor cannot rewrite the output of shell commands or file reads. Codex can only replace output through "block", and keeps the original in its own session log.
+- Each hook is a short Node process: about 60 to 80 ms per tool call on a Windows desktop.
+- Not covered yet: Hermes, Gemini CLI, Copilot CLI and the Cursor CLI. An egress proxy for `zn run` is not included.
+
 ## [1.4.1] - 2026-10-11
 
 ### Security
