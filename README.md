@@ -225,4 +225,4 @@ Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT. Copyright (c) 2026 usezn ([usezn.com](https://usezn.com)). The Galvanize-60M weights are Apache-2.0. The [zn-prompt-injection-bench](https://huggingface.co/datasets/usezn/zn-prompt-injection-bench) dataset is CC-BY-4.0.
+MIT. Copyright (c) 2026 usezn ([usezn.com](https://usezn.com)). The Galvanize-60M weights are Apache-2.0. The [zn-prompt-injection-bench](https://huggingface.co/datasets/usezn/zn-prompt-injection-bench) dataset is CC-BY-4.0. The npm package bundles third-party code listed in [THIRD_PARTY_NOTICES.md](packages/zn-gate/THIRD_PARTY_NOTICES.md).

@@ -37,11 +37,9 @@
   "files": [
     "bin/",
     "lib/",
-    "test/",
-    "!test/fixtures/",
-    "!test/fake_secrets.test.js",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=18"
