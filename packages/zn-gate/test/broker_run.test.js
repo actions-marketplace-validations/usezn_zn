@@ -43,6 +43,31 @@ test('marker names: valid, reserved and invalid', () => {
   assert.equal(markers.substitute('x __ZN_A__ __ZN_B__', new Map([['A', '1']])), 'x 1 __ZN_B__');
 });
 
+test('a program inside the project is refused, also when the project is reached through a symlink', { skip: process.platform === 'win32' }, () => {
+  // Under the package, not the temp dir: programs in the temp dir are refused anyway.
+  const base = fs.mkdtempSync(path.join(__dirname, 'zn-exe-'));
+  try {
+    const real = path.join(base, 'real');
+    const link = path.join(base, 'link');
+    const outside = path.join(base, 'outside');
+    fs.mkdirSync(path.join(real, 'bin'), { recursive: true });
+    fs.mkdirSync(outside);
+    fs.symlinkSync(real, link);
+    const tool = path.join(real, 'bin', 'tool');
+    const other = path.join(outside, 'tool');
+    fs.writeFileSync(tool, '#!/bin/sh\n', { mode: 0o755 });
+    fs.writeFileSync(other, '#!/bin/sh\n', { mode: 0o755 });
+    fs.symlinkSync(other, path.join(real, 'bin', 'alias'));
+    assert.match(markers.checkResolvedExecutable(tool, link), /inside the project/);
+    assert.match(markers.checkResolvedExecutable(tool, real), /inside the project/);
+    // A link inside the project that points at a program elsewhere is still a project name.
+    assert.match(markers.checkResolvedExecutable(path.join(real, 'bin', 'alias'), real), /inside the project/);
+    assert.equal(markers.checkResolvedExecutable(other, link), null);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('allowCommands matching is by prefix and never by explicit path', () => {
   assert.equal(markers.matchAllowCommands(['npm run migrate'], ['npm', 'run', 'migrate', '--x']), 'npm run migrate');
   assert.equal(markers.matchAllowCommands(['npm run migrate'], ['npm', 'run', 'dev']), null);
@@ -131,6 +156,31 @@ test('zn run --secrets sets the env var only in the child', async () => {
   assert.equal(code, 0);
   assert.equal(stdout.text().trim(), 'match');
   assert.equal(process.env.DB_PASSWORD, undefined);
+});
+
+test('zn run drops dynamic loader variables when secret values are injected, and says so once', async () => {
+  const vault = await setup();
+  const stdout = sink();
+  const stderr = sink();
+  const loaderEnv = { ...nodeEnv, LD_PRELOAD: '/nonexistent/hook.so', DYLD_INSERT_LIBRARIES: '/nonexistent/hook.dylib', LD_ZN_KEPT_WITHOUT_VALUES: 'kept' };
+  const probe = 'console.log(["LD_PRELOAD","DYLD_INSERT_LIBRARIES"].map((k) => process.env[k] === undefined ? "gone" : "present").join(" "))';
+  const code = await runBroker(['--secrets', 'DB_PASSWORD', '--', NODE, '-e', probe], {
+    vault, env: loaderEnv, stdout, stderr, stdin: { isTTY: false }, approvals: { isApproved: async () => true, recordApproval: async () => {} },
+  });
+  assert.equal(code, 0, stderr.text());
+  assert.equal(stdout.text().trim(), 'gone gone');
+  assert.equal((stderr.text().match(/removed .*LD_PRELOAD/g) || []).length, 1, 'said once');
+  assert.ok(!stderr.text().includes('/nonexistent/hook'), 'the values of the variables are not printed');
+});
+
+test('zn run passes loader variables through when no secret value is injected', async () => {
+  const stdout = sink();
+  const loaderEnv = { ...nodeEnv, LD_ZN_KEPT_WITHOUT_VALUES: 'kept' };
+  const code = await runBroker(['--', NODE, '-e', 'console.log(process.env.LD_ZN_KEPT_WITHOUT_VALUES)'], {
+    vault: createFakeVault(), env: loaderEnv, stdout, stderr: sink(), stdin: { isTTY: false },
+  });
+  assert.equal(code, 0);
+  assert.equal(stdout.text().trim(), 'kept');
 });
 
 test('zn run refuses a command outside allowCommands and points to secrets_http_request', async () => {

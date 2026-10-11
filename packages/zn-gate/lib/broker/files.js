@@ -42,6 +42,25 @@ function gitStatusOf(file) {
   return 'unknown';
 }
 
+/**
+ * The path a file has, or would have once created: the nearest existing
+ * ancestor with its symlinks resolved, then the rest of the path as typed.
+ */
+function realTargetOf(file) {
+  const abs = path.resolve(file);
+  const rest = [];
+  let cur = abs;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...rest.reverse());
+    } catch (_) { /* not there yet: walk up */ }
+    const parent = path.dirname(cur);
+    if (parent === cur) return abs;
+    rest.push(path.basename(cur));
+    cur = parent;
+  }
+}
+
 /** Write a file atomically with mode 0600 (best effort on Windows). */
 function writeFileAtomic(file, data, mode = 0o600) {
   const tmp = path.join(path.dirname(file), '.' + path.basename(file) + '.' + process.pid + '.zn-tmp');
@@ -49,4 +68,4 @@ function writeFileAtomic(file, data, mode = 0o600) {
   fs.renameSync(tmp, file);
 }
 
-module.exports = { gitStatusOf, writeFileAtomic };
+module.exports = { gitStatusOf, realTargetOf, writeFileAtomic };

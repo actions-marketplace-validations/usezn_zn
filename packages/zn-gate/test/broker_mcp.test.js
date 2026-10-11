@@ -237,6 +237,87 @@ test('secrets_render_file: only new files inside the project are written without
   assert.ok(!fs.existsSync(path.join(elsewhere, 'z.rc')));
 });
 
+test('secrets_render_file: a directory swapped for a link before the file is opened writes nothing outside', { skip: process.platform === 'win32' }, async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render-race-'));
+  const dir = path.join(base, 'proj');
+  const elsewhere = path.join(base, 'elsewhere');
+  fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+  fs.mkdirSync(elsewhere);
+  spawnSync('git', ['init', '-q'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, '.gitignore'), 'sub/\n');
+  fs.writeFileSync(path.join(dir, 'npmrc.tpl'), 'token=__ZN_NPM_TOKEN__\n');
+  const vault = createFakeVault();
+  await vault.setSecret('NPM_TOKEN', NPM, { mode: 'file' });
+  // The first lookup happens after the path checks passed and before the file is opened.
+  const resolve = vault.resolve;
+  let swapped = false;
+  vault.resolve = async (...a) => {
+    if (!swapped) {
+      swapped = true;
+      fs.renameSync(path.join(dir, 'sub'), path.join(dir, 'sub-moved'));
+      fs.symlinkSync(elsewhere, path.join(dir, 'sub'));
+    }
+    return resolve(...a);
+  };
+  const srv = createSecretsServer({ vault, engine: fakeEngine, cwd: dir, home: base });
+  const r = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out: 'sub/a.rc' });
+  assert.equal(r.isError, true);
+  assert.match(r.data.message, /resolves outside the project/);
+  assert.ok(!fs.existsSync(path.join(elsewhere, 'a.rc')), 'nothing may be left outside the project');
+  assert.ok(!fs.existsSync(path.join(dir, 'sub-moved', 'a.rc')));
+});
+
+test('secrets_render_file: the approved location is checked again after the user answers', { skip: process.platform === 'win32' }, async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render-confirm-'));
+  const dir = path.join(base, 'proj');
+  const first = path.join(base, 'first');
+  const second = path.join(base, 'second');
+  fs.mkdirSync(dir);
+  fs.mkdirSync(first);
+  fs.mkdirSync(second);
+  spawnSync('git', ['init', '-q'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.rc\n');
+  fs.writeFileSync(path.join(dir, 'npmrc.tpl'), 'token=__ZN_NPM_TOKEN__\n');
+  fs.symlinkSync(first, path.join(dir, 'link'));
+  // The user is asked about the real location; while they answer, the link moves.
+  const vault = createFakeVault({
+    confirmFile: async () => {
+      fs.unlinkSync(path.join(dir, 'link'));
+      fs.symlinkSync(second, path.join(dir, 'link'));
+      return true;
+    },
+  });
+  await vault.setSecret('NPM_TOKEN', NPM, { mode: 'file' });
+  const srv = createSecretsServer({ vault, engine: fakeEngine, cwd: dir, home: base });
+  const r = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out: 'link/x.rc' });
+  assert.equal(r.isError, true);
+  assert.match(r.data.message, /different location/);
+  assert.ok(!fs.existsSync(path.join(first, 'x.rc')));
+  assert.ok(!fs.existsSync(path.join(second, 'x.rc')));
+  // The dialog named the real path, not the name the agent typed.
+  assert.equal(vault.fileConfirmations[0].file, path.join(fs.realpathSync(first), 'x.rc'));
+});
+
+test('secrets_render_file: an approved overwrite replaces the file in place with mode 0600', { skip: process.platform === 'win32' }, async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render-over-'));
+  const dir = path.join(base, 'proj');
+  const elsewhere = path.join(base, 'elsewhere');
+  fs.mkdirSync(dir);
+  fs.mkdirSync(elsewhere);
+  spawnSync('git', ['init', '-q'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.rc\n');
+  fs.writeFileSync(path.join(dir, 'npmrc.tpl'), 'token=__ZN_NPM_TOKEN__\n');
+  const target = path.join(elsewhere, 'old.rc');
+  fs.writeFileSync(target, 'an old and much longer line of content that must not survive\n', { mode: 0o644 });
+  const vault = createFakeVault({ confirmFile: async () => true });
+  await vault.setSecret('NPM_TOKEN', NPM, { mode: 'file' });
+  const srv = createSecretsServer({ vault, engine: fakeEngine, cwd: dir, home: base });
+  const r = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out: target });
+  assert.equal(r.isError, false, JSON.stringify(r.data));
+  assert.equal(fs.readFileSync(target, 'utf8'), 'token=' + NPM + '\n');
+  assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+});
+
 test('secrets_request records the ask and refuses values', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-req-'));
   const lines = [];

@@ -98,10 +98,10 @@ function metaFromFlags(flags, defaults = {}) {
  * any code, and a program the user can overwrite can be swapped later. */
 function commandWarnings(io, name, command) {
   const head = String(command).trim().split(/\s+/)[0];
-  if (exe.isInterpreter(head)) {
+  const found = exe.hasPathSeparator(head) ? null : exe.resolveExecutable(head, io.env);
+  if (exe.isInterpreter(head) || (found && exe.isInterpreterPath(found.real))) {
     out(io, 'Warning: `' + command + '` runs any code it is given, so every script it runs could read ' + name + '. Prefer the specific program (psql, terraform, gh).');
   }
-  const found = exe.hasPathSeparator(head) ? null : exe.resolveExecutable(head, io.env);
   const writable = found ? exe.writableBy(found.real) : null;
   if (writable) {
     out(io, 'Warning: `' + head + '` runs ' + found.real + ', and your user account can write ' + writable +

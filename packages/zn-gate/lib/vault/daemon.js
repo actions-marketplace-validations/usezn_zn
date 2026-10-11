@@ -55,7 +55,7 @@ const ALLOW_IN = ['header', 'query', 'body'];
 // Commands that run arbitrary code given to them (python3.12, node22, pwsh...):
 // approving one lets any script it runs read the secret. The confirmation
 // says so. One list for the daemon and the CLI, in lib/exe.js.
-const { isInterpreter } = exe;
+const { isInterpreter, isInterpreterPath } = exe;
 
 const { endpoint, hmac, safeEqualHex, createClient } = require('./client');
 
@@ -421,7 +421,7 @@ function makeOps(state, ctl) {
           '. If you did not update or reinstall it yourself, choose Deny.');
         fields.push(['Approved', prev.exe + ' (' + fileFacts(prev.fp) + ')'], ['Now', exePath + ' (' + fileFacts(fp) + ')']);
       }
-      if (isInterpreter(cmd)) warnings.push('Warning: ' + cmd + ' runs any code it is given; every script it runs could read ' + secret + '.');
+      if (isInterpreter(cmd) || isInterpreterPath(exePath)) warnings.push('Warning: ' + cmd + ' runs any code it is given; every script it runs could read ' + secret + '.');
       if (writable) {
         warnings.push('Warning: your user account can write to where this program lives, so another program (an agent too) could replace it later.');
         fields.push(['Writable by you', writable]);
