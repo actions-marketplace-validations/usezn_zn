@@ -539,7 +539,7 @@ async fn start_proxy(args: Args) -> Result<()> {
     ))?;
     let canary = Arc::new(zn::ai::CanaryDeployer::new(backend));
 
-    // Initialize Neural Memory (LanceDB)
+    // Initialize Neural Memory (SQLite)
     let vector_db_path = "data/vectors";
     std::fs::create_dir_all(vector_db_path).ok();
     let memory = Arc::new(zn::ai::VectorMemory::new(
