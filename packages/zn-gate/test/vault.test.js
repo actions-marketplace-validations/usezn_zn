@@ -35,8 +35,13 @@ const mode = (f) => fs.statSync(f).mode & 0o777;
 let identity = null;
 let srv = null;
 
+// The daemon's out-of-band confirmation channel, answered by the test.
+const confirmations = [];
+let confirmAnswer = true;
+async function testConfirm(req) { confirmations.push(req); return confirmAnswer; }
+
 async function startDaemon(extra) {
-  srv = await daemon.serve(Object.assign({ identity, ttlMs: 60000, idleMs: 60000 }, extra || {}));
+  srv = await daemon.serve(Object.assign({ identity, ttlMs: 60000, idleMs: 60000, confirm: testConfirm }, extra || {}));
   return srv;
 }
 async function stopDaemon() {
@@ -231,10 +236,68 @@ test('daemon: first-use approvals are per (project, secret, real executable)', a
   }
   assert.strictEqual(await c.isApproved('/work/app', 'GITHUB_TOKEN', 'node'), true);
   // The broker's two-argument form: (secret, command), project from the cwd.
+  await c.setSecret('DEPLOY_KEY', crypto.randomBytes(16).toString('hex'), { mode: 'env', allowCommands: ['node scripts/migrate.js'] });
   assert.strictEqual(await c.isApproved('DEPLOY_KEY', 'node scripts/migrate.js'), false);
   await c.recordApproval('DEPLOY_KEY', 'node scripts/migrate.js');
   assert.strictEqual(await c.isApproved('DEPLOY_KEY', 'node'), true);
   c.close();
+});
+
+test('daemon: approvals and policy widening are confirmed out of band', async () => {
+  const c = clientMod.createClient({});
+  // Each recordApproval asked the channel and showed the real executable.
+  const asked = confirmations.filter((r) => r.kind === 'approval');
+  assert.ok(asked.length >= 2);
+  assert.ok(asked.every((r) => r.message.includes(clientMod.resolveExecutable('node'))), 'the prompt names the real executable');
+  assert.ok(asked.some((r) => /runs any code/.test(r.message)), 'interpreters carry a warning');
+  // Declined: nothing is recorded.
+  confirmAnswer = false;
+  await assert.rejects(c.recordApproval('/work/declined', 'GITHUB_TOKEN', 'node'), (e) => e.code === 'ZN_POLICY_DENIED' && /declined/.test(e.message));
+  assert.strictEqual(await c.isApproved('/work/declined', 'GITHUB_TOKEN', 'node'), false);
+  await assert.rejects(c.updateSecretMeta('GITHUB_TOKEN', { allowHosts: ['api.github.com', 'evil.example'] }), (e) => e.code === 'ZN_POLICY_DENIED');
+  assert.ok(!(await c.listSecrets()).find((s) => s.name === 'GITHUB_TOKEN').allowHosts.includes('evil.example'));
+  // Narrowing needs no confirmation.
+  const n0 = confirmations.length;
+  await c.updateSecretMeta('GITHUB_TOKEN', { allowHosts: ['api.github.com'] });
+  assert.strictEqual(confirmations.length, n0);
+  confirmAnswer = true;
+  await c.updateSecretMeta('GITHUB_TOKEN', { allowIn: ['header', 'body'] });
+  const last = confirmations[confirmations.length - 1];
+  assert.strictEqual(last.kind, 'policy');
+  assert.match(last.message, /HTTP placement \+ body/);
+  assert.deepStrictEqual((await c.listSecrets()).find((s) => s.name === 'GITHUB_TOKEN').allowIn, ['header', 'body']);
+  await c.updateSecretMeta('GITHUB_TOKEN', { allowIn: ['header'] });
+  c.close();
+  // No channel at all: refused with guidance, and audited.
+  await stopDaemon();
+  await startDaemon({ confirm: undefined });
+  const c2 = clientMod.createClient({});
+  assert.strictEqual((await c2.status()).confirm, 'none');
+  await assert.rejects(c2.recordApproval('/work/nochan', 'GITHUB_TOKEN', 'node'), (e) => e.code === 'ZN_POLICY_DENIED' && /--foreground/.test(e.message));
+  c2.close();
+  await stopDaemon();
+  await startDaemon();
+});
+
+test('daemon: an approved executable rewritten in place loses its approval', async () => {
+  const dir = fs.mkdtempSync(path.join(os.homedir(), '.zn-test-bin-'));
+  const bin = path.join(dir, POSIX ? 'zn-fp-tool' : 'zn-fp-tool.cmd');
+  fs.writeFileSync(bin, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
+  if (POSIX) fs.chmodSync(bin, 0o755);
+  const saved = process.env.PATH;
+  process.env.PATH = dir + path.delimiter + saved;
+  const c = clientMod.createClient({});
+  try {
+    await c.recordApproval('/work/fp', 'GITHUB_TOKEN', 'zn-fp-tool');
+    assert.strictEqual(await c.isApproved('/work/fp', 'GITHUB_TOKEN', 'zn-fp-tool'), true);
+    await sleep(20);
+    fs.appendFileSync(bin, POSIX ? 'echo planted\n' : 'echo planted\r\n');
+    assert.strictEqual(await c.isApproved('/work/fp', 'GITHUB_TOKEN', 'zn-fp-tool'), false, 'content change must void the approval');
+  } finally {
+    process.env.PATH = saved;
+    c.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('engine + real daemon: tokenize and detokenize through IPC', async () => {
@@ -353,6 +416,36 @@ test('lifecycle: zn unlock spawns a detached daemon; zn lock stops it', async ()
   await sleep(200);
   assert.strictEqual(await daemon.lock({}), false);
   await assert.rejects(daemon.unlock({ passphrase: 'not the passphrase at all' }), (e) => e.code === 'ZN_LOCKED');
+});
+
+test('vault files: forged, corrupted or missing secrets.age fail closed with a clear message', async () => {
+  await stopDaemon();
+  const p = store.paths();
+  const original = fs.readFileSync(p.secretsFile);
+  const meta = keychain.readMeta({});
+  try {
+    // O-5: a vault encrypted to the public recipient by someone else.
+    const forged = await store.encryptTo(meta.recipient, JSON.stringify({ v: 1, auditKey: 'a'.repeat(64), secrets: {}, approvals: {} }));
+    fs.writeFileSync(p.secretsFile, Buffer.from(forged));
+    await assert.rejects(startDaemon(), (e) => e.code === 'ZN_LOCKED' && /integrity check/.test(e.message));
+    // O-7: garbage.
+    fs.writeFileSync(p.secretsFile, 'not an age file');
+    await assert.rejects(startDaemon(), (e) => e.code === 'ZN_LOCKED' && /secrets\.age is corrupted or was encrypted to another key/.test(e.message));
+    // O-4: deleted while the audit log and project maps exist.
+    fs.unlinkSync(p.secretsFile);
+    await assert.rejects(startDaemon(), (e) => e.code === 'ZN_LOCKED' && /missing but this vault has history/.test(e.message));
+    assert.ok(!fs.existsSync(p.secretsFile), 'no empty vault was created');
+    // keychain.json broken.
+    const metaRaw = fs.readFileSync(p.metaFile);
+    fs.writeFileSync(p.metaFile, '{broken');
+    assert.throws(() => keychain.readMeta({}), (e) => e.code === 'ZN_LOCKED' && /keychain\.json is corrupted/.test(e.message));
+    fs.writeFileSync(p.metaFile, metaRaw);
+  } finally {
+    fs.writeFileSync(p.secretsFile, original);
+    if (POSIX) fs.chmodSync(p.secretsFile, 0o600);
+  }
+  await startDaemon();
+  await stopDaemon();
 });
 
 test('nothing in the vault directory holds a value in clear', () => {

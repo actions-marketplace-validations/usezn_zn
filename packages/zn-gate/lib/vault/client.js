@@ -11,11 +11,15 @@
  *   exactValues(project)           -> [{name, type, values: [raw, b64, hex, url]}]   in memory only
  *   audit(event)                   {secret, mode, agent, tool, argv0, host, decision, reason}
  *
- *   updateSecretMeta(name, meta)                  policy change; the value is not touched
+ *   updateSecretMeta(name, meta)                  policy change; the value is not touched.
+ *       A change that widens the policy waits for the user to confirm it
+ *       on the daemon's channel (see lib/vault/confirm.js).
  *   isApproved(project, secret, argv0) -> bool     first-use approval of a command
  *   recordApproval(project, secret, argv0)
  *       Also accepted: (secret, command), the broker's form; the project is
  *       then the nearest parent of the current directory with .git.
+ *       Recording one waits for the user to confirm it on the daemon's
+ *       channel (never on this process's terminal).
  *       The approval is bound to the real path of the executable that argv0
  *       resolves to on this PATH; if it later resolves elsewhere (a shadowing
  *       binary, a replaced symlink), the approval no longer applies.
@@ -36,6 +40,9 @@ const { CODES, znError } = require('../errors');
 
 const PROTOCOL = 1;
 const TIMEOUT_MS = 15000;
+// Operations the daemon confirms with the user wait for the answer.
+const CONFIRM_TIMEOUT_MS = 150000;
+const CONFIRMED_OPS = new Set(['recordApproval', 'updateSecretMeta']);
 const MAX_LINE = 64 * 1024 * 1024;
 
 function endpoint(opts) {
@@ -215,7 +222,7 @@ class VaultClient {
       const timer = setTimeout(() => {
         state.pending.delete(id);
         reject(lockedError('timeout'));
-      }, TIMEOUT_MS);
+      }, CONFIRMED_OPS.has(op) ? CONFIRM_TIMEOUT_MS : TIMEOUT_MS);
       state.pending.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },

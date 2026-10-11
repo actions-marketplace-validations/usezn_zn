@@ -136,7 +136,9 @@ function isInside(child, parent) {
 
 /**
  * An allowed command name must not resolve to a binary the agent could have
- * planted: inside the project (except node_modules/.bin) or in the temp dir.
+ * planted: inside the project (node_modules included: the agent can edit it)
+ * or in the temp dir. Project tools run through a package runner instead
+ * (`npx prisma`, `npm run migrate`), which zn flags as an interpreter.
  * Returns an error message or null.
  */
 function checkResolvedExecutable(resolved, projectRoot) {
@@ -144,12 +146,8 @@ function checkResolvedExecutable(resolved, projectRoot) {
   const real = (() => { try { return fs.realpathSync(resolved); } catch (_) { return resolved; } })();
   const tmp = (() => { try { return fs.realpathSync(os.tmpdir()); } catch (_) { return os.tmpdir(); } })();
   if (isInside(real, tmp)) return 'resolves to a file in the temp directory';
-  if (projectRoot && isInside(real, projectRoot)) {
-    const binDir = path.join(projectRoot, 'node_modules', '.bin');
-    const nm = path.join(projectRoot, 'node_modules');
-    if (!isInside(resolved, binDir) && !isInside(real, nm)) {
-      return 'resolves to a file inside the project, which the agent can edit';
-    }
+  if (projectRoot && (isInside(real, projectRoot) || isInside(resolved, projectRoot))) {
+    return 'resolves to a file inside the project, which the agent can edit';
   }
   return null;
 }

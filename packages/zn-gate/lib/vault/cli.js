@@ -2,7 +2,7 @@
 /**
  * CLI for the vault session:
  *
- *   zn unlock [--ttl 8h] [--idle 30m] [--backend <name>] [--passphrase-stdin]
+ *   zn unlock [--ttl 8h] [--idle 30m] [--backend <name>] [--passphrase-stdin] [--foreground]
  *   zn lock
  *   zn vault status
  *   zn vault forget [<project dir>]     (vault must be locked)
@@ -12,6 +12,11 @@
  * OS keychain, or behind a passphrase when no keychain is available.
  * Passphrases are read from the terminal with echo off, or from stdin with
  * --passphrase-stdin; never from arguments or environment variables.
+ *
+ * Confirmations (first use of a secret by a command, policy changes) happen
+ * outside the agent: with --foreground the daemon stays in this terminal and
+ * asks here; otherwise it shows a native dialog, or refuses when the system
+ * has none (headless Linux, SSH sessions).
  */
 
 const fs = require('fs');
@@ -21,6 +26,7 @@ const daemon = require('./daemon');
 const keychain = require('./keychain');
 const store = require('./store');
 const { createClient } = require('./client');
+const { agentEnvDetected } = require('../broker/tty');
 const { CODES } = require('../errors');
 
 function parseDuration(s, fallback) {
@@ -68,6 +74,8 @@ async function getPassphrase(args, creating) {
 function out(s) { process.stdout.write(s + '\n'); }
 
 async function unlockCmd(args) {
+  const agent = agentEnvDetected(process.env);
+  if (agent) throw new Error('zn unlock must be run by you in your own terminal, not by an AI agent (detected ' + agent + ')');
   const opts = {
     ttlMs: parseDuration(flag(args, '--ttl'), daemon.DEFAULT_TTL_MS),
     idleMs: parseDuration(flag(args, '--idle'), daemon.DEFAULT_IDLE_MS),
@@ -77,9 +85,30 @@ async function unlockCmd(args) {
   if (!keychain.BACKENDS.includes(backend)) throw new Error('unknown backend ' + backend);
   opts.backend = backend;
   if (backend === 'passphrase') opts.passphrase = await getPassphrase(args, !meta);
+  if (args.includes('--foreground')) return unlockForegroundCmd(opts, backend);
   const res = await daemon.unlock(opts);
   if (res.created) out('Created a new vault (' + backend + ') in ' + store.paths().vaultDir);
   out('Vault unlocked until ' + res.expiresAt + ' (locks after ' + Math.round(opts.idleMs / 60000) + ' min idle). Run `zn lock` to lock now.');
+  if (res.confirm === 'gui') out('Confirmations (first use of a secret by a command, policy changes) appear as a system dialog.');
+  else {
+    out('Note: no system dialog is available here, so first-use approvals and policy changes will be refused.');
+    out('      To approve them, run the vault in a terminal of its own instead: zn lock && zn unlock --foreground');
+  }
+  return 0;
+}
+
+async function unlockForegroundCmd(opts, backend) {
+  if (!process.stdin.isTTY) throw new Error('--foreground needs an interactive terminal (it asks you there)');
+  const res = await daemon.unlockForeground(opts);
+  if (res.created) out('Created a new vault (' + backend + ') in ' + store.paths().vaultDir);
+  out('Vault unlocked until ' + res.expiresAt + ' (locks after ' + Math.round(opts.idleMs / 60000) + ' min idle).');
+  out('Keep this terminal open: zn asks here before a secret is used by a command for the first time or a policy changes.');
+  out('Press Ctrl+C or run `zn lock` to lock.');
+  const onSig = () => { res.close(); };
+  process.on('SIGINT', onSig);
+  process.on('SIGTERM', onSig);
+  const reason = await res.done;
+  out('Vault locked (' + reason + ').');
   return 0;
 }
 

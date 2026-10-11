@@ -34,9 +34,9 @@ function startServer() {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, seen, port: server.address().port })));
 }
 
-async function vaultWith() {
+async function vaultWith(extra = {}) {
   const vault = createFakeVault();
-  await vault.setSecret('GITHUB_TOKEN', GHP, { mode: 'proxy', allowHosts: ['127.0.0.1', 'api.github.com'] });
+  await vault.setSecret('GITHUB_TOKEN', GHP, { mode: 'proxy', allowHosts: ['127.0.0.1', 'api.github.com'], ...extra });
   await vault.setSecret('NPM_TOKEN', NPM, { mode: 'file' });
   return vault;
 }
@@ -73,7 +73,7 @@ test('secrets_list never returns values', async () => {
 test('secrets_http_request substitutes for an allowed host and scrubs the response', async () => {
   const { server, seen, port } = await startServer();
   try {
-    const vault = await vaultWith();
+    const vault = await vaultWith({ allowIn: ['header', 'body'] });
     const srv = createSecretsServer({ vault, engine: fakeEngine });
     const r = await call(srv, 'secrets_http_request', {
       method: 'POST', url: 'http://127.0.0.1:' + port + '/user', headers: { Authorization: 'Bearer __ZN_GITHUB_TOKEN__' }, body: '{"t":"__ZN_GITHUB_TOKEN__"}',
@@ -89,6 +89,37 @@ test('secrets_http_request substitutes for an allowed host and scrubs the respon
     assert.match(r.data.body, /__ZN_GITHUB_TOKEN__/);
     assert.equal(r.data.headers['x-echo'], 'Bearer __ZN_GITHUB_TOKEN__');
     assert.ok(vault.auditLog.some((e) => e.decision === 'allow' && e.host === '127.0.0.1'));
+  } finally {
+    server.close();
+  }
+});
+
+test('secrets_http_request: markers only in headers unless the secret allows the URL or the body', async () => {
+  const { server, seen, port } = await startServer();
+  try {
+    const vault = await vaultWith();
+    const srv = createSecretsServer({ vault, engine: fakeEngine });
+    // The rev3 probe: an injected prompt posts the token in a gist body to an allowed host.
+    const gist = await call(srv, 'secrets_http_request', {
+      method: 'POST', url: 'http://127.0.0.1:' + port + '/gists', headers: { Authorization: 'Bearer __ZN_GITHUB_TOKEN__' },
+      body: JSON.stringify({ public: true, files: { 'a.txt': { content: '__ZN_GITHUB_TOKEN__' } } }),
+    });
+    assert.equal(gist.isError, true);
+    assert.equal(gist.data.error, 'ZN_POLICY_DENIED');
+    assert.match(gist.data.message, /only be sent in request headers/);
+    assert.match(gist.data.message, /zn secret allow GITHUB_TOKEN --in body/);
+    const q = await call(srv, 'secrets_http_request', { method: 'GET', url: 'http://127.0.0.1:' + port + '/x?access_token=__ZN_GITHUB_TOKEN__' });
+    assert.equal(q.isError, true);
+    assert.match(q.data.message, /--in query/);
+    assert.equal(seen.length, 0, 'nothing was sent');
+    assert.ok(vault.auditLog.some((e) => e.decision === 'deny' && /placement not allowed: body/.test(e.reason)));
+    const ok = await call(srv, 'secrets_http_request', { method: 'GET', url: 'http://127.0.0.1:' + port + '/user', headers: { Authorization: 'Bearer __ZN_GITHUB_TOKEN__' } });
+    assert.equal(ok.isError, false);
+    assert.equal(seen.length, 1);
+    const vq = await vaultWith({ allowIn: ['header', 'query'] });
+    const srvq = createSecretsServer({ vault: vq, engine: fakeEngine });
+    assert.equal((await call(srvq, 'secrets_http_request', { method: 'GET', url: 'http://127.0.0.1:' + port + '/x?access_token=__ZN_GITHUB_TOKEN__' })).isError, false);
+    assert.ok(seen[1].url.includes(GHP));
   } finally {
     server.close();
   }

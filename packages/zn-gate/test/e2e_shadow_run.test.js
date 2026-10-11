@@ -99,7 +99,7 @@ test('zn secret set refuses values in argv and agent shells', async () => {
   assert.equal(await cli.dispatch('secret', ['get', 'FOO'], { vault, stderr: e4, stdout: sink() }), 77);
   const ok = await cli.dispatch('secret', ['set', 'FOO', '--command', 'psql'], { vault, stderr: sink(), stdout: sink(), human: true, readSecret: async () => 'hunter2-hunter2' });
   assert.equal(ok, 0);
-  assert.deepEqual((await vault.listSecrets())[0], { name: 'FOO', mode: 'env', allowHosts: [], allowCommands: ['psql'], source: 'local', lastUsed: null });
+  assert.deepEqual((await vault.listSecrets())[0], { name: 'FOO', mode: 'env', allowHosts: [], allowCommands: ['psql'], allowIn: ['header'], source: 'local', lastUsed: null });
 });
 
 test('zn secret import copies values and leaves the file untouched', async () => {
@@ -117,7 +117,7 @@ test('zn secret import copies values and leaves the file untouched', async () =>
 
 test('E2E: shadowed .env + zn run with an allowed command never shows a value; other commands are refused', async () => {
   const dir = project();
-  const vault = createFakeVault();
+  const vault = createFakeVault({ withApprovals: true });
   const transcript = [];
   const hook = async (raw) => {
     const res = await runner.handle(adapter, raw, { engine: fakeEngine, vault, failMode: 'closed', znRunPrefix: 'ZN_AGENT=claude-code zn run --' });
@@ -180,7 +180,7 @@ test('E2E: shadowed .env + zn run with an allowed command never shows a value; o
   transcript.push(denyErr.text());
 
   // 5. The agent tries the usual ways around it.
-  for (const cmd of ['cat ~/.zn/approvals.json', 'zn secret approve GITHUB_TOKEN --command node', 'zn env unshadow .env --backup ' + bak.name]) {
+  for (const cmd of ['cat ~/.zn/vault/secrets.age', 'zn secret approve GITHUB_TOKEN --command node', 'zn env unshadow .env --backup ' + bak.name]) {
     const r = await hook({ hook_event_name: 'PreToolUse', cwd: dir, tool_name: 'Bash', tool_input: { command: cmd } });
     assert.equal(r.hookSpecificOutput.permissionDecision, 'deny', cmd);
   }

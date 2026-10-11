@@ -163,34 +163,36 @@ test('zn run refuses proxy-mode secrets, unknown secrets and agent-planted binar
   assert.match(e3.text(), /temp directory/);
 });
 
-test('first use: without a terminal it is denied with the approve command; with one it asks once', async () => {
-  const vault = await setup();
+test('first use is confirmed by the vault, never on the command terminal, and only once', async () => {
   const args = ['--', NODE, '-e', 'console.log(1)', '__ZN_DB_PASSWORD__'];
-  const e1 = sink();
-  assert.equal(await runBroker(args, { vault, env: nodeEnv, stdout: sink(), stderr: e1, stdin: { isTTY: false } }), 77);
-  assert.match(e1.text(), /zn secret approve DB_PASSWORD --command "node"/);
   let asked = 0;
-  const confirm = async () => { asked++; return true; };
-  assert.equal(await runBroker(args, { vault, env: nodeEnv, stdout: sink(), stderr: sink(), stdin: { isTTY: true }, confirm }), 0);
-  assert.equal(await runBroker(args, { vault, env: nodeEnv, stdout: sink(), stderr: sink(), stdin: { isTTY: true }, confirm }), 0);
+  const vault = createFakeVault({ withApprovals: true, confirm: async () => { asked++; return true; } });
+  await vault.setSecret('DB_PASSWORD', PG, { mode: 'env', allowCommands: [NODE] });
+  // No terminal and an agent shell: the vault still asks the user on its own channel.
+  const e0 = sink();
+  assert.equal(await runBroker(args, { vault, env: { ...nodeEnv, CLAUDECODE: '1' }, stdout: sink(), stderr: e0, stdin: { isTTY: false } }), 0, e0.text());
+  assert.match(e0.text(), /confirm it in the zn vault prompt/);
+  assert.equal(await runBroker(args, { vault, env: nodeEnv, stdout: sink(), stderr: sink(), stdin: { isTTY: true } }), 0);
   assert.equal(asked, 1, 'asked only on first use');
-  const declined = await setup();
+
+  const declined = createFakeVault({ withApprovals: true, confirm: async () => false });
+  await declined.setSecret('DB_PASSWORD', PG, { mode: 'env', allowCommands: [NODE] });
   const e2 = sink();
-  assert.equal(await runBroker(args, { vault: declined, env: nodeEnv, stdout: sink(), stderr: e2, stdin: { isTTY: true }, confirm: async () => false }), 77);
-  assert.match(e2.text(), /declined/);
-  const agentShell = await setup();
-  assert.equal(await runBroker(args, { vault: agentShell, env: { ...nodeEnv, CLAUDECODE: '1' }, stdout: sink(), stderr: sink(), stdin: { isTTY: true }, confirm }), 77, 'never prompts inside an agent shell');
+  // A local "yes" on the command's own terminal changes nothing.
+  assert.equal(await runBroker(args, { vault: declined, env: nodeEnv, stdout: sink(), stderr: e2, stdin: { isTTY: true }, confirm: async () => true }), 77);
+  assert.match(e2.text(), /was not approved \(declined by the user\)/);
+  assert.ok(declined.auditLog.some((e) => e.decision === 'deny' && e.secret === 'DB_PASSWORD'));
 });
 
-test('file approval store is used when the vault has none', async () => {
+test('a vault without approval calls never approves (no file fallback)', async () => {
   const znHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-appr-'));
   const vault = createFakeVault();
   await vault.setSecret('DB_PASSWORD', PG, { mode: 'env', allowCommands: [NODE] });
   const args = ['--', NODE, '-e', '1', '__ZN_DB_PASSWORD__'];
-  assert.equal(await runBroker(args, { vault, znHome, env: nodeEnv, stdout: sink(), stderr: sink(), stdin: { isTTY: true }, confirm: async () => true }), 0);
-  const data = JSON.parse(fs.readFileSync(path.join(znHome, 'approvals.json'), 'utf8'));
-  assert.deepEqual(data.approvals.map((a) => [a.secret, a.command]), [['DB_PASSWORD', NODE]]);
-  assert.ok(!fs.readFileSync(path.join(znHome, 'approvals.json'), 'utf8').includes(PG));
+  const e = sink();
+  assert.equal(await runBroker(args, { vault, znHome, env: nodeEnv, stdout: sink(), stderr: e, stdin: { isTTY: true }, confirm: async () => true }), 77);
+  assert.match(e.text(), /cannot record approvals/);
+  assert.ok(!fs.existsSync(path.join(znHome, 'approvals.json')));
 });
 
 test('environment markers are optional: unrelated commands still run', async () => {

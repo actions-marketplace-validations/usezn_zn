@@ -9,19 +9,26 @@
  * the vault daemon, reached through lib/vault/client.js. Decisions:
  *
  *   pre_tool    deny reads of credential files and ~/.zn, deny secret
- *               management commands, wrap Bash commands that carry
- *               __ZN_<NAME>__ markers in `zn run --` (ask), restore detected
- *               tokens per the restore policy (ask), refuse markers in
- *               WebFetch URLs (use secrets_http_request instead).
+ *               management commands, wrap shell commands (Bash, PowerShell)
+ *               that carry __ZN_<NAME>__ markers in `zn run --` (ask),
+ *               restore detected tokens per the restore policy (ask), refuse
+ *               markers in WebFetch URLs (use secrets_http_request instead),
+ *               and pipe Monitor commands through the streaming scrubber.
  *   post_tool   replace secrets in the tool output with tokens (Read, Bash,
- *               Grep, WebFetch and MCP tools), keeping the output's shape.
+ *               PowerShell, Monitor, Grep, LSP, WebFetch, MCP tools and MCP
+ *               resources), keeping the output's shape.
  *   user_prompt block prompts that contain a secret and suggest
  *               `zn secret set`.
  *
- * Failure handling: fail-open by default (the event passes untouched and a
- * warning goes to stderr). Set ZN_HOOK_FAIL_MODE=closed, or
- * {"hooks": {"failMode": "closed"}} in ~/.zn/config.json, to deny the tool
- * call / withhold the output / block the prompt instead.
+ * Vault locked (or its daemon unreachable): the engine still runs without
+ * it and replaces values with irreversible __ZN_REDACTED_<TYPE>__ markers;
+ * the user is told to run `zn unlock`. Secrets never pass through.
+ *
+ * Failure handling: only a missing engine fails open by default (the event
+ * passes untouched and a warning goes to stderr); set
+ * ZN_HOOK_FAIL_MODE=closed, or {"hooks": {"failMode": "closed"}} in
+ * ~/.zn/config.json, to fail closed then too. Any other error fails closed:
+ * the tool call is denied, the output withheld or the prompt blocked.
  */
 
 const fs = require('fs');
@@ -33,7 +40,9 @@ const { gitStatusOf } = require('../broker/files');
 const deps = require('../deps');
 
 const SECRET_SOURCES = new Set(['exact', 'pattern']);
-const POST_TOOLS = new Set(['read', 'bash', 'grep', 'webfetch', 'mcp']);
+const POST_TOOLS = new Set(['read', 'bash', 'powershell', 'monitor', 'grep', 'lsp', 'webfetch', 'mcp', 'mcpresource']);
+const SHELL_TOOLS = new Set(['bash', 'powershell']);
+const STREAM_JS = path.resolve(__dirname, '..', 'scrub', 'stream.js');
 
 function readConfig(home) {
   try {
@@ -66,17 +75,30 @@ async function mapStrings(value, fn) {
 
 function lazyDeps(opts) {
   let engine = opts.engine;
-  let vault = opts.vault;
+  let vault = opts.vault === null ? null : opts.vault;
   return {
     engine() {
       if (!engine) engine = deps.loadEngine();
       return engine;
     },
+    // D2: a vault that cannot be loaded is null, never a reason to skip the
+    // scrubber; the engine redacts irreversibly without it.
     async vault() {
-      if (!vault) vault = await deps.loadVault();
+      if (vault === undefined) {
+        try {
+          vault = await deps.loadVault();
+        } catch (err) {
+          if (err.code !== 'ZN_LOCKED') throw err;
+          vault = null;
+        }
+      }
       return vault;
     },
   };
+}
+
+function nodeQ(s) {
+  return '"' + String(s).replace(/\\/g, '/').replace(/"/g, '\\"') + '"';
 }
 
 function znRunPrefix(opts, agentId) {
@@ -103,7 +125,7 @@ async function decidePre(ev, d, agentId, opts) {
   const input = ev.input || {};
   const tool = ev.tool;
 
-  if (tool === 'read' || (tool === 'grep' && input.path)) {
+  if (tool === 'read' || tool === 'lsp' || (tool === 'grep' && input.path)) {
     const deny = policy.readDenial(input.path, pathOpts);
     if (deny) return { decision: 'deny', message: deny };
   }
@@ -123,14 +145,18 @@ async function decidePre(ev, d, agentId, opts) {
     return { decision: 'allow' };
   }
 
-  if (tool === 'bash') {
+  if (tool === 'monitor') return decideMonitor(ev, pathOpts, opts);
+
+  if (SHELL_TOOLS.has(tool)) {
     const original = String(input.command || '');
     const deny = policy.bashDenial(original, pathOpts);
     if (deny) return { decision: 'deny', message: deny };
 
     let command = original;
     const notes = [];
-    const wrap = policy.wrapWithZnRun(command, znRunPrefix(opts, agentId));
+    const wrap = tool === 'powershell'
+      ? policy.wrapPowerShell(command, { nodePath: opts.nodePath || process.execPath, runJs: opts.runJs || path.resolve(__dirname, '..', 'broker', 'run.js'), agent: agentId })
+      : policy.wrapWithZnRun(command, znRunPrefix(opts, agentId));
     if (!wrap.ok) return { decision: 'deny', message: wrap.reason };
     if (wrap.wrapped) {
       command = wrap.command;
@@ -198,18 +224,43 @@ async function decidePre(ev, d, agentId, opts) {
   return { decision: 'allow' };
 }
 
+/*
+ * Monitor streams a command's output lines to the model as events that no
+ * PostToolUse hook sees, so the command itself is rewritten to pipe through
+ * the streaming scrubber (lib/scrub/stream.js). The rewrite is shown to the
+ * user (ask). WebSocket monitors cannot be scrubbed and are refused.
+ */
+function decideMonitor(ev, pathOpts, opts) {
+  const raw = (ev.raw && ev.raw.tool_input) || {};
+  if (raw.ws !== undefined && raw.command === undefined) {
+    return { decision: 'deny', message: 'zn: a WebSocket monitor streams data to the model without passing through the secret scrubber. Use a command instead (its output is scrubbed).' };
+  }
+  const original = String(ev.input.command || '');
+  if (!original.trim()) return { decision: 'allow' };
+  const deny = policy.bashDenial(original, pathOpts);
+  if (deny) return { decision: 'deny', message: deny };
+  if (markers.findMarkers(original).length) {
+    return { decision: 'deny', message: 'zn: secret markers are not supported in Monitor commands. Run the command with the Bash tool (it goes through `zn run`).' };
+  }
+  if (original.includes(STREAM_JS.replace(/\\/g, '/')) || original.includes(STREAM_JS)) return { decision: 'ask', message: 'zn: this monitor already pipes through the secret scrubber.' };
+  const command = '{ ' + original + '\n} 2>&1 | ' + nodeQ(opts.nodePath || process.execPath) + ' ' + nodeQ(STREAM_JS);
+  return { decision: 'ask', updatedInput: { command }, message: 'zn: the monitor output is piped through the local secret scrubber, so secret values in it are replaced with __ZN_ tokens.' };
+}
+
 /* ---------------------------- post_tool --------------------------- */
 
 async function decidePost(ev, d, agentId) {
   if (!POST_TOOLS.has(ev.tool)) return { decision: 'allow' };
   if (ev.output === undefined || ev.output === null) return { decision: 'allow' };
-  const ctx = await ctxFor(ev, d, agentId, 'assistant');
   const engine = d.engine();
+  const ctx = await ctxFor(ev, d, agentId, 'assistant');
   const types = new Map();
+  let locked = false;
   const updated = await mapStrings(ev.output, async (s) => {
     if (s.length < 8) return s;
     const res = await engine.tokenize(s, ctx);
     if (!res || typeof res.text !== 'string') throw deps.znError('ZN_ENGINE', 'tokenize returned an unexpected shape');
+    if (res.locked) locked = true;
     for (const r of res.replaced || []) types.set(r.type, (types.get(r.type) || 0) + 1);
     return res.text;
   });
@@ -220,17 +271,25 @@ async function decidePost(ev, d, agentId) {
     decision: 'allow',
     updatedOutput: updated,
     message: 'zn: ' + total + ' secret value(s) in this output were replaced with __ZN_ tokens (' + summary + '). ' +
-      'Real values stay on this machine; use the tokens as they are.',
+      (locked ? '__ZN_REDACTED_ markers cannot be restored. ' : 'Real values stay on this machine; use the tokens as they are.'),
+    userMessage: locked ? LOCKED_NOTICE : undefined,
   };
 }
+
+const LOCKED_NOTICE = 'zn: the secret vault is locked, so values in this output were redacted irreversibly. ' +
+  'Run `zn unlock` to enable exact-value redaction and restore.';
 
 /* --------------------------- user_prompt -------------------------- */
 
 async function decidePrompt(ev, d, agentId) {
   const prompt = String((ev.input && ev.input.prompt) || '');
   if (prompt.length < 8) return { decision: 'allow' };
-  const ctx = await ctxFor(ev, d, agentId, 'assistant');
-  const spans = d.engine().scan(prompt, ctx) || [];
+  const engine = d.engine();
+  let ctx = await ctxFor(ev, d, agentId, 'assistant');
+  // scan() is pure: prepare() first fetches the vault's exact values (and
+  // local ones), so a pasted vault secret is caught even without a pattern.
+  if (typeof engine.prepare === 'function') ctx = await engine.prepare(ctx);
+  const spans = engine.scan(prompt, ctx) || [];
   const secrets = spans.filter((s) => SECRET_SOURCES.has(s.source));
   if (secrets.length === 0) return { decision: 'allow' };
   const kinds = [...new Set(secrets.map((s) => s.name || s.type))];
@@ -249,7 +308,8 @@ async function decidePrompt(ev, d, agentId) {
 
 function failDecision(ev, err, mode) {
   const msg = 'zn: hook error (' + (err.code || 'error') + '): ' + err.message;
-  if (mode !== 'closed') return { decision: 'allow', failOpen: true, warning: msg };
+  // Fail open only when the engine itself is missing (and fail mode allows).
+  if (mode !== 'closed' && err.code === 'ZN_UNAVAILABLE') return { decision: 'allow', failOpen: true, warning: msg };
   if (ev && ev.event === 'post_tool' && ev.output !== undefined) {
     const withheld = '[zn: output withheld because the secret scrubber is unavailable: ' + (err.code || 'error') + ']';
     const shape = (v) => (typeof v === 'string' ? withheld
@@ -257,7 +317,8 @@ function failDecision(ev, err, mode) {
         : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shape(x)])) : v);
     return { decision: 'allow', updatedOutput: shape(ev.output), message: msg };
   }
-  return { decision: 'deny', message: msg + ' (fail-closed)' };
+  if (ev && ev.event === 'pre_tool') return { decision: 'deny', message: msg + ' (fail-closed)' };
+  return { decision: 'deny', message: msg + ' (fail-closed)', userMessage: msg };
 }
 
 /**
@@ -313,6 +374,7 @@ async function main(args) {
   }
   const res = await handle(adapter, raw);
   if (res.stderr) process.stderr.write(res.stderr + ' (fail-open: event passed through)\n');
+  try { require('../vault/client').close(); } catch (_) { /* not loaded */ }
   if (res.output !== null && res.output !== undefined) process.stdout.write(JSON.stringify(res.output));
 }
 

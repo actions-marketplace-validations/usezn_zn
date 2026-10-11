@@ -8,7 +8,9 @@
  *   secrets_list           names and policy of the stored secrets, never values
  *   secrets_http_request   zn makes the HTTP request with __ZN_<NAME>__ markers
  *                          replaced, only if the host is in each secret's
- *                          allowHosts; the response is scrubbed before it returns
+ *                          allowHosts, and only in request headers unless the
+ *                          secret also allows the URL ("query") or the body
+ *                          (allowIn); the response is scrubbed before it returns
  *   secrets_render_file    render a template with markers into a git-ignored
  *                          file (or one outside any repository); secrets in
  *                          mode "file" only
@@ -46,7 +48,7 @@ const TOOLS = [
   },
   {
     name: 'secrets_http_request',
-    description: 'Make an HTTP request that needs a secret. Write the secret as its marker (for example "Authorization": "Bearer __ZN_GITHUB_TOKEN__") in the url, headers or body; zn sends the request with the real value, only if the host is in that secret\'s allowHosts, and returns the response with any secret replaced by markers. Use this instead of curl or WebFetch for authenticated APIs. ' + NO_GET,
+    description: 'Make an HTTP request that needs a secret. Write the secret as its marker in a header (for example "Authorization": "Bearer __ZN_GITHUB_TOKEN__"); zn sends the request with the real value, only if the host is in that secret\'s allowHosts, and returns the response with any secret replaced by markers. Markers in the URL or the body are refused unless the user allowed that placement for the secret. Use this instead of curl or WebFetch for authenticated APIs. ' + NO_GET,
     inputSchema: {
       type: 'object',
       properties: {
@@ -158,6 +160,17 @@ function createSecretsServer(opts = {}) {
     const carriers = [String(args.url), ...Object.keys(headers), ...Object.values(headers), body || ''];
     const found = new Map();
     for (const c of carriers) for (const m of markers.findMarkers(c)) found.set(m.name, m);
+    // Where each marker sits: a value in a header goes only to the API it
+    // authenticates; in the URL or the body an injected prompt could make zn
+    // publish it (a gist, an issue, a query string in logs) on an allowed host.
+    const placements = (name) => {
+      const where = new Set();
+      const has = (t) => markers.findMarkers(t).some((m) => m.name === name);
+      if (has(String(args.url))) where.add('query');
+      if (Object.keys(headers).some(has) || Object.values(headers).some(has)) where.add('header');
+      if (body && has(body)) where.add('body');
+      return [...where];
+    };
     const detected = [...found.values()].filter((m) => m.detected);
     if (detected.length) {
       return denied(detected.map((m) => m.marker).join(', ') + ' is a value the scrubber found in a file, not a stored secret. ' +
@@ -175,6 +188,14 @@ function createSecretsServer(opts = {}) {
       if (!markers.hostAllowed(s.allowHosts, host)) {
         await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'deny', reason: 'host not in allowHosts' });
         return denied(m.marker + ' may not be sent to ' + host + ' (allowed: ' + ((s.allowHosts || []).join(', ') || 'none') + '). No request was made.');
+      }
+      const allowIn = Array.isArray(s.allowIn) && s.allowIn.length ? s.allowIn : ['header'];
+      const outside = placements(m.name).filter((p) => !allowIn.includes(p));
+      if (outside.length) {
+        await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'deny', reason: 'placement not allowed: ' + outside.join(',') });
+        const where = outside.map((p) => (p === 'query' ? 'the URL' : 'the body')).join(' and ');
+        return denied(m.marker + ' may only be sent in request headers (' + where + ' is not allowed for this secret). No request was made. ' +
+          'If the API really needs it there, the user can allow it in their own terminal: zn secret allow ' + m.name + ' --in ' + outside.join(' --in '));
       }
     }
     getEngine(); // fail before sending if the response cannot be scrubbed

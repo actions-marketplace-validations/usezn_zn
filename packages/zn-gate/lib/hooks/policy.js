@@ -24,9 +24,17 @@ const markers = require('../broker/markers');
 
 /* ------------------------------ paths ------------------------------ */
 
+// Home and zn-home references written as shell variables (bash, PowerShell,
+// cmd), so `cat $HOME/.zn/...` or `gc $env:USERPROFILE\.aws\credentials`
+// are classified like their literal paths.
+const HOME_VAR_RE = /^(?:\$\{?HOME\}?|\$env:(?:HOME|USERPROFILE)|%USERPROFILE%|%HOMEDRIVE%%HOMEPATH%)(?=$|[\\/])/i;
+const ZN_HOME_VAR_RE = /^(?:\$\{?ZN_HOME\}?|\$env:ZN_HOME|%ZN_HOME%)(?=$|[\\/])/i;
+
 function expandHome(p, home) {
   if (p === '~') return home;
   if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(home, p.slice(2));
+  if (ZN_HOME_VAR_RE.test(p)) return path.join(home, '.zn', p.replace(ZN_HOME_VAR_RE, ''));
+  if (HOME_VAR_RE.test(p)) return path.join(home, p.replace(HOME_VAR_RE, ''));
   return p;
 }
 
@@ -226,10 +234,114 @@ function wrapWithZnRun(cmd, znRunPrefix) {
   return { ok: true, command: s.slice(0, first.start) + znRunPrefix + ' ' + s.slice(first.start), wrapped: true };
 }
 
+/* ---------------------------- PowerShell ---------------------------- */
+
+// Aliases that Windows PowerShell maps to cmdlets (curl and wget are
+// Invoke-WebRequest there): never treated as native commands.
+const PS_ALIASES = new Set(['curl', 'wget', 'iwr', 'irm', 'iex', 'icm', 'cat', 'gc', 'type', 'echo', 'write', 'ls', 'dir', 'gci',
+  'cp', 'copy', 'mv', 'move', 'rm', 'del', 'erase', 'ri', 'sc', 'ac', 'set', 'sv', 'sl', 'cd', 'chdir', 'pushd', 'popd',
+  'start', 'saps', 'sajb', 'foreach', 'where', '%', '?', 'select', 'sort', 'measure', 'tee', 'ni', 'md', 'mkdir', 'sleep',
+  'kill', 'spps', 'ps', 'gps', 'history', 'h', 'r', 'clear', 'cls', 'man', 'help', 'ipmo', 'ise', 'nal', 'sal']);
+const PS_META = new Set([';', '|', '&', '(', ')', '{', '}', '@', '$', '`', '<', '>', ',', '\n', '\r']);
+
+/**
+ * Tokenize a PowerShell command line conservatively. Returns
+ * {words: [{text, start, end}], simple} where simple is false when the line
+ * has anything beyond one native command with plain arguments: pipelines,
+ * statements, script blocks, variables, subexpressions, splatting,
+ * redirection, or double-quoted strings that would expand.
+ */
+function scanPowerShell(cmd) {
+  const s = String(cmd);
+  const words = [];
+  let cur = null;
+  let simple = true;
+  let quote = null;
+  const push = (ch, at) => {
+    if (!cur) cur = { text: '', start: at, end: at };
+    cur.text += ch;
+    cur.end = at + 1;
+  };
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote === "'") {
+      if (ch === "'" && s[i + 1] === "'") { push("'", i); i++; continue; }
+      if (ch === "'") { quote = null; cur.end = i + 1; continue; }
+      push(ch, i);
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') { quote = null; cur.end = i + 1; continue; }
+      if (ch === '$' || ch === '`') simple = false;
+      push(ch, i);
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      if (!cur) cur = { text: '', start: i, end: i + 1 };
+      continue;
+    }
+    if (ch === ' ' || ch === '\t') {
+      if (cur) words.push(cur);
+      cur = null;
+      continue;
+    }
+    if (PS_META.has(ch)) simple = false;
+    push(ch, i);
+  }
+  if (cur) words.push(cur);
+  if (quote) simple = false;
+  return { words, simple };
+}
+
+function psQuote(s) {
+  return "'" + String(s).replace(/\\/g, '/').replace(/'/g, "''") + "'";
+}
+
+/**
+ * PowerShell counterpart of wrapWithZnRun. Commands with named markers are
+ * only wrapped when the whole line is one native command with plain
+ * arguments; anything else (cmdlets, aliases, pipelines, variables) is
+ * refused, because zn cannot rewrite it safely.
+ * opts: {nodePath, runJs, agent}
+ */
+function wrapPowerShell(cmd, opts) {
+  const s = String(cmd);
+  const named = markers.findNamedMarkers(s);
+  if (named.length === 0) return { ok: true, command: s, wrapped: false };
+  const guidance = ' In PowerShell, put the secret in a single native command with plain arguments ' +
+    "(for example: psql 'postgres://app:__ZN_DB_PASSWORD__@db/app' -c 'select 1'). " +
+    'For HTTP APIs use the secrets_http_request tool of the zn "secrets" MCP server instead of Invoke-WebRequest or curl.';
+  const scan = scanPowerShell(s);
+  if (!scan.simple || scan.words.length === 0) {
+    return { ok: false, reason: 'zn: this PowerShell command cannot be rewritten safely for secret injection (pipelines, variables, script blocks and expanding strings are not supported).' + guidance };
+  }
+  const first = scan.words[0].text;
+  const base = path.basename(first.replace(/\\/g, '/')).toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '');
+  if (/^[a-z]+-[a-z]+$/i.test(first) || PS_ALIASES.has(first.toLowerCase())) {
+    return { ok: false, reason: 'zn: `' + first + '` is a PowerShell cmdlet or alias; zn can only pass secrets to native programs.' + guidance };
+  }
+  if (/\.ps1$/i.test(first)) {
+    return { ok: false, reason: 'zn: PowerShell scripts (.ps1) cannot receive secrets through zn run.' + guidance };
+  }
+  if (!/^[A-Za-z0-9_.\-\\/:]+$/.test(first)) {
+    return { ok: false, reason: 'zn: could not identify the program in this command.' + guidance };
+  }
+  if ((base === 'zn' || base === 'zn-gate') && scan.words[1] && scan.words[1].text === 'run') {
+    return { ok: true, command: s, wrapped: false };
+  }
+  const prefix = '& ' + psQuote(opts.nodePath) + ' ' + psQuote(opts.runJs) + ' --agent ' + String(opts.agent).replace(/[^a-z0-9-]/g, '') + ' --';
+  return { ok: true, command: prefix + ' ' + s.slice(scan.words[0].start), wrapped: true };
+}
+
 const NETWORK_RE = /(^|[\s;&|(`$'"])(curl|wget|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|rsync|ftp|tftp|http|https|httpie|xh|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)(?=$|[\s;&|)'"])|\bgit\s+(push|fetch|pull|clone|remote|ls-remote)\b|\b(npm|pnpm|yarn)\s+publish\b|\b(docker|podman)\s+(push|login)\b|\bhttps?:\/\/|\/dev\/(tcp|udp)\//i;
 
 function hasNetworkSignals(cmd) {
-  return NETWORK_RE.test(String(cmd || ''));
+  const s = String(cmd || '');
+  if (NETWORK_RE.test(s)) return true;
+  // Same heuristic as the engine's restore policy (network commands, URLs,
+  // sockets and HTTP libraries in inline code).
+  try { return require('../scrub/engine').isNetworkCommand(s); } catch (_) { return false; }
 }
 
 const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\/])(zn|zn-gate|cli\.js)(\.cmd|\.js)?["']?\s+(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall))\b/i;
@@ -267,6 +379,8 @@ module.exports = {
   writeDenial,
   scanFirstCommand,
   wrapWithZnRun,
+  scanPowerShell,
+  wrapPowerShell,
   hasNetworkSignals,
   adminCommand,
   bashDenial,

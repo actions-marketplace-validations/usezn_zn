@@ -5,6 +5,7 @@
  * Values are read from a hidden TTY prompt or the clipboard, never from argv.
  */
 
+const path = require('path');
 const { spawnSync } = require('child_process');
 
 /**
@@ -89,11 +90,13 @@ function confirm(question, io = {}) {
 
 /** Read the clipboard with the platform tool. Returns a string or throws. */
 function readClipboard() {
+  // Absolute paths only: a clipboard tool planted on PATH would receive the value.
+  const ps = path.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const candidates = process.platform === 'darwin'
-    ? [['pbpaste', []]]
+    ? [['/usr/bin/pbpaste', []]]
     : process.platform === 'win32'
-      ? [['powershell.exe', ['-NoProfile', '-Command', 'Get-Clipboard -Raw']]]
-      : [['wl-paste', ['--no-newline']], ['xclip', ['-selection', 'clipboard', '-o']], ['xsel', ['--clipboard', '--output']]];
+      ? [[ps, ['-NoProfile', '-Command', 'Get-Clipboard -Raw']]]
+      : [['/usr/bin/wl-paste', ['--no-newline']], ['/usr/bin/xclip', ['-selection', 'clipboard', '-o']], ['/usr/bin/xsel', ['--clipboard', '--output']]];
   for (const [cmd, args] of candidates) {
     const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true });
     if (!r.error && r.status === 0) return String(r.stdout || '').replace(/\r?\n$/, '');

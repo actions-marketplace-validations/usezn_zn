@@ -24,10 +24,9 @@ const path = require('path');
 const markers = require('./markers');
 const { createMasker } = require('./mask');
 const { approvalStore } = require('./approvals');
-const tty = require('./tty');
 const { znError, loadVault, findProjectRoot } = require('../deps');
 
-const USAGE = 'usage: zn run [--secrets NAME[,NAME...]] -- <command> [args...]';
+const USAGE = 'usage: zn run [--secrets NAME[,NAME...]] [--agent ID] -- <command> [args...]';
 
 function splitList(v) {
   return String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -35,6 +34,7 @@ function splitList(v) {
 
 function parseRunArgs(args) {
   const secrets = [];
+  let agent = null;
   let i = 0;
   let sawDashDash = false;
   for (; i < args.length; i++) {
@@ -46,6 +46,10 @@ function parseRunArgs(args) {
       secrets.push(...splitList(v));
     } else if (a.startsWith('--secrets=')) {
       secrets.push(...splitList(a.slice('--secrets='.length)));
+    } else if (a === '--agent') {
+      // Set by agent hooks (for the audit log); not a security control.
+      agent = String(args[++i] || '');
+      if (!/^[a-z0-9-]{1,32}$/.test(agent)) throw znError('ZN_USAGE', 'invalid --agent');
     } else {
       throw znError('ZN_USAGE', 'unexpected argument before --: ' + a + '\n' + USAGE);
     }
@@ -56,7 +60,9 @@ function parseRunArgs(args) {
     const bad = markers.validateSecretName(name);
     if (bad) throw znError('ZN_USAGE', 'invalid secret name ' + JSON.stringify(name) + ': ' + bad);
   }
-  return { secrets: [...new Set(secrets)], command };
+  const out = { secrets: [...new Set(secrets)], command };
+  if (agent) out.agent = agent;
+  return out;
 }
 
 /** Named secrets the command needs: markers in argv plus --secrets. */
@@ -98,7 +104,7 @@ async function prepare(parsed, opts) {
   const cwd = opts.cwd || process.cwd();
   const project = opts.project || findProjectRoot(cwd);
   const vault = opts.vault;
-  const agent = opts.agent || env.ZN_AGENT || null;
+  const agent = opts.agent || parsed.agent || env.ZN_AGENT || null;
   const argv0 = parsed.command[0];
   const exe = markers.normalizeExe(argv0);
   const names = requiredSecrets(parsed);
@@ -152,18 +158,20 @@ async function prepare(parsed, opts) {
     (opts.stderr || process.stderr).write('zn run: left as markers in the environment (not allowed or not yet approved for `' + exe + '`): ' + skipped.join(', ') + '\n');
   }
 
+  // First use of a (secret, command) pair: the vault daemon asks the user on
+  // its own channel (the terminal of `zn unlock --foreground` or an OS
+  // dialog), never on this process's terminal, which an agent may control.
   for (const c of chosen) {
     if (await approvals.isApproved(c.name, c.command)) continue;
-    const stdin = opts.stdin || process.stdin;
-    const canAsk = !!stdin.isTTY && !tty.agentEnvDetected(env);
-    if (!canAsk) {
-      await deny(c.name, c.mode, 'first use of ' + c.name + ' with `' + c.command + '` needs your approval. ' +
-        'Run once in your own terminal: zn secret approve ' + c.name + ' --command "' + c.command + '"');
+    if (opts.stderr !== false) {
+      (opts.stderr || process.stderr).write('zn run: first use of ' + c.name + ' with `' + c.command + '`: confirm it in the zn vault prompt (dialog or the `zn unlock --foreground` terminal)\n');
     }
-    const ask = opts.confirm || ((q) => tty.confirm(q, { stdin, stderr: opts.stderr }));
-    const ok = await ask('zn: allow `' + c.command + '` to use secret ' + c.name + ' (the value goes into the process environment)?');
-    if (!ok) await deny(c.name, c.mode, 'you declined ' + c.name + ' for `' + c.command + '`');
-    await approvals.recordApproval(c.name, c.command);
+    try {
+      await approvals.recordApproval(c.name, c.command);
+    } catch (err) {
+      const why = err && err.code === 'ZN_POLICY_DENIED' ? err.message : (err && err.message) || 'not approved';
+      await deny(c.name, c.mode, 'first use of ' + c.name + ' with `' + c.command + '` was not approved (' + why + ')');
+    }
   }
 
   const values = new Map();

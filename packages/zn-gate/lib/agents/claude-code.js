@@ -48,14 +48,21 @@ const { whichSync } = require('../broker/markers');
 
 const id = 'claude-code';
 
-const PRE_MATCHER = 'Bash|Read|Grep|Edit|MultiEdit|Write|NotebookEdit|WebFetch';
-const POST_MATCHER = 'Bash|Read|Grep|WebFetch|mcp__.*';
+// Exact names (a matcher of letters and | is an exact list). PowerShell and
+// Monitor run commands like Bash; LSP reads files.
+const PRE_MATCHER = 'Bash|PowerShell|Monitor|Read|Grep|LSP|Edit|MultiEdit|Write|NotebookEdit|WebFetch';
+// A regex (it contains mcp__.*), anchored so it names exactly these tools.
+const POST_MATCHER = '^(Bash|PowerShell|Monitor|Read|Grep|LSP|WebFetch|ReadMcpResourceTool)$|^mcp__.*';
 const HOOK_TIMEOUT_S = 15;
 const OUR_COMMAND_RE = /(\bhook claude-code|hooks[\\/]runner\.js"? claude-code)\s*$/;
 const MCP_SERVER_NAME = 'secrets';
 
 const TOOL_MAP = {
   Bash: 'bash',
+  PowerShell: 'powershell',
+  Monitor: 'monitor',
+  LSP: 'lsp',
+  ReadMcpResourceTool: 'mcpresource',
   Read: 'read',
   Write: 'write',
   Edit: 'edit',
@@ -98,7 +105,7 @@ function normalize(raw) {
   const ti = raw.tool_input && typeof raw.tool_input === 'object' ? raw.tool_input : {};
   const input = {
     command: typeof ti.command === 'string' ? ti.command : undefined,
-    path: ti.file_path || ti.notebook_path || ti.path || undefined,
+    path: ti.file_path || ti.notebook_path || ti.filePath || ti.path || undefined,
     url: typeof ti.url === 'string' ? ti.url : undefined,
     texts: textsOf(tool, ti),
   };
@@ -132,6 +139,13 @@ function buildUpdatedInput(ev, upd) {
 function respond(d) {
   const ev = d && d.event;
   if (!ev || !ev.event) return null;
+  const out = respondInner(d, ev);
+  // systemMessage: a notice shown to the user (not to the model).
+  if (out && d.userMessage) out.systemMessage = d.userMessage;
+  return out;
+}
+
+function respondInner(d, ev) {
   if (ev.event === 'pre_tool') {
     if (d.decision === 'deny') {
       return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.message || 'Blocked by zn' } };

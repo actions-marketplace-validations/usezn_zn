@@ -38,15 +38,22 @@ function service() {
   return s;
 }
 
-function onPath(cmd) {
-  const dirs = (process.env.PATH || '').split(path.delimiter);
-  const exts = process.platform === 'win32' ? ['.exe', '.cmd', ''] : [''];
-  for (const d of dirs) {
-    for (const e of exts) {
-      try { if (d && fs.statSync(path.join(d, cmd + e)).isFile()) return true; } catch (err) { /* next */ }
-    }
+/* Keychain helpers run by absolute path, never looked up on PATH: a
+ * planted `secret-tool` or `powershell.exe` earlier on PATH would see the
+ * identity. */
+const SECRET_TOOL_DIRS = ['/usr/bin', '/bin', '/usr/local/bin', '/run/current-system/sw/bin'];
+
+function secretToolPath() {
+  for (const d of SECRET_TOOL_DIRS) {
+    const p = path.join(d, 'secret-tool');
+    try { if (fs.statSync(p).isFile()) return p; } catch (err) { /* next */ }
   }
-  return false;
+  return null;
+}
+
+function powershellPath() {
+  const root = process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows';
+  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 }
 
 function detectBackend() {
@@ -57,7 +64,7 @@ function detectBackend() {
   }
   if (process.platform === 'darwin' && fs.existsSync('/usr/bin/security')) return 'macos';
   if (process.platform === 'win32') return 'windows';
-  if (process.platform === 'linux' && process.env.DBUS_SESSION_BUS_ADDRESS && onPath('secret-tool')) return 'libsecret';
+  if (process.platform === 'linux' && process.env.DBUS_SESSION_BUS_ADDRESS && secretToolPath()) return 'libsecret';
   return 'passphrase';
 }
 
@@ -178,7 +185,7 @@ const WIN_SCRIPT = [
 
 function winCred(op, input) {
   const encoded = Buffer.from(WIN_SCRIPT, 'utf16le').toString('base64');
-  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], input,
+  return run(powershellPath(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], input,
     { ZN_CRED_OP: op, ZN_CRED_TARGET: service() + ':' + ACCOUNT });
 }
 
@@ -202,13 +209,19 @@ const windows = {
 /* libsecret (Secret Service)                                          */
 /* ------------------------------------------------------------------ */
 
+function secretTool() {
+  const p = secretToolPath();
+  if (!p) throw znError(CODES.LOCKED, 'secret-tool not found in /usr/bin, /bin or /usr/local/bin');
+  return p;
+}
+
 const libsecret = {
   store(identity) {
-    const res = run('secret-tool', ['store', '--label=zn vault identity', 'service', service(), 'account', ACCOUNT], identity);
+    const res = run(secretTool(), ['store', '--label=zn vault identity', 'service', service(), 'account', ACCOUNT], identity);
     if (res.status !== 0) throw znError(CODES.LOCKED, 'Secret Service refused the identity (secret-tool exit ' + res.status + ')');
   },
   load() {
-    const res = run('secret-tool', ['lookup', 'service', service(), 'account', ACCOUNT]);
+    const res = run(secretTool(), ['lookup', 'service', service(), 'account', ACCOUNT]);
     const out = (res.stdout || '').trim();
     if (res.status !== 0 && !out) {
       if (res.status === 1) return null;
@@ -217,7 +230,7 @@ const libsecret = {
     return out || null;
   },
   remove() {
-    return run('secret-tool', ['clear', 'service', service(), 'account', ACCOUNT]).status === 0;
+    return run(secretTool(), ['clear', 'service', service(), 'account', ACCOUNT]).status === 0;
   },
 };
 
@@ -230,9 +243,11 @@ const NATIVE = { macos, windows, libsecret };
 function readMeta(opts) {
   const buf = store.readPrivateFile(store.paths(opts).metaFile);
   if (buf === null) return null;
-  const meta = JSON.parse(buf.toString('utf8'));
+  let meta = null;
+  try { meta = JSON.parse(buf.toString('utf8')); } catch (err) { meta = null; }
   if (!meta || !BACKENDS.includes(meta.backend) || !/^age1[0-9a-z]+$/.test(meta.recipient || '')) {
-    throw znError(CODES.POLICY_DENIED, 'corrupt keychain.json');
+    throw znError(CODES.LOCKED, 'vault file keychain.json is corrupted (it records the keychain backend and the public key). ' +
+      'Restore it from a backup; zn will not create a new vault over the existing one.');
   }
   return meta;
 }
@@ -288,7 +303,7 @@ async function loadIdentity(opts) {
     try {
       identity = await store.decryptWithPassphrase(o.passphrase, new Uint8Array(buf));
     } catch (err) {
-      throw znError(CODES.LOCKED, 'wrong passphrase');
+      throw znError(CODES.LOCKED, 'wrong passphrase, or vault file identity.age is corrupted');
     }
   } else {
     identity = NATIVE[backend].load();
