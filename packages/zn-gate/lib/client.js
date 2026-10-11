@@ -162,6 +162,7 @@ async function checkToolResult(toolName, content, options = {}) {
     return {
       tool_name: toolName,
       safe_to_ingest: true,
+      truncated: false,
       secrets_redacted: 0,
       sanitized_content: textContent,
       assessment: { verdict: 'allow', confidence: 1.0, rule: 'none', engine: 'oss-local', mode: 'oss-local' },

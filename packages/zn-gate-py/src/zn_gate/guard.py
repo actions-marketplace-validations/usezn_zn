@@ -10,7 +10,7 @@ import functools
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from .rules import Assessment, evaluate
+from .rules import Assessment, evaluate, scan_windows
 
 
 class GuardBlockError(PermissionError):
@@ -60,13 +60,17 @@ def check_tool_result(result: Any) -> Assessment:
     """
     Evaluates data returned by external tools (e.g. web search, file content, DB queries)
     for indirect prompt injections or leaked credentials.
+    Large strings are scanned in overlapping windows (see rules.scan_windows);
+    the result has truncated=True when some string was not fully analysed.
     """
     strings_to_check = _extract_strings(result)
+    truncated = False
     for s in strings_to_check:
-        res = evaluate(s)
+        res = scan_windows(s)
         if not res.allowed:
             return res
-    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None)
+        truncated = truncated or res.truncated
+    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None, truncated=truncated)
 
 
 def guard(
