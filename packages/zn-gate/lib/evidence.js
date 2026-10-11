@@ -313,6 +313,16 @@ function renderAuditRow(r) {
  */
 function startEvidenceUi(port = 3100, filePath = EVIDENCE_FILE) {
   const server = http.createServer((req, res) => {
+    // Only answer requests addressed to the loopback name and port, so a web
+    // page cannot reach the dashboard through DNS rebinding.
+    const addr = server.address();
+    const boundPort = addr && typeof addr === 'object' ? addr.port : port;
+    const host = String(req.headers.host || '').toLowerCase();
+    if (host !== `127.0.0.1:${boundPort}` && host !== `localhost:${boundPort}`) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
     // 1. API: Aggregated stats
     if (req.url === '/api/stats') {
       res.writeHead(200, { 'Content-Type': 'application/json' });

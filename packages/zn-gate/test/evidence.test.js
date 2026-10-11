@@ -124,6 +124,15 @@ function get(port, urlPath) {
   });
 }
 
+function status(port, urlPath, host) {
+  return new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: urlPath, headers: { Host: host } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    }).on('error', reject);
+  });
+}
+
 test('evidence dashboard - escapes every ledger field rendered as HTML', () => {
   assert.equal(escapeHtml('<b>"x"</b> & \'y\''), '&lt;b&gt;&quot;x&quot;&lt;/b&gt; &amp; &#39;y&#39;');
   const row = renderAuditRow({
@@ -176,6 +185,12 @@ test('evidence dashboard - listens on loopback only and serves the escaping rend
     const stats = JSON.parse(await get(addr.port, '/api/stats'));
     const row = renderAuditRow(stats.recent[0]);
     assert.ok(row.includes('&lt;b&gt;x&lt;/b&gt;'));
+
+    // Requests for another host name (DNS rebinding) are refused.
+    assert.equal(await status(addr.port, '/api/stats', `localhost:${addr.port}`), 200);
+    assert.equal(await status(addr.port, '/api/stats', 'attacker.example'), 403);
+    assert.equal(await status(addr.port, '/api/export', `attacker.example:${addr.port}`), 403);
+    assert.equal(await status(addr.port, '/', `127.0.0.1:${addr.port + 1}`), 403);
   } finally {
     process.stdout.write = origWrite;
     if (server) await new Promise((resolve) => server.close(resolve));
