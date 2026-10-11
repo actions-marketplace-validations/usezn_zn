@@ -424,14 +424,14 @@ test('vault files: forged, corrupted or missing secrets.age fail closed with a c
   const original = fs.readFileSync(p.secretsFile);
   const meta = keychain.readMeta({});
   try {
-    // O-5: a vault encrypted to the public recipient by someone else.
+    // A vault encrypted to the public recipient by someone else.
     const forged = await store.encryptTo(meta.recipient, JSON.stringify({ v: 1, auditKey: 'a'.repeat(64), secrets: {}, approvals: {} }));
     fs.writeFileSync(p.secretsFile, Buffer.from(forged));
     await assert.rejects(startDaemon(), (e) => e.code === 'ZN_LOCKED' && /integrity check/.test(e.message));
-    // O-7: garbage.
+    // Garbage.
     fs.writeFileSync(p.secretsFile, 'not an age file');
     await assert.rejects(startDaemon(), (e) => e.code === 'ZN_LOCKED' && /secrets\.age is corrupted or was encrypted to another key/.test(e.message));
-    // O-4: deleted while the audit log and project maps exist.
+    // Deleted while the audit log and project maps exist.
     fs.unlinkSync(p.secretsFile);
     await assert.rejects(startDaemon(), (e) => e.code === 'ZN_LOCKED' && /missing but this vault has history/.test(e.message));
     assert.ok(!fs.existsSync(p.secretsFile), 'no empty vault was created');

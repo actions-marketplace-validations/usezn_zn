@@ -81,7 +81,7 @@ function lazyDeps(opts) {
       if (!engine) engine = deps.loadEngine();
       return engine;
     },
-    // D2: a vault that cannot be loaded is null, never a reason to skip the
+    // A vault that cannot be loaded is null, never a reason to skip the
     // scrubber; the engine redacts irreversibly without it.
     async vault() {
       if (vault === undefined) {
