@@ -44,15 +44,20 @@ const out = {
     SCAN_HEAD_CHARS: rules.SCAN_HEAD_CHARS,
     SCAN_TAIL_CHARS: rules.SCAN_TAIL_CHARS,
     EVAL_CACHE_MAX_INPUT: rules.EVAL_CACHE_MAX_INPUT,
+    MAX_TOOL_RESULT_SCAN_CHARS: rules.MAX_TOOL_RESULT_SCAN_CHARS,
+    SCAN_WINDOW_OVERLAP: rules.SCAN_WINDOW_OVERLAP,
   },
   results: samples.map((sample) => {
     const text = expandSample(sample);
     const res = rules.evaluate(text);
     const { stripped } = rules.normalizeInput(text);
+    const scan = rules.scanWindows(text);
     return {
       verdict: res.verdict,
       rule: res.rule,
       truncated: res.truncated === true,
+      // The same input scanned as a tool result.
+      scan: { verdict: scan.verdict, rule: scan.rule, truncated: scan.truncated === true },
       // Short inputs also compare the normalized text.
       stripped: text.length <= 256 ? stripped : null,
     };

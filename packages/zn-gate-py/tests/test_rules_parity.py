@@ -123,6 +123,11 @@ class TestBehaviourParity(unittest.TestCase):
                     (res.verdict, res.rule, res.truncated),
                     (expected["verdict"], expected["rule"], expected["truncated"]),
                 )
+                scan = R.scan_windows(text)
+                self.assertEqual(
+                    (scan.verdict, scan.rule, scan.truncated),
+                    (expected["scan"]["verdict"], expected["scan"]["rule"], expected["scan"]["truncated"]),
+                )
                 if expected["stripped"] is not None:
                     self.assertEqual(R.normalize_input(text)[1], expected["stripped"])
 

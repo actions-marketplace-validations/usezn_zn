@@ -10,15 +10,87 @@ const path = require('path');
 
 const RULES_VERSION = '2026-10-11.1';
 
+// "ignore" and "disregard" are ordinary words ("ignore the noise in the
+// logs", "ignore whitespace changes"). They only count as an override when
+// they name what to ignore: instructions, prompts, rules, guardrails... with a
+// qualifier (previous, above, system...) or a quantifier (all, any, your...),
+// or point back at earlier text ("ignore the above", "everything before").
+// Every group is a fixed list of words and whitespace runs are bounded, so a
+// match attempt does bounded work.
+const OVERRIDE_NOUN_SOURCE =
+  '(?:instructions?|prompts?|rules|guidelines?|directives?|guidance|restrictions?|guardrails?|context|constraints?|commands?|policies|programming|orders|limitations?|directions|requests?|tasks?)\\b';
+const OVERRIDE_QUANTIFIER_SOURCE = '(?:all|any|every|each|your|my|these|those)(?:\\s{1,32}of)?\\s{1,32}';
+const OVERRIDE_DETERMINER_SOURCE = '(?:(?:the|your|my|these|those|our|its|their)\\s{1,32})?';
+const OVERRIDE_QUALIFIER_SOURCE =
+  '(?:previous|prior|above|earlier|preceding|foregoing|original|initial|existing|system|safety|security|former|developer)\\s{1,32}';
+// "ignore the above" / "ignore previous" without a noun counts only at the end
+// of a clause, before "and" or before a word for text ("ignore the above
+// text"), so "ignore the previous build output" stays allowed.
+const OVERRIDE_END_SOURCE =
+  '(?=[ \\t]*(?:[.,;:!)\\r\\n]|$)|\\s{1,32}and\\b|\\s{1,32}(?:text|content|message|messages|input|lines?|one|ones)\\b)';
+
+function overrideRuleSource(verb) {
+  return [
+    `${verb}\\s{1,32}(?:${OVERRIDE_QUANTIFIER_SOURCE})?${OVERRIDE_DETERMINER_SOURCE}(?:${OVERRIDE_QUALIFIER_SOURCE}){1,2}${OVERRIDE_NOUN_SOURCE}`,
+    `${verb}\\s{1,32}${OVERRIDE_QUANTIFIER_SOURCE}${OVERRIDE_DETERMINER_SOURCE}${OVERRIDE_NOUN_SOURCE}`,
+    `${verb}\\s{1,32}(?:the\\s{1,32})?(?:instructions|guardrails|directives)\\b`,
+    `${verb}\\s{1,32}(?:${OVERRIDE_QUANTIFIER_SOURCE})?(?:the\\s{1,32})?(?:previous|prior|above|earlier|preceding|foregoing)${OVERRIDE_END_SOURCE}`,
+    `${verb}\\s{1,32}(?:everything|anything|all)\\s{1,32}(?:above|before|previously|prior|earlier|you(?:'ve|\\s{1,32}have|\\s{1,32}were|\\s{1,32}was)?\\s{1,32}(?:been\\s{1,32})?(?:told|said|given|received))\\b`,
+  ].join('|');
+}
+
+// Russian and Chinese rules: a verb followed, within 80 characters on the same
+// line, by an object ("забудь ... инструкции", "忽略 ... 指令"). A regex such
+// as /忽略[^\n]{0,80}?(指令)/ is linear but reads up to 80 characters from
+// every verb, which is slow on a long run of verbs. nearMatch() scans the verbs
+// and the objects once each and compares their positions.
+const NEAR_MAX_GAP = 80;
+const RU_FORGET_RE = /забудь\s+/iu;
+const RU_FORGET_OBJECT_RE = /все|инструкции/iu;
+const RU_IGNORE_RE = /игнорируй\s+/iu;
+const RU_IGNORE_OBJECT_RE = /все|предыдущие/iu;
+const RU_PHRASE_RE = /действуй\s+как|ты\s+теперь|найди\s+пароли/iu;
+const ZH_IGNORE_RE = /忽略/u;
+const ZH_IGNORE_OBJECT_RE = /指示|指令|提示/u;
+const ZH_FORGET_RE = /忘记/u;
+const ZH_FORGET_OBJECT_RE = /指示|指令|一切/u;
+const ZH_PHRASE_RE = /你现在是|初始提示词/u;
+
+// True when an object match starts at most NEAR_MAX_GAP characters after the
+// end of a verb match, with no line break in between. Linear: the object
+// search only restarts past the last object found.
+function nearMatch(text, verbRe, objectRe) {
+  const verbs = new RegExp(verbRe.source, verbRe.flags + 'g');
+  const objects = new RegExp(objectRe.source, objectRe.flags + 'g');
+  let obj = null;
+  let v;
+  while ((v = verbs.exec(text)) !== null) {
+    const end = v.index + v[0].length;
+    if (obj === null || obj.index < end) {
+      objects.lastIndex = end;
+      obj = objects.exec(text);
+      if (obj === null) return false;
+    }
+    if (obj.index - end <= NEAR_MAX_GAP && !text.slice(end, obj.index).includes('\n')) return true;
+  }
+  return false;
+}
+
+function testMultiRu(text) {
+  return RU_PHRASE_RE.test(text) || nearMatch(text, RU_FORGET_RE, RU_FORGET_OBJECT_RE) || nearMatch(text, RU_IGNORE_RE, RU_IGNORE_OBJECT_RE);
+}
+
+function testMultiZh(text) {
+  return ZH_PHRASE_RE.test(text) || nearMatch(text, ZH_IGNORE_RE, ZH_IGNORE_OBJECT_RE) || nearMatch(text, ZH_FORGET_RE, ZH_FORGET_OBJECT_RE);
+}
+
 const INJECTION_RULES = [
-  // The verb alone is not enough: "ignore the noise in the logs" is ordinary
-  // prose. An attack names what to ignore (previous/prior/above instructions).
-  { id: 'pi:ignore_previous', pattern: /ignore\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above|existing|system)\s+(?:instructions?|prompts?|rules|guidelines|context)|ignore\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above)\b/i, description: 'Override prior instructions' },
-  { id: 'pi:disregard', pattern: /disregard\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above|existing|system)\s+(?:instructions?|prompts?|rules|guidelines|context)|disregard\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above)\b/i, description: 'Disregard instructions' },
+  { id: 'pi:ignore_previous', pattern: new RegExp(overrideRuleSource('ignore'), 'i'), description: 'Override prior instructions' },
+  { id: 'pi:disregard', pattern: new RegExp(overrideRuleSource('disregard'), 'i'), description: 'Disregard instructions' },
   { id: 'pi:forget', pattern: /forget\s+(about\s+)?(everything|all|your)/i, description: 'Forget-context attack' },
   { id: 'pi:identity_override', pattern: /you\s+are\s+now/i, description: 'Identity override' },
   { id: 'pi:new_instructions', pattern: /new\s+instructions?:/i, description: 'Instruction replacement' },
-  { id: 'pi:system_tag', pattern: /(?:^|[\r\n"'`\[<])\s*system\s*:\s*|<[\s/]*system\b[^>]*>/i, description: 'Fake system tag' },
+  { id: 'pi:system_tag', pattern: /(?:^|[\r\n"'`\[<])[ \t]*system\s*:|<[\s/]*system\b[^<>]*>/i, description: 'Fake system tag' },
   { id: 'pi:system_bracket', pattern: /\[system\]/i, description: 'Bracketed system tag' },
   { id: 'pi:act_as', pattern: /act\s+as\s+(if|a)/i, description: 'Role hijack (act as)' },
   { id: 'pi:pretend', pattern: /pretend\s+(you|to\s+be)/i, description: 'Role hijack (pretend)' },
@@ -28,17 +100,21 @@ const INJECTION_RULES = [
   { id: 'pi:override', pattern: /\boverride\s+(?:all\s+|your\s+|the\s+)?(?:system|policy|safety|rules|instructions|guidelines|restrictions)\b|\bsystem\s+override\s*:/i, description: 'Policy override attempt' },
   { id: 'pi:template_boundary', pattern: /\[INST\]|\[\/INST\]|<<<SYS>>>|<\/<<SYS>>>|<\|im_start\|>|<\|im_end\|>/i, description: 'Chat template boundary injection' },
   { id: 'pi:multi_es', pattern: /ignora\s+(todas\s+las\s+)?(instrucciones|anteriores|previas)|olvida\s+(todo|las\s+instrucciones)|act[uú]a\s+como|ahora\s+eres/iu, description: 'Multilingual prompt injection (Spanish)' },
+  { id: 'pi:multi_pt', pattern: /ignor(?:e|a|em|ar)\s+(?:(?:todas|todos|qualquer|quaisquer|cualquier)\s+)?(?:(?:as|os|las|los|suas|seus|sus|tus|estas|estes|essas|esses)\s+)?(?:instru[cç][oõ]es|instrucciones|regras|reglas|diretrizes|directrices|orienta[cç][oõ]es|ordens|[oó]rdenes|comandos|restri[cç][oõ]es|restricciones|mensagens|anteriores|pr[eé]vias)|ignore\s+(?:tudo|qualquer|quaisquer)\b|ignora\s+(?:todo|tudo|cualquier)\b/i, description: 'Multilingual prompt injection (Portuguese)' },
   { id: 'pi:multi_fr', pattern: /ignore[rz]?\s+(toutes\s+les\s+)?instructions|oublie[rz]?\s+tout|agis\s+comme|tu\s+es\s+maintenant/iu, description: 'Multilingual prompt injection (French)' },
   { id: 'pi:multi_de', pattern: /ignoriere\s+(alle\s+)?(anweisungen|instruktionen)|vergiss\s+(alles|jede)|du\s+bist\s+jetzt|handle\s+als/iu, description: 'Multilingual prompt injection (German)' },
-  { id: 'pi:multi_ru', pattern: /забудь\s+[^\n]{0,80}?(все|инструкции)|игнорируй\s+[^\n]{0,80}?(все|предыдущие)|действуй\s+как|ты\s+теперь|найди\s+пароли/iu, description: 'Multilingual prompt injection (Russian)' },
-  { id: 'pi:multi_zh', pattern: /忽略[^\n]{0,80}?(指示|指令|提示)|忘记[^\n]{0,80}?(指示|指令|一切)|你现在是|初始提示词/u, description: 'Multilingual prompt injection (Chinese)' },
+  { id: 'pi:multi_ru', pattern: /забудь\s+[^\n]{0,80}?(все|инструкции)|игнорируй\s+[^\n]{0,80}?(все|предыдущие)|действуй\s+как|ты\s+теперь|найди\s+пароли/iu, test: testMultiRu, description: 'Multilingual prompt injection (Russian)' },
+  { id: 'pi:multi_zh', pattern: /忽略[^\n]{0,80}?(指示|指令|提示)|忘记[^\n]{0,80}?(指示|指令|一切)|你现在是|初始提示词/u, test: testMultiZh, description: 'Multilingual prompt injection (Chinese)' },
 ];
 
 // Hidden-element detection in two linear passes: find the first opening tag
 // whose attributes hide it, then search once for a payload keyword after it.
-// A single regex with a lazy `[\s\S]*?` tail re-scans the rest of the input
-// from every candidate tag, which is quadratic on adversarial markup.
-const OPEN_TAG_RE = /<[a-z0-9]+\b([^>]{0,2000})>/gi;
+// OPEN_TAG_RE always matches from a "<name" and consumes the attribute run up
+// to the next "<" or ">", so every character is read once; the candidate is
+// a tag only when that run is closed by ">". (A single regex with a lazy
+// `[\s\S]*?` tail, or an attribute run that may cross "<", re-scans the rest
+// of the input from every candidate and is super-linear on crafted markup.)
+const OPEN_TAG_RE = /<[a-z0-9]+\b([^<>]*)(>?)/gi;
 const HIDDEN_ATTR_RE = /\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0(?:px)?|color\s*:\s*transparent|text-indent\s*:\s*-[0-9]{3,}px|hidden\b)/i;
 const HIDDEN_PAYLOAD_RE = /ignore|system|instruction|prompt|bypass|override|exfil|leak/gi;
 
@@ -46,7 +122,7 @@ function testHiddenTag(text) {
   const tagRe = new RegExp(OPEN_TAG_RE.source, OPEN_TAG_RE.flags);
   let m;
   while ((m = tagRe.exec(text)) !== null) {
-    if (HIDDEN_ATTR_RE.test(m[1])) {
+    if (m[2] === '>' && HIDDEN_ATTR_RE.test(m[1])) {
       const payloadRe = new RegExp(HIDDEN_PAYLOAD_RE.source, HIDDEN_PAYLOAD_RE.flags);
       payloadRe.lastIndex = tagRe.lastIndex;
       return payloadRe.test(text);
@@ -63,9 +139,8 @@ const INDIRECT_INJECTION_RULES = [
   },
   {
     id: 'indirect:hidden_tag',
-    // Kept for reference and for callers that read `.pattern`; matching goes
-    // through test() below, which runs in linear time.
-    pattern: /<[a-z0-9]+\b[^>]{0,2000}\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0(?:px)?|color\s*:\s*transparent|text-indent\s*:\s*-[0-9]{3,}px|hidden\b)[^>]{0,2000}>[\s\S]*?(?:ignore|system|instruction|prompt|bypass|override|exfil|leak)/i,
+    // `.pattern` is the linear tag scanner; the rule itself is test().
+    pattern: new RegExp(OPEN_TAG_RE.source, 'i'),
     test: testHiddenTag,
     description: 'Hidden DOM element with injection payload',
   },
@@ -99,10 +174,33 @@ const SENSITIVE_PATH_RULES = [
   },
 ];
 
+// Markdown image exfiltration: ![alt](http(s)://host/...?key=value ...).
+// MD_IMAGE_RE always matches from "![" and consumes the alt text and the URL
+// once, so the scan is linear; the URL is then checked in code. Patterns that
+// chain a lazy URL with a "[^)]*\)" tail re-scan the rest of the input from
+// every "![" when no ")" follows.
+const MD_IMAGE_RE = /!\[[^\]]*(?:\]\(([^\s)]*))?/gi;
+const MD_URL_SCHEME_RE = /^https?:\/\/[^?&]/i;
+const MD_URL_SECRET_PARAM_RE = /[?&](?:key|token|pass|secret|cred|data|val|leak|exfil)=/i;
+
+function testMarkdownImage(text) {
+  const closing = text.lastIndexOf(')');
+  if (closing === -1) return false;
+  const imgRe = new RegExp(MD_IMAGE_RE.source, MD_IMAGE_RE.flags);
+  let m;
+  while ((m = imgRe.exec(text)) !== null) {
+    const url = m[1];
+    if (url && imgRe.lastIndex <= closing && MD_URL_SCHEME_RE.test(url) && MD_URL_SECRET_PARAM_RE.test(url.slice(url.indexOf('//') + 2))) return true;
+  }
+  return false;
+}
+
 const MARKDOWN_EXFIL_RULES = [
   {
     id: 'exfil:markdown_image',
-    pattern: /!\[[^\]]{0,500}\]\(https?:\/\/[^\s\)]{1,2048}?[\?&](?:key|token|pass|secret|cred|data|val|leak|exfil)=[^)]*\)/i,
+    // `.pattern` is the linear image scanner; the rule itself is test().
+    pattern: new RegExp(MD_IMAGE_RE.source, 'i'),
+    test: testMarkdownImage,
     description: 'Covert exfiltration via markdown image URL parameter',
   },
 ];
@@ -216,8 +314,9 @@ function normalizeInput(str) {
   return { normalized, stripped };
 }
 
-// Inputs longer than MAX_SCAN_CHARS are analysed as head + tail; the result
-// then carries `truncated: true`.
+// evaluate() analyses inputs longer than MAX_SCAN_CHARS as head + tail and
+// marks the result `truncated: true`. Tool results are scanned in overlapping
+// windows (up to MAX_TOOL_RESULT_SCAN_CHARS) by scanWindows() below.
 const MAX_SCAN_CHARS = 256 * 1024;
 const SCAN_HEAD_CHARS = 192 * 1024;
 // One character is reserved for the separator, so the window fits the limit.
@@ -268,7 +367,7 @@ function evaluateUncached(input, options = {}) {
 
     // 1. Covert Markdown Image Exfiltration
     for (const rule of MARKDOWN_EXFIL_RULES) {
-      if (rule.pattern.test(text)) {
+      if (rule.test ? rule.test(text) : rule.pattern.test(text)) {
         return { verdict: 'block', confidence: 0.98, reason: rule.description, rule: rule.id, engine: 'oss-local', rules_version: RULES_VERSION };
       }
     }
@@ -289,7 +388,7 @@ function evaluateUncached(input, options = {}) {
 
     // 4. Standard Prompt Injection Rules
     for (const rule of INJECTION_RULES) {
-      if (rule.pattern.test(text)) {
+      if (rule.test ? rule.test(text) : rule.pattern.test(text)) {
         return { verdict: 'block', confidence: 0.95, reason: rule.description, rule: rule.id, engine: 'oss-local', rules_version: RULES_VERSION };
       }
     }
@@ -330,9 +429,10 @@ const SECRET_PATTERNS = [
   { id: 'secret:github_token', pattern: /\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,40}|github_pat_[A-Za-z0-9_]{82})\b/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
   { id: 'secret:db_url_password', pattern: /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:)([^@\s\/]+)(@)/gi, replacement: '$1[REDACTED_DB_PASSWORD]$3' },
   // The lookahead + backreference pairs act as atomic groups, so a long run of
-  // "-eyJ" cannot make the engine retry every split point. Only used when the
+  // "-eyJ" cannot make the engine retry every split point, and the lookbehind
+  // allows a single start per token. Only used when the
   // text contains ".eyJ" (see redactSecrets).
-  { id: 'secret:jwt_token', pattern: /\b(eyJ(?=([A-Za-z0-9_=-]{10,512}))\2\.eyJ(?=([A-Za-z0-9_=-]{10,8192}))\3\.[A-Za-z0-9_.+/=-]{10,4096})\b/g, replacement: '[REDACTED_JWT]', requires: '.eyJ' },
+  { id: 'secret:jwt_token', pattern: /(?<![A-Za-z0-9_-])(eyJ(?=([A-Za-z0-9_-]{10,512}))\2\.eyJ(?=([A-Za-z0-9_=-]{10,8192}))\3\.[A-Za-z0-9_.+/=-]{10,4096})\b/g, replacement: '[REDACTED_JWT]', requires: '.eyJ' },
   { id: 'secret:env_credential', pattern: /\b((?:AWS_SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PRIVATE_KEY|DATABASE_PASSWORD)\s*[:=]\s*['"]?)([^\s'"]{12,})(['"]?)/gi, replacement: '$1[REDACTED_SECRET]$3' },
 ];
 
@@ -357,11 +457,49 @@ function redactSecrets(text) {
   return { sanitized, detections };
 }
 
+// Tool output can be large (file reads, search results). Instead of the
+// head + tail view used by evaluate(), it is scanned in windows of
+// MAX_SCAN_CHARS that overlap by SCAN_WINDOW_OVERLAP, so a payload in the
+// middle is not skipped. Past MAX_TOOL_RESULT_SCAN_CHARS only the last window
+// is added and the result is marked `truncated: true`. A match that spans more
+// than SCAN_WINDOW_OVERLAP characters across a window boundary can be missed.
+const SCAN_WINDOW_OVERLAP = 4 * 1024;
+const MAX_TOOL_RESULT_SCAN_CHARS = 4 * 1024 * 1024;
+
+function scanWindows(text, options = {}) {
+  if (typeof text !== 'string' || text.length <= MAX_SCAN_CHARS) return evaluate(text, options);
+  const step = MAX_SCAN_CHARS - SCAN_WINDOW_OVERLAP;
+  const limit = Math.min(text.length, MAX_TOOL_RESULT_SCAN_CHARS);
+  let res = null;
+  for (let start = 0; ; start += step) {
+    const end = Math.min(start + MAX_SCAN_CHARS, limit);
+    res = evaluateUncached(text.slice(start, end), options);
+    if (res.verdict === 'block' || end >= limit) break;
+  }
+  if (res.verdict !== 'block' && text.length > limit) {
+    res = evaluateUncached(text.slice(-MAX_SCAN_CHARS), options);
+  }
+  res = { ...res };
+  delete res.truncated;
+  if (text.length > limit) res.truncated = true;
+  return res;
+}
+
 function sanitizeToolResult(toolOrResult, content, options = {}) {
   if (content !== undefined && content !== null) {
     const toolName = String(toolOrResult);
     const textContent = typeof content === 'string' ? content : JSON.stringify(content);
-    const assessment = evaluate(textContent, options);
+    const assessment = scanWindows(textContent, options);
+    const truncated = assessment.truncated === true;
+    // Output too large to scan in full is allowed (with `truncated: true`)
+    // unless the caller opts into blocking it.
+    const blockTruncated = options.blockTruncated === true || process.env.ZN_BLOCK_TRUNCATED === '1';
+    if (truncated && blockTruncated && assessment.verdict !== 'block') {
+      assessment.verdict = 'block';
+      assessment.confidence = 1.0;
+      assessment.rule = 'size:truncated';
+      assessment.reason = 'Output too large to scan in full';
+    }
     const isBlock = assessment.verdict?.toLowerCase() === 'block';
 
     let sanitized = textContent;
@@ -378,6 +516,7 @@ function sanitizeToolResult(toolOrResult, content, options = {}) {
     return {
       tool_name: toolName,
       safe_to_ingest: !isBlock,
+      truncated,
       assessment,
       secrets_redacted: secretsRedacted,
       sanitized_content: sanitized,
@@ -439,13 +578,19 @@ module.exports = {
   redactSecrets,
   sanitizeToolResult,
   normalizeInput,
+  scanWindows,
   MAX_SCAN_CHARS,
+  MAX_TOOL_RESULT_SCAN_CHARS,
+  SCAN_WINDOW_OVERLAP,
   SCAN_HEAD_CHARS,
   SCAN_TAIL_CHARS,
   EVAL_CACHE_MAX_INPUT,
   // Helper patterns used by normalization and the hidden-element check,
   // exported so the Python port can be checked against them.
-  HELPER_PATTERNS: { ZERO_WIDTH_RE, ANSI_ESCAPE_RE, B64_EXEC_RE, WHITESPACE_RUN_RE, OPEN_TAG_RE, HIDDEN_ATTR_RE, HIDDEN_PAYLOAD_RE },
+  HELPER_PATTERNS: { ZERO_WIDTH_RE, ANSI_ESCAPE_RE, B64_EXEC_RE, WHITESPACE_RUN_RE, OPEN_TAG_RE, HIDDEN_ATTR_RE, HIDDEN_PAYLOAD_RE, MD_IMAGE_RE, MD_URL_SCHEME_RE, MD_URL_SECRET_PARAM_RE,
+    RU_FORGET_RE, RU_FORGET_OBJECT_RE, RU_IGNORE_RE, RU_IGNORE_OBJECT_RE, RU_PHRASE_RE,
+    ZH_IGNORE_RE, ZH_IGNORE_OBJECT_RE, ZH_FORGET_RE, ZH_FORGET_OBJECT_RE, ZH_PHRASE_RE,
+  },
   SECRET_PATTERNS,
   RULES_VERSION,
   INJECTION_RULES,
