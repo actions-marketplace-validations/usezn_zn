@@ -1,2 +1,2 @@
 sent: 1 file(s), 0 finding(s)
-local: 4 file(s), 4 finding(s) -> AWS_ACCESS_KEY_ID(raw) in rollout-2026-10-11T10-27-53-01a12a81-3726-7ec2-8668-12191028c578.jsonl, AWS_SECRET_ACCESS_KEY(raw) in rollout-2026-10-11T10-27-53-01a12a81-3726-7ec2-8668-12191028c578.jsonl, AWS_ACCESS_KEY_ID(raw) in codex_events.jsonl, AWS_SECRET_ACCESS_KEY(raw) in codex_events.jsonl
+local: 4 file(s), 4 finding(s) -> AWS_ACCESS_KEY_ID(raw) in rollout-2026-10-11T11-18-34-01a12aaf-9ddd-7ed2-bbe3-32e849ee51c5.jsonl, AWS_SECRET_ACCESS_KEY(raw) in rollout-2026-10-11T11-18-34-01a12aaf-9ddd-7ed2-bbe3-32e849ee51c5.jsonl, AWS_ACCESS_KEY_ID(raw) in codex_events.jsonl, AWS_SECRET_ACCESS_KEY(raw) in codex_events.jsonl
