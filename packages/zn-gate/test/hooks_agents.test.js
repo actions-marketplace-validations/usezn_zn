@@ -182,7 +182,11 @@ test('opencode: the installed plugin, driven like OpenCode does, blocks, rewrite
   const saved = process.env.ZN_HOME;
   process.env.ZN_HOME = znHome; // vault locked: the real engine redacts irreversibly
   try {
-    const mod = await import(pathToFileURL(rep.settings).href);
+    // OpenCode loads the plugin as an ES module; Node 18 needs the .mjs extension for that.
+    const mjs = rep.settings.replace(/\.js$/, '.under-test.mjs');
+    fs.copyFileSync(rep.settings, mjs);
+    const mod = await import(pathToFileURL(mjs).href);
+    fs.unlinkSync(mjs);
     const hooks = await mod.ZnGate({ directory: dir });
     await assert.rejects(hooks['tool.execute.before']({ tool: 'read', sessionID: 's', callID: 'c' }, { args: { filePath: path.join(dir, '.env') } }), /zn env shadow/);
     const args = { command: 'psql __ZN_DB_PASSWORD__', description: 'x' };
