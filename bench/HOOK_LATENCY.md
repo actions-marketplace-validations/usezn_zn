@@ -26,7 +26,7 @@ already takes 42 to 50 ms before any zn code runs.
 | PostToolUse Bash, 64 KB clean | 78.5 / 81.3 | 116.4 / 133.7 |
 | PostToolUse Bash, 64 KB with 2 secrets | **77.9** / 100.3 | **124.4** / 136.0 |
 
-With the vault locked (D2, irreversible redaction) the numbers are the same
+With the vault locked (irreversible redaction) the numbers are the same
 within noise (64 KB with secrets: 90.1 ms desktop, 112.4 ms server).
 
 ## Where the time goes (desktop, one PostToolUse 64 KB)

@@ -343,7 +343,7 @@ test('UserPromptSubmit runs prepare() before scan(), so a vault value without a 
   assert.match(res.output.reason, /zn secret set DB_PASS/);
 });
 
-test('vault unavailable: the real engine redacts irreversibly and the user is told to unlock (D2)', async () => {
+test('vault unavailable: the real engine redacts irreversibly and the user is told to unlock', async () => {
   const engine = require('../lib/scrub/engine');
   const res = await runner.handle(adapter, postTool('Bash', {}, { stdout: 'x ' + AWS, stderr: '', interrupted: false, isImage: false }, '/'), { engine, vault: null, failMode: 'open' });
   const out = JSON.stringify(res.output.hookSpecificOutput.updatedToolOutput);

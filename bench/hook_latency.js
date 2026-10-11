@@ -145,7 +145,7 @@ async function main() {
   console.log('Hook process latency (ms), ' + meta.platform + ', ' + meta.cpu + ', Node ' + meta.node + ', ' + RUNS + ' runs; bare `node -e ""` p50 ' + meta.bareNodeStartP50 + ' ms');
   console.log('\nVault unlocked (real daemon):\n| case | p50 | p95 | min |\n|---|---|---|---|');
   results.unlocked.forEach((r) => console.log(row(r)));
-  console.log('\nVault locked (D2, irreversible redaction):\n| case | p50 | p95 | min |\n|---|---|---|---|');
+  console.log('\nVault locked (irreversible redaction):\n| case | p50 | p95 | min |\n|---|---|---|---|');
   results.locked.forEach((r) => console.log(row(r)));
   const target = results.unlocked.find((r) => r.label === 'PostToolUse Bash 64 KB with 2 secrets');
   console.log('\nTarget PostToolUse 64 KB p50 <= 60 ms: ' + (target.p50 <= 60 ? 'PASS' : 'FAIL') + ' (' + target.p50 + ' ms)');

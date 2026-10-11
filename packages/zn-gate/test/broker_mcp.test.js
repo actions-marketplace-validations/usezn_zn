@@ -99,7 +99,7 @@ test('secrets_http_request: markers only in headers unless the secret allows the
   try {
     const vault = await vaultWith();
     const srv = createSecretsServer({ vault, engine: fakeEngine });
-    // The rev3 probe: an injected prompt posts the token in a gist body to an allowed host.
+    // Probe: an injected prompt posts the token in a gist body to an allowed host.
     const gist = await call(srv, 'secrets_http_request', {
       method: 'POST', url: 'http://127.0.0.1:' + port + '/gists', headers: { Authorization: 'Bearer __ZN_GITHUB_TOKEN__' },
       body: JSON.stringify({ public: true, files: { 'a.txt': { content: '__ZN_GITHUB_TOKEN__' } } }),
