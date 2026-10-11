@@ -24,11 +24,11 @@
  * it and replaces values with irreversible __ZN_REDACTED_<TYPE>__ markers;
  * the user is told to run `zn unlock`. Secrets never pass through.
  *
- * Failure handling: only a missing engine fails open by default (the event
- * passes untouched and a warning goes to stderr); set
- * ZN_HOOK_FAIL_MODE=closed, or {"hooks": {"failMode": "closed"}} in
- * ~/.zn/config.json, to fail closed then too. Any other error fails closed:
- * the tool call is denied, the output withheld or the prompt blocked.
+ * Failure handling: every error fails closed: the tool call is denied, the
+ * output withheld or the prompt blocked. That includes a missing engine (an
+ * agent could rename the file); the user is told how to reinstall, and can
+ * choose to let events pass while it is missing with
+ * {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json.
  */
 
 const fs = require('fs');
@@ -52,10 +52,27 @@ function readConfig(home) {
   }
 }
 
+/*
+ * What to do when the scrubber engine is missing from the installation:
+ * "closed" (default) denies, withholds or blocks like any other error;
+ * "open" lets events pass with a warning. Set in ~/.zn/config.json as
+ * {"hooks": {"whenUnavailable": "deny" | "allow"}} (agents cannot write
+ * there), or ZN_HOOK_FAIL_MODE=closed|open in the agent's environment.
+ */
 function failModeOf(opts) {
-  const v = opts.failMode || process.env.ZN_HOOK_FAIL_MODE || ((readConfig(opts.home).hooks || {}).failMode);
-  return String(v || 'open').toLowerCase() === 'closed' ? 'closed' : 'open';
+  if (opts.failMode) return String(opts.failMode).toLowerCase() === 'open' ? 'open' : 'closed';
+  const env = String(process.env.ZN_HOOK_FAIL_MODE || '').toLowerCase();
+  if (env === 'open' || env === 'closed') return env;
+  const hooks = readConfig(opts.home).hooks || {};
+  const when = String(hooks.whenUnavailable || '').toLowerCase();
+  if (when === 'allow') return 'open';
+  if (when === 'deny') return 'closed';
+  return String(hooks.failMode || '').toLowerCase() === 'open' ? 'open' : 'closed';
 }
+
+const REINSTALL = 'The zn scrubber engine is missing from this installation (lib/scrub/engine.js), so zn cannot check this. ' +
+  'Reinstall zn-gate (npm install -g zn-gate@next) and run `zn hooks install` again. To let events pass unchecked while it is missing, ' +
+  'set {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json.';
 
 /** Map every string leaf of a JSON value through an async function, keeping the shape. */
 async function mapStrings(value, fn) {
@@ -231,7 +248,35 @@ async function decidePre(ev, d, agentId, opts) {
  * PostToolUse hook sees, so the command itself is rewritten to pipe through
  * the streaming scrubber (lib/scrub/stream.js). The rewrite is shown to the
  * user (ask). WebSocket monitors cannot be scrubbed and are refused.
+ *
+ * The original command runs as one argument of `bash -c` (single-quoted), so
+ * nothing in it can close a group or end the pipeline early; pipefail keeps
+ * its exit status. A command is left as it is only when it is exactly this
+ * wrapper with our own node and stream.js paths; mentioning stream.js is not
+ * enough.
  */
+function shQuote(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+function monitorTail(opts) {
+  const p = (s) => shQuote(String(s).replace(/\\/g, '/'));
+  return ' 2>&1 | ' + p(opts.nodePath || process.execPath) + ' ' + p(STREAM_JS);
+}
+
+function wrapMonitor(original, opts) {
+  return 'set -o pipefail; bash -c ' + shQuote(original) + monitorTail(opts);
+}
+
+function isMonitorWrapper(command, opts) {
+  const head = 'set -o pipefail; bash -c \'';
+  const tail = '\'' + monitorTail(opts);
+  if (!command.startsWith(head) || !command.endsWith(tail)) return false;
+  // The body must be one single-quoted word: only '\'' may appear in it.
+  const body = command.slice(head.length, command.length - tail.length);
+  return body.replace(/'\\''/g, '').indexOf("'") === -1;
+}
+
 function decideMonitor(ev, pathOpts, opts) {
   const raw = (ev.raw && ev.raw.tool_input) || {};
   if (raw.ws !== undefined && raw.command === undefined) {
@@ -244,8 +289,8 @@ function decideMonitor(ev, pathOpts, opts) {
   if (markers.findMarkers(original).length) {
     return { decision: 'deny', message: 'zn: secret markers are not supported in Monitor commands. Run the command with the Bash tool (it goes through `zn run`).' };
   }
-  if (original.includes(STREAM_JS.replace(/\\/g, '/')) || original.includes(STREAM_JS)) return { decision: 'ask', message: 'zn: this monitor already pipes through the secret scrubber.' };
-  const command = '{ ' + original + '\n} 2>&1 | ' + nodeQ(opts.nodePath || process.execPath) + ' ' + nodeQ(STREAM_JS);
+  if (isMonitorWrapper(original, opts)) return { decision: 'ask', message: 'zn: this monitor already pipes through the secret scrubber.' };
+  const command = wrapMonitor(original, opts);
   return { decision: 'ask', updatedInput: { command }, kind: 'monitor', message: 'zn: the monitor output is piped through the local secret scrubber, so secret values in it are replaced with __ZN_ tokens.' };
 }
 
@@ -309,9 +354,17 @@ async function decidePrompt(ev, d, agentId) {
 /* ------------------------------ entry ----------------------------- */
 
 function failDecision(ev, err, mode) {
-  const msg = 'zn: hook error (' + (err.code || 'error') + '): ' + err.message;
-  // Fail open only when the engine itself is missing (and fail mode allows).
-  if (mode !== 'closed' && err.code === 'ZN_UNAVAILABLE') return { decision: 'allow', failOpen: true, warning: msg };
+  const missing = err.code === 'ZN_UNAVAILABLE';
+  const msg = 'zn: hook error (' + (err.code || 'error') + '): ' + (missing ? REINSTALL : err.message);
+  // Fail open only when the engine itself is missing and the user chose so.
+  if (mode === 'open' && missing) return { decision: 'allow', failOpen: true, warning: msg };
+  const r = failClosed(ev, err, msg);
+  // The user (not only the model) needs to hear how to fix a broken install.
+  if (missing) r.userMessage = msg;
+  return r;
+}
+
+function failClosed(ev, err, msg) {
   if (ev && ev.event === 'post_tool' && ev.output !== undefined) {
     const withheld = '[zn: output withheld because the secret scrubber is unavailable: ' + (err.code || 'error') + ']';
     const shape = (v) => (typeof v === 'string' ? withheld

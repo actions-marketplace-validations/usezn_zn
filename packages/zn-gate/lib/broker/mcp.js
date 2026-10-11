@@ -13,7 +13,10 @@
  *                          (allowIn); the response is scrubbed before it returns
  *   secrets_render_file    render a template with markers into a git-ignored
  *                          file (or one outside any repository); secrets in
- *                          mode "file" only
+ *                          mode "file" only. A new file inside the project is
+ *                          written directly; overwriting a file or writing
+ *                          outside the project needs the user's confirmation
+ *                          on the vault's own channel
  *   secrets_request        ask the user to add a secret; never takes a value
  *
  * There is deliberately no tool that returns a secret value.
@@ -62,7 +65,7 @@ const TOOLS = [
   },
   {
     name: 'secrets_render_file',
-    description: 'Render a template file that contains __ZN_<NAME>__ markers into an output file with the real values, for tools that need a config file (e.g. ~/.npmrc). Only for secrets in "file" mode, and the output must be git-ignored or outside any git repository. Returns only the output path, never the content. ' + NO_GET,
+    description: 'Render a template file that contains __ZN_<NAME>__ markers into an output file with the real values, for tools that need a config file (e.g. ~/.npmrc). Only for secrets in "file" mode, and the output must be git-ignored or outside any git repository. A new file inside the project is written directly; overwriting an existing file or writing outside the project waits for the user to confirm it in the zn vault prompt. Returns only the output path, never the content. ' + NO_GET,
     inputSchema: {
       type: 'object',
       properties: {
@@ -245,6 +248,16 @@ function createSecretsServer(opts = {}) {
     return status >= 300 && status < 400 ? 'Redirects are not followed automatically; call again with the new URL if it is an allowed host.' : undefined;
   }
 
+  function realOrSelf(p) {
+    try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); }
+  }
+
+  function insideProject(file) {
+    let dir = path.dirname(path.resolve(file));
+    while (!fs.existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+    return markers.isInside(realOrSelf(dir), realOrSelf(project));
+  }
+
   async function renderFile(args) {
     const tpl = path.resolve(cwd, String(args.template || ''));
     const out = path.resolve(cwd, String(args.out || ''));
@@ -255,12 +268,20 @@ function createSecretsServer(opts = {}) {
       const c = policy.classifyPath(out, { cwd, home });
       if (c.kind === 'zn_state') return denied('cannot write into ~/.zn');
     }
+    let exists = false;
     try {
       const st = fs.lstatSync(out);
       if (st.isSymbolicLink() || !st.isFile()) return denied('out exists and is not a regular file');
+      exists = true;
     } catch (err) {
       if (err.code !== 'ENOENT') return denied('cannot inspect out: ' + err.code);
     }
+    // Without asking, only a new file inside the project: the real path of
+    // its nearest existing directory (symlinks resolved) must be inside the
+    // project's real path. Anything else is confirmed by the user on the
+    // vault's own channel, like the first use of a command.
+    const needsConfirm = exists ? 'the file already exists and would be overwritten'
+      : (!insideProject(out) ? 'the file is outside the project' : null);
     const where = gitStatusOf(out);
     if (where !== 'ignored' && where !== 'outside') {
       return denied(out + ' is ' + (where === 'unknown' ? 'in an unknown git state (git not available)' : 'tracked by git (it could be committed)') +
@@ -280,12 +301,34 @@ function createSecretsServer(opts = {}) {
         await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'deny', reason: 'mode is not file' });
         return denied(m.name + ' is in ' + (s.mode || 'proxy') + ' mode; only "file" mode secrets can be written to disk');
       }
+    }
+    if (needsConfirm) {
+      const v = await getVault();
+      if (typeof v.confirmFileWrite !== 'function') return denied(out + ': ' + needsConfirm + '; this vault cannot ask the user to confirm it. Render to a new file inside the project.');
+      try {
+        await v.confirmFileWrite(project, out, named.map((m) => m.name), needsConfirm);
+      } catch (err) {
+        await audit({ secret: named[0].name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'deny', reason: 'file_write_not_confirmed' });
+        return denied(out + ': ' + needsConfirm + ', and the user did not confirm it (' + String((err && err.message) || 'declined').slice(0, 200) + ').');
+      }
+    }
+    for (const m of named) {
       const v = await (await getVault()).resolve(project, m.marker);
       if (v == null) return textResult({ error: 'ZN_NOT_FOUND', message: 'secret ' + m.name + ' has no value' }, true);
       values.set(m.name, String(v));
     }
     fs.mkdirSync(path.dirname(out), { recursive: true });
-    writeFileAtomic(out, markers.substitute(template, values), 0o600);
+    const text = markers.substitute(template, values);
+    if (exists) {
+      writeFileAtomic(out, text, 0o600);
+    } else {
+      try {
+        // 'wx': never follows or replaces anything created there meanwhile.
+        fs.writeFileSync(out, text, { flag: 'wx', mode: 0o600 });
+      } catch (err) {
+        return denied('could not create ' + out + ' (' + err.code + '); nothing was written');
+      }
+    }
     for (const m of named) await audit({ secret: m.name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'allow', reason: 'rendered to a ' + where + ' path' });
     return textResult({
       written: out,

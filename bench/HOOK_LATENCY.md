@@ -50,3 +50,12 @@ forward the event over the socket (estimated 15 to 20 ms over Node start-up on
 the desktop). That moves the scanner into the process that holds the vault, so
 it needs its own review. It is not part of the beta; the beta ships with the
 numbers above.
+
+## Decision for 1.5.0-beta.1
+
+The beta accepts the measured cost: about **78 ms p50 per hook call** on the
+Windows desktop (PostToolUse, 64 KB with secrets) and about 124 ms on the
+server. The floor is Node's own start-up (42 to 50 ms), so the 60 ms target
+can only be met by moving the scan out of the hook process and into the vault
+daemon. That puts the scanner next to the vault keys, so it gets its own
+security review after the beta.

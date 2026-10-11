@@ -41,10 +41,19 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - `secrets_http_request` puts a value only in request headers unless the secret allows the URL or the body (`zn secret allow NAME --in query|body`).
 - First-use approvals are bound to the executable's real path and file identity. A replaced or retargeted binary loses its approval. Binaries inside the project never receive values.
 - The vault file carries an integrity tag. A forged, corrupted or deleted vault fails closed.
+- `zn run` resolves the command once, opens that file, checks the open file against the approval, checks it again right before start and starts that exact path; on Linux a native program is started through the opened file itself. The approval dialog and `zn secret allow` warn when the program lives in a location your user can write. If an approved program changed, the dialog says so, with the old and new size and change time.
+- Interpreters are recognised with version suffixes (`python3.12`, `node22`, `pwsh-preview`) for the "runs any code" warning.
+- Claude Code Monitor commands always run as a single `bash -c` argument piped through the streaming scrubber, with `pipefail`. The streaming scrubber holds back the end of a partial line, so a value written in two bursts is never split.
+- A missing scrubber engine fails closed by default, with instructions to reinstall; `{"hooks": {"whenUnavailable": "allow"}}` in `~/.zn/config.json` lets events pass while it is missing.
+- `secrets_render_file` writes a new file inside the project directly; overwriting a file or writing outside the project (also through a symlinked directory) needs your confirmation in the vault prompt.
+- Confirmation dialogs show warnings first; paths and other fields sent by a client are shown on one line, with control and invisible characters escaped.
+- `age-encryption` and its `@noble` / `@scure` dependencies are bundled in the npm package at the exact versions of the lockfile (`bundleDependencies`), so installing zn-gate does not resolve them from the registry.
 
 ### Known limitations
 - Cursor cannot rewrite the output of shell commands or file reads. Codex can only replace output through "block", and keeps the original in its own session log.
-- Each hook is a short Node process: about 60 to 80 ms per tool call on a Windows desktop.
+- Each hook is a short Node process: measured about 78 ms p50 per tool call on a Windows desktop and 124 ms on a small server (`bench/HOOK_LATENCY.md`). The floor is Node's start-up; scanning inside the vault daemon would remove most of it and is planned after the beta, with its own review.
+- With the vault unlocked, any process of your OS user can ask the vault daemon for a stored secret by name. Approvals, fingerprints and `allowIn` protect the `zn run` and MCP paths, not that one (see `docs/threat-model.md`).
+- Scripts (`#!`) approved for `zn run`, and every program on macOS and Windows, are started by path right after the final check: a process of your user that can write the program's directory could still swap it in that short window. Prefer approving native programs in directories your user cannot write.
 - Not covered yet: Hermes, Gemini CLI, Copilot CLI and the Cursor CLI. An egress proxy for `zn run` is not included.
 
 ## [1.4.1] - 2026-10-11

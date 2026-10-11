@@ -56,6 +56,18 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
     OpenCode's shell, a command with a marker fails instead of running (no
     value is exposed).
 
+## Limits that apply to every agent
+
+- **The unlocked vault answers any program of your user.** A command the
+  agent runs can ask the vault daemon for a stored secret by name; the
+  command allow-list, first-use confirmation and host rules protect `zn run`
+  and the `secrets` MCP server, not that direct request. Lock the vault when
+  you do not need it and keep your agent's own approval rules for commands on.
+  Details: [threat-model.md](threat-model.md#what-the-vault-daemon-protects-and-what-it-does-not).
+- **Approved scripts, and every program on macOS and Windows,** are started by
+  path right after zn's last check; see
+  [threat-model.md](threat-model.md#starting-the-approved-program).
+
 ## Not covered in this beta
 
 Hermes Agent, Gemini CLI, Copilot CLI and the Cursor CLI. A proxy for outgoing

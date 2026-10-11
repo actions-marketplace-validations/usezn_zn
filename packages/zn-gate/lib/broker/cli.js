@@ -18,6 +18,7 @@ const tty = require('./tty');
 const { approvalStore } = require('./approvals');
 const { writeFileAtomic } = require('./files');
 const deps = require('../deps');
+const exe = require('../exe');
 
 const MODES = new Set(['proxy', 'env', 'file']);
 const PLACEMENTS = new Set(['header', 'query', 'body']);
@@ -93,7 +94,21 @@ function metaFromFlags(flags, defaults = {}) {
   };
 }
 
-const INTERPRETER_RE = /^(node|nodejs|deno|bun|python[0-9.]*|py|ruby|perl|php|bash|sh|zsh|fish|pwsh|powershell|cmd|npm|npx|pnpm|yarn|make|cargo|go|java|dotnet|uvx?|poetry|pipenv|env|xargs|sudo)(\.exe|\.cmd)?$/i;
+/* Warnings shown when a command is allowed for a secret: interpreters run
+ * any code, and a program the user can overwrite can be swapped later. */
+function commandWarnings(io, name, command) {
+  const head = String(command).trim().split(/\s+/)[0];
+  if (exe.isInterpreter(head)) {
+    out(io, 'Warning: `' + command + '` runs any code it is given, so every script it runs could read ' + name + '. Prefer the specific program (psql, terraform, gh).');
+  }
+  const found = exe.hasPathSeparator(head) ? null : exe.resolveExecutable(head, io.env);
+  const writable = found ? exe.writableBy(found.real) : null;
+  if (writable) {
+    out(io, 'Warning: `' + head + '` runs ' + found.real + ', and your user account can write ' + writable +
+      ': any program you run (an agent too) could replace it. zn checks the file before each use and asks again if it changed. ' +
+      'This is normal for tools installed with nvm, volta, pipx or Homebrew; if a copy owned by root exists, prefer it.');
+  }
+}
 
 async function existingMeta(vault, name) {
   const list = await vault.listSecrets();
@@ -189,11 +204,7 @@ async function secretAllow(args, io) {
     type: cur.type,
   };
   if (!MODES.has(meta.mode)) throw deps.znError('ZN_USAGE', '--mode must be proxy, env or file');
-  for (const c of flags.command || []) {
-    if (INTERPRETER_RE.test(String(c).trim().split(/\s+/)[0].split(/[\\/]/).pop())) {
-      out(io, 'Warning: `' + c + '` runs any code it is given, so every script it runs could read ' + name + '. Prefer the specific program (psql, terraform, gh).');
-    }
-  }
+  for (const c of flags.command || []) commandWarnings(io, name, c);
   if ((flags.in || []).some((p) => p !== 'header')) {
     out(io, 'Warning: in the URL or the body, an injected prompt could make zn send ' + name + ' somewhere readable on an allowed host (a gist, an issue). Allow it only if the API needs it.');
   }
@@ -223,6 +234,7 @@ async function secretApprove(args, io) {
   const wanted = flags.command.trim().split(/\s+/).join(' ');
   const entry = (cur.allowCommands || []).map((c) => String(c).trim().split(/\s+/).join(' ')).find((c) => c === wanted);
   if (!entry) throw deps.znError('ZN_POLICY_DENIED', '`' + wanted + '` is not in allowCommands for ' + name + '. First: zn secret allow ' + name + ' --command "' + wanted + '"');
+  commandWarnings(io, name, entry);
   out(io, 'Confirm it in the zn vault prompt (system dialog or the `zn unlock --foreground` terminal).');
   await approvalStore({ vault }).recordApproval(name, entry);
   out(io, 'Approved ' + name + ' for `' + entry + '`.');

@@ -9,7 +9,12 @@
  *     Nothing else is changed: values only ever exist inside the child.
  *   - Only for secrets in mode "env" whose allowCommands matches the command.
  *   - The first use of each (secret, command) pair needs your confirmation
- *     at a terminal.
+ *     on the vault's own channel (dialog or `zn unlock --foreground`).
+ *   - The command name is resolved once, to the real path of one file. That
+ *     file is opened, its descriptor fingerprinted and checked against the
+ *     approval, checked again right before start, and then started by that
+ *     path (on Linux, a native program is started through the descriptor
+ *     itself), never by looking the name up on PATH again.
  *   - The child's stdout/stderr are masked: the value and its base64, hex
  *     and url-encoded forms are printed as the marker.
  *   - Fail-closed: any policy or vault error stops before the child starts.
@@ -21,7 +26,9 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 const markers = require('./markers');
+const exe = require('../exe');
 const { createMasker } = require('./mask');
 const { approvalStore } = require('./approvals');
 const { znError, loadVault, findProjectRoot } = require('../deps');
@@ -106,7 +113,7 @@ async function prepare(parsed, opts) {
   const vault = opts.vault;
   const agent = opts.agent || parsed.agent || env.ZN_AGENT || null;
   const argv0 = parsed.command[0];
-  const exe = markers.normalizeExe(argv0);
+  const exeName = markers.normalizeExe(argv0);
   const names = requiredSecrets(parsed);
   const optional = optionalSecrets(parsed, env);
   if (names.length === 0 && optional.length === 0) {
@@ -117,15 +124,34 @@ async function prepare(parsed, opts) {
     try { await vault.audit(ev); } catch (_) { /* audit must never unblock or crash a decision */ }
   };
   const deny = async (name, mode, reason, code = 'ZN_POLICY_DENIED') => {
-    await audit({ secret: name, mode, agent, tool: 'zn run', argv0: exe, host: null, decision: 'deny', reason });
+    await audit({ secret: name, mode, agent, tool: 'zn run', argv0: exeName, host: null, decision: 'deny', reason });
     throw znError(code, reason);
   };
 
   const list = await vault.listSecrets();
   const meta = new Map((list || []).map((s) => [s.name, s]));
   const approvals = opts.approvals || approvalStore({ vault, znHome: opts.znHome });
-  const resolved = markers.whichSync(argv0, env.PATH || env.Path || '');
-  const planted = markers.checkResolvedExecutable(resolved, project);
+  const found = exe.resolveExecutable(argv0, env);
+  const planted = markers.checkResolvedExecutable(found ? found.path : null, project);
+  // Open the file now: approvals are checked against this descriptor's
+  // fingerprint, and the same descriptor is checked again before start.
+  let opened = null;
+  if (found && !planted) {
+    try { opened = exe.openExecutable(found.real); } catch (_) { opened = null; }
+  }
+  const ctx = { project, executable: opened ? { real: found.real, fp: opened.fp } : null };
+  const close = () => { if (opened) { try { fs.closeSync(opened.fd); } catch (_) { /* closed */ } opened = null; } };
+  try {
+    const prep = await decide();
+    if (prep.secrets.length === 0) close();
+    else prep.exe = { real: found.real, fp: ctx.executable.fp, opened };
+    return prep;
+  } catch (err) {
+    close();
+    throw err;
+  }
+
+  async function decide() {
   const chosen = [];
 
   for (const name of names) {
@@ -139,35 +165,36 @@ async function prepare(parsed, opts) {
     }
     const entry = markers.matchAllowCommands(m.allowCommands, parsed.command);
     if (!entry) {
-      await deny(name, m.mode, '`' + exe + '` is not in allowCommands for ' + name + '. ' +
+      await deny(name, m.mode, '`' + exeName + '` is not in allowCommands for ' + name + '. ' +
         'For HTTP APIs use the secrets_http_request tool of the zn "secrets" MCP server. ' +
-        'To allow this command, run in your own terminal: zn secret allow ' + name + ' --command ' + exe);
+        'To allow this command, run in your own terminal: zn secret allow ' + name + ' --command ' + exeName);
     }
     if (planted) await deny(name, m.mode, '`' + argv0 + '` ' + planted + '; zn run will not give it ' + name);
+    if (!opened) await deny(name, m.mode, '`' + argv0 + '` could not be opened for checking; zn run will not give it ' + name);
     chosen.push({ name, mode: m.mode, command: entry });
   }
 
   const skipped = [];
   for (const name of optional) {
     const m = meta.get(name);
-    const entry = m && m.mode === 'env' && !planted ? markers.matchAllowCommands(m.allowCommands, parsed.command) : null;
-    if (entry && await approvals.isApproved(name, entry)) chosen.push({ name, mode: m.mode, command: entry });
+    const entry = m && m.mode === 'env' && !planted && opened ? markers.matchAllowCommands(m.allowCommands, parsed.command) : null;
+    if (entry && await approvals.isApproved(name, entry, ctx)) chosen.push({ name, mode: m.mode, command: entry });
     else skipped.push(name);
   }
   if (skipped.length && opts.stderr !== false) {
-    (opts.stderr || process.stderr).write('zn run: left as markers in the environment (not allowed or not yet approved for `' + exe + '`): ' + skipped.join(', ') + '\n');
+    (opts.stderr || process.stderr).write('zn run: left as markers in the environment (not allowed or not yet approved for `' + exeName + '`): ' + skipped.join(', ') + '\n');
   }
 
   // First use of a (secret, command) pair: the vault daemon asks the user on
   // its own channel (the terminal of `zn unlock --foreground` or an OS
   // dialog), never on this process's terminal, which an agent may control.
   for (const c of chosen) {
-    if (await approvals.isApproved(c.name, c.command)) continue;
+    if (await approvals.isApproved(c.name, c.command, ctx)) continue;
     if (opts.stderr !== false) {
       (opts.stderr || process.stderr).write('zn run: first use of ' + c.name + ' with `' + c.command + '`: confirm it in the zn vault prompt (dialog or the `zn unlock --foreground` terminal)\n');
     }
     try {
-      await approvals.recordApproval(c.name, c.command);
+      await approvals.recordApproval(c.name, c.command, ctx);
     } catch (err) {
       const why = err && err.code === 'ZN_POLICY_DENIED' ? err.message : (err && err.message) || 'not approved';
       await deny(c.name, c.mode, 'first use of ' + c.name + ' with `' + c.command + '` was not approved (' + why + ')');
@@ -187,18 +214,50 @@ async function prepare(parsed, opts) {
   const argv = parsed.command.map((a) => markers.substitute(a, values));
 
   for (const c of chosen) {
-    await audit({ secret: c.name, mode: c.mode, agent, tool: 'zn run', argv0: exe, host: null, decision: 'allow', reason: 'allowCommands: ' + c.command });
+    await audit({ secret: c.name, mode: c.mode, agent, tool: 'zn run', argv0: exeName, host: null, decision: 'allow', reason: 'allowCommands: ' + c.command });
   }
-  return { argv, env: childEnv, secrets: chosen.map((c) => ({ ...c, value: values.get(c.name) })), project, resolved };
+  return { argv, env: childEnv, secrets: chosen.map((c) => ({ ...c, value: values.get(c.name) })), project, resolved: found ? found.real : null };
+  }
+}
+
+function closeExe(prep) {
+  if (prep && prep.exe && prep.exe.opened) {
+    try { fs.closeSync(prep.exe.opened.fd); } catch (_) { /* closed */ }
+    prep.exe.opened = null;
+  }
 }
 
 function spawnMasked(prep, opts) {
+  try {
+    return spawnChecked(prep, opts);
+  } finally {
+    // spawn() returns once the child has started the program, so the
+    // descriptor is no longer needed (it is close-on-exec in the child).
+    closeExe(prep);
+  }
+}
+
+function spawnChecked(prep, opts) {
   const stdout = opts.stdout || process.stdout;
   const stderr = opts.stderr || process.stderr;
   const masker = createMasker(prep.secrets);
   let file = prep.argv[0];
   let args = prep.argv.slice(1);
   let shell = false;
+  let argv0;
+  if (prep.secrets.length) {
+    // Values are about to be handed over: start exactly the file that was
+    // checked, after checking it once more.
+    if (!prep.exe || !prep.exe.opened) return Promise.reject(znError('ZN_POLICY_DENIED', 'the program was not checked; nothing was started'));
+    const why = exe.verifyOpen(prep.exe.opened, prep.exe.real, prep.exe.fp);
+    if (why) {
+      return Promise.reject(znError('ZN_POLICY_DENIED', '`' + prep.argv[0] + '`: ' + why + ' (' + prep.exe.real + '); it was not started. ' +
+        'Run the command again; if this keeps happening, something is replacing the program.'));
+    }
+    file = exe.execPath(prep.exe.opened, prep.exe.real);
+    // The program still sees the name it was called by (multi-call binaries need it).
+    if (process.platform !== 'win32') argv0 = prep.argv[0];
+  }
   if (process.platform === 'win32' && prep.resolved && /\.(cmd|bat)$/i.test(prep.resolved)) {
     // cmd.exe re-parses its command line: refuse values and metacharacters in arguments.
     const touched = args.some((a, i) => a !== opts.originalArgs[i + 1]);
@@ -215,6 +274,7 @@ function spawnMasked(prep, opts) {
     let child;
     try {
       child = spawn(file, args, {
+        argv0,
         env: prep.env,
         cwd: opts.cwd || process.cwd(),
         stdio: ['inherit', 'pipe', 'pipe'],

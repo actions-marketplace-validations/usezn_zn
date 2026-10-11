@@ -26,4 +26,4 @@ step 8: Bash {"command":"cat config/settings.yml","description":"read the config
 
 zn notes the model saw:
   - zn: 2 secret value(s) in this output were replaced with __ZN_ tokens (AWS_KEY, AWS_SECRET). Real values stay on this machine; use the tokens as they are.
-  - zn: reading AWS credentials file (<run>/home/.aws/credentials) is blocked so secret values never reach the model. If a command needs it, ask the user to add the value with `zn secr
+  - zn: reading AWS credentials file (<run>/home/.aws/credentials) is blocked so secret values never reach the model. If a command needs it, ask the user to add the v

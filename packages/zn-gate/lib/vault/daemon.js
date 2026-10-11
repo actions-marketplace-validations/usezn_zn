@@ -36,6 +36,7 @@ const keychain = require('./keychain');
 const audit = require('./audit');
 const confirmMod = require('./confirm');
 const { variants } = require('../scrub/exact');
+const exe = require('../exe');
 const { CODES, znError } = require('../errors');
 
 const PROTOCOL = 1;
@@ -51,15 +52,10 @@ const HOST_RE = /^(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*(?::\d{1,5})?$/;
 const COMMAND_RE = /^[A-Za-z0-9_.+\-/ *]{1,128}$/;
 const DENIED_RESOLVE = new Set(['bash_network', 'mcp_input', 'write_tracked']);
 const ALLOW_IN = ['header', 'query', 'body'];
-// Commands that run arbitrary code given to them: approving one lets any
-// script it runs read the secret. The confirmation says so.
-const INTERPRETERS = new Set(['node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'python2', 'py', 'ruby', 'perl', 'php',
-  'bash', 'sh', 'zsh', 'fish', 'dash', 'ksh', 'pwsh', 'powershell', 'cmd', 'npm', 'npx', 'pnpm', 'yarn', 'make', 'cargo', 'go',
-  'java', 'dotnet', 'uv', 'uvx', 'poetry', 'pipenv', 'rake', 'bundle', 'gradle', 'mvn', 'env', 'xargs', 'sudo', 'osascript']);
-
-function commandHead(c) {
-  return String(c || '').trim().split(/\s+/)[0].split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
-}
+// Commands that run arbitrary code given to them (python3.12, node22, pwsh...):
+// approving one lets any script it runs read the secret. The confirmation
+// says so. One list for the daemon and the CLI, in lib/exe.js.
+const { isInterpreter } = exe;
 
 const { endpoint, hmac, safeEqualHex, createClient } = require('./client');
 
@@ -221,17 +217,17 @@ function approvalKey(project, secret, argv0) {
   return store.projectKey(String(project == null ? '' : project)) + ':' + s + ':' + normArgv0(argv0);
 }
 
-/* File identity of an executable. ctime changes on any rewrite or chmod and
- * cannot be set back by an unprivileged user, so an approved binary that is
- * replaced in place (or a symlink retargeted) loses its approval. */
-function fingerprint(exePath) {
-  try {
-    const st = fs.statSync(exePath);
-    if (!st.isFile()) return null;
-    return [st.dev, st.ino, st.size, Math.round(st.ctimeMs)].join(':');
-  } catch (err) {
-    return null;
-  }
+/* File identity of an executable (lib/exe.js). ctime changes on any rewrite
+ * or chmod and cannot be set back by an unprivileged user, so an approved
+ * binary that is replaced in place (or a symlink retargeted) loses its
+ * approval. */
+const { fingerprint } = exe;
+
+/* One line about a file for the confirmation text: size and change time. */
+function fileFacts(fp) {
+  const d = exe.describeFingerprint(fp);
+  if (!d) return 'unknown';
+  return (d.size == null ? '?' : d.size) + ' bytes, changed ' + (d.changed || '?');
 }
 
 /* What a policy change adds. Only additions need confirmation. */
@@ -255,6 +251,8 @@ function makeOps(state, ctl) {
   /* Ask the user on the daemon's own channel. Resolves true or throws. */
   async function confirmOutOfBand(req, auditEvent) {
     let ok = false;
+    // The rendered text travels with the structured fields (injected channels read it).
+    req.message = confirmMod.render(req);
     try {
       ok = await channel.confirm(req);
     } catch (err) {
@@ -353,13 +351,13 @@ function makeOps(state, ctl) {
       const target = proposed(before);
       const adds = widening(before, target);
       if (adds.length) {
-        const interp = (target.allowCommands || []).filter((c) => !(before.allowCommands || []).includes(c) && INTERPRETERS.has(commandHead(c)));
+        const interp = (target.allowCommands || []).filter((c) => !(before.allowCommands || []).includes(c) && isInterpreter(c));
         await confirmOutOfBand({
           kind: 'policy',
           title: 'change the policy of secret ' + n + '?',
-          message: 'Secret: ' + n + '\nChange: ' + adds.join('; ') +
-            (interp.length ? '\nWarning: ' + interp.join(', ') + ' runs any code it is given; every script it runs could read ' + n + '.' : '') +
-            '\nIf you did not just ask for this in your own terminal, choose Deny.',
+          warnings: interp.length ? ['Warning: ' + interp.join(', ') + ' runs any code it is given; every script it runs could read ' + n + '.'] : [],
+          fields: [['Secret', n], ['Change', adds.join('; ')]],
+          footer: 'If you did not just ask for this in your own terminal, choose Deny.',
         }, { secret: n, mode: 'set' });
       }
       return state.serial(async () => {
@@ -377,8 +375,11 @@ function makeOps(state, ctl) {
 
     /* First-use approvals of (project, secret, command), kept in the vault. */
     /* Approved only if the stored approval names the same real executable
-     * the client resolved now (exePath). A changed binary is refused. */
-    async isApproved(project, secret, argv0, exePath) {
+     * the client resolved now (exePath), with the same file identity. When
+     * the client also sends the fingerprint of the file it opened (openFp),
+     * that must match too: the approval then covers the exact descriptor zn
+     * run is about to start. A changed binary is refused. */
+    async isApproved(project, secret, argv0, exePath, openFp) {
       const secrets = await state.loadSecrets();
       const rec = secrets.approvals && secrets.approvals[approvalKey(project, secret, argv0)];
       if (!rec || typeof rec !== 'object' || !rec.exe) return false;
@@ -386,7 +387,7 @@ function makeOps(state, ctl) {
         writeAudit({ secret: String(secret), mode: 'env', argv0, decision: 'deny', reason: exePath ? 'exe_changed' : 'exe_not_found' });
         return false;
       }
-      if (!rec.fp || rec.fp !== fingerprint(exePath)) {
+      if (!rec.fp || rec.fp !== fingerprint(exePath) || (openFp != null && openFp !== rec.fp)) {
         writeAudit({ secret: String(secret), mode: 'env', argv0, decision: 'deny', reason: 'exe_modified' });
         return false;
       }
@@ -394,33 +395,74 @@ function makeOps(state, ctl) {
     },
 
     /* Recording one is confirmed by the user on the daemon's channel, showing
-     * the real executable that will receive the value. */
-    async recordApproval(project, secret, argv0, exePath) {
+     * the real executable that will receive the value. If the same pair was
+     * approved before for another file (or the same file before it changed),
+     * the dialog says so, with what changed. A program in a location the
+     * current user can write gets a warning: anything running as the user,
+     * the agent included, could swap it later. */
+    async recordApproval(project, secret, argv0, exePath, openFp) {
       const key = approvalKey(project, secret, argv0);
       if (typeof exePath !== 'string' || !exePath || exePath.length > 4096 || !path.isAbsolute(exePath)) {
         throw znError(CODES.NOT_FOUND, 'command not found on PATH: ' + normArgv0(argv0));
       }
       const fp = fingerprint(exePath);
       if (!fp) throw znError(CODES.NOT_FOUND, 'command not found: ' + normArgv0(argv0));
+      if (openFp != null && openFp !== fp) throw znError(CODES.POLICY_DENIED, 'the executable changed while it was being checked');
       const cmd = normArgv0(argv0);
-      if (!(await state.loadSecrets()).secrets[String(secret)]) throw znError(CODES.NOT_FOUND, 'no secret named ' + secret);
+      const loaded = await state.loadSecrets();
+      if (!loaded.secrets[String(secret)]) throw znError(CODES.NOT_FOUND, 'no secret named ' + secret);
+      const prev = loaded.approvals && loaded.approvals[key];
+      const changed = prev && typeof prev === 'object' && prev.exe && (prev.exe !== exePath || prev.fp !== fp);
+      const writable = exe.writableBy(exePath);
+      const warnings = [];
+      const fields = [['Secret', secret + ' (the value goes into the process)'], ['Command', cmd], ['Runs', exePath], ['Project', String(project)]];
+      if (changed) {
+        warnings.push('WARNING: this program CHANGED since you approved it' + (prev.ts ? ' on ' + String(prev.ts).slice(0, 10) : '') +
+          '. If you did not update or reinstall it yourself, choose Deny.');
+        fields.push(['Approved', prev.exe + ' (' + fileFacts(prev.fp) + ')'], ['Now', exePath + ' (' + fileFacts(fp) + ')']);
+      }
+      if (isInterpreter(cmd)) warnings.push('Warning: ' + cmd + ' runs any code it is given; every script it runs could read ' + secret + '.');
+      if (writable) {
+        warnings.push('Warning: your user account can write to where this program lives, so another program (an agent too) could replace it later.');
+        fields.push(['Writable by you', writable]);
+      }
       await confirmOutOfBand({
         kind: 'approval',
-        title: 'let `' + cmd + '` use secret ' + secret + '?',
-        message: 'Secret: ' + secret + ' (the value goes into the process)\n' +
-          'Command: ' + cmd + '\nRuns: ' + exePath + '\nProject: ' + String(project) +
-          (INTERPRETERS.has(cmd.toLowerCase()) ? '\nWarning: ' + cmd + ' runs any code it is given; every script it runs could read ' + secret + '.' : '') +
-          '\nIf you did not just start this command, choose Deny.',
+        title: changed ? '`' + cmd + '` CHANGED since you approved it: let it use secret ' + secret + '?' : 'let `' + cmd + '` use secret ' + secret + '?',
+        changed: !!changed,
+        warnings,
+        fields,
+        footer: 'If you did not just start this command, choose Deny.',
       }, { secret: String(secret), mode: 'env', argv0: cmd });
       return state.serial(async () => {
         const secrets = await state.loadSecrets();
         if (fingerprint(exePath) !== fp) throw znError(CODES.POLICY_DENIED, 'the executable changed while waiting for confirmation');
         if (!secrets.approvals || typeof secrets.approvals !== 'object') secrets.approvals = {};
         secrets.approvals[key] = { ts: new Date().toISOString(), exe: exePath, fp };
-        writeAudit({ secret: String(secret), mode: 'env', argv0, decision: 'ask:yes', reason: 'first_use_approved' });
+        writeAudit({ secret: String(secret), mode: 'env', argv0, decision: 'ask:yes', reason: changed ? 'changed_exe_reapproved' : 'first_use_approved' });
         await state.saveSecrets();
         return true;
       });
+    },
+
+    /* secrets_render_file outside the safe case (a new file inside the
+     * project): the user confirms on the daemon's channel. */
+    async confirmFileWrite(project, file, names, reason) {
+      if (typeof file !== 'string' || !file || file.length > 4096 || !path.isAbsolute(file)) throw znError(CODES.POLICY_DENIED, 'invalid file path');
+      const list = (Array.isArray(names) ? names : []).map(String).filter((n) => NAME_RE.test(n)).slice(0, 32);
+      if (list.length === 0) throw znError(CODES.POLICY_DENIED, 'no secret names');
+      const why = ['the file already exists and would be overwritten', 'the file is outside the project'].includes(reason) ? reason : 'not a new file inside the project';
+      const secrets = await state.loadSecrets();
+      for (const n of list) if (!secrets.secrets[n]) throw znError(CODES.NOT_FOUND, 'no secret named ' + n);
+      await confirmOutOfBand({
+        kind: 'file',
+        title: 'write ' + list.join(', ') + ' to a file?',
+        warnings: ['An agent asked zn to write secret values into a file: ' + why + '.'],
+        fields: [['Secrets', list.join(', ')], ['File', file], ['Project', String(project)]],
+        footer: 'If you did not ask the agent to create this file, choose Deny.',
+      }, { secret: list[0], mode: 'file' });
+      writeAudit({ secret: list[0], mode: 'file', decision: 'ask:yes', reason: 'file_write_confirmed' });
+      return true;
     },
 
     async listSecrets() {

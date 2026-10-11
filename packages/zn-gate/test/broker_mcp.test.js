@@ -178,6 +178,65 @@ test('secrets_render_file writes only to git-ignored paths and only file-mode se
   assert.match(proxy.data.message, /only "file" mode/);
 });
 
+test('secrets_render_file: only new files inside the project are written without asking', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render2-'));
+  const dir = path.join(base, 'proj');
+  const elsewhere = path.join(base, 'elsewhere');
+  fs.mkdirSync(dir);
+  fs.mkdirSync(elsewhere);
+  spawnSync('git', ['init', '-q'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.rc\nlinked/\n');
+  fs.writeFileSync(path.join(dir, 'npmrc.tpl'), 'token=__ZN_NPM_TOKEN__\n');
+  let answer = false;
+  const vault = createFakeVault({ confirmFile: async () => answer });
+  await vault.setSecret('NPM_TOKEN', NPM, { mode: 'file' });
+  const srv = createSecretsServer({ vault, engine: fakeEngine, cwd: dir, home: base });
+
+  // New file inside the project: written, nobody asked.
+  const fresh = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out: 'a.rc' });
+  assert.equal(fresh.isError, false, JSON.stringify(fresh.data));
+  assert.equal(vault.fileConfirmations.length, 0);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'a.rc')).mode & 0o777, 0o600);
+
+  // Overwriting it: asked; declined leaves the file as it was.
+  fs.writeFileSync(path.join(dir, 'a.rc'), 'mine\n');
+  const over = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out: 'a.rc' });
+  assert.equal(over.isError, true);
+  assert.match(over.data.message, /already exists.*did not confirm/);
+  assert.equal(fs.readFileSync(path.join(dir, 'a.rc'), 'utf8'), 'mine\n');
+
+  // Outside the project: asked; declined writes nothing.
+  const out = path.join(elsewhere, 'x.rc');
+  const outside = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out });
+  assert.equal(outside.isError, true);
+  assert.match(outside.data.message, /outside the project/);
+  assert.ok(!fs.existsSync(out));
+
+  // A directory inside the project that is a symlink to somewhere else counts as outside.
+  if (process.platform !== 'win32') {
+    fs.symlinkSync(elsewhere, path.join(dir, 'linked'));
+    const viaLink = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out: 'linked/y.rc' });
+    assert.equal(viaLink.isError, true);
+    assert.match(viaLink.data.message, /outside the project/);
+    assert.ok(!fs.existsSync(path.join(elsewhere, 'y.rc')));
+  }
+
+  // Confirmed by the user: written.
+  answer = true;
+  const yes = await call(srv, 'secrets_render_file', { template: 'npmrc.tpl', out });
+  assert.equal(yes.isError, false, JSON.stringify(yes.data));
+  assert.equal(fs.readFileSync(out, 'utf8'), 'token=' + NPM + '\n');
+  assert.ok(vault.fileConfirmations.every((c) => c.names.join() === 'NPM_TOKEN'));
+
+  // A vault that cannot ask refuses instead of writing.
+  const plain = createFakeVault();
+  await plain.setSecret('NPM_TOKEN', NPM, { mode: 'file' });
+  const srv2 = createSecretsServer({ vault: plain, engine: fakeEngine, cwd: dir, home: base });
+  const noAsk = await call(srv2, 'secrets_render_file', { template: 'npmrc.tpl', out: path.join(elsewhere, 'z.rc') });
+  assert.equal(noAsk.isError, true);
+  assert.ok(!fs.existsSync(path.join(elsewhere, 'z.rc')));
+});
+
 test('secrets_request records the ask and refuses values', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-req-'));
   const lines = [];

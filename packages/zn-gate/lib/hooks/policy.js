@@ -262,6 +262,9 @@ function scanPowerShell(cmd) {
     cur.text += ch;
     cur.end = at + 1;
   };
+  // PowerShell also treats typographic quotes (and dashes) as quote and
+  // operator characters; zn does not model them, so they make a line non-simple.
+  if (/[‘-‟–-―]/.test(s)) simple = false;
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
     if (quote === "'") {
