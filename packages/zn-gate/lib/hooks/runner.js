@@ -415,6 +415,28 @@ function readStdin() {
   });
 }
 
+/*
+ * An event that cannot be read cannot be checked, so it is refused. Letting
+ * it pass is a silent fail-open: the byte order mark of PowerShell did exactly
+ * that until it was fixed. Exit code 2 blocks the call in Claude Code and
+ * Codex (their documented block code for these events); Cursor documents exit
+ * 2 as deny for preToolUse, beforeShellExecution and beforeReadFile, and its
+ * deny answer is printed too, which covers beforeSubmitPrompt. With
+ * hooks.whenUnavailable "allow" in ~/.zn/config.json, such events pass, as
+ * they do when the engine is missing.
+ */
+function refuseInput(agentId, why) {
+  if (failModeOf({}) === 'open') {
+    process.stderr.write('zn hook: ' + why + '; passed through (hooks.whenUnavailable is "allow")\n');
+    return;
+  }
+  const msg = 'zn: ' + why + ', so zn cannot check this call and it is denied. ' +
+    'Set {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json to let such events pass.';
+  process.stderr.write('zn hook: ' + msg + '\n');
+  if (agentId === 'cursor') process.stdout.write(JSON.stringify({ permission: 'deny', continue: false, user_message: msg, agent_message: msg }));
+  process.exitCode = 2;
+}
+
 async function main(args) {
   const agentId = args[0];
   let adapter;
@@ -425,14 +447,15 @@ async function main(args) {
     process.exitCode = 1;
     return;
   }
+  // Windows PowerShell 5.1 writes a byte order mark when it pipes text to a
+  // native command, which JSON.parse rejects.
+  const text = (await readStdin()).replace(/^﻿/, '');
+  if (!text.trim()) return refuseInput(agentId, 'stdin was empty');
   let raw;
   try {
-    // Windows PowerShell 5.1 writes a byte order mark when it pipes text to a
-    // native command, which JSON.parse rejects.
-    raw = JSON.parse((await readStdin()).replace(/^﻿/, ''));
+    raw = JSON.parse(text);
   } catch (err) {
-    process.stderr.write('zn hook: invalid event JSON on stdin (' + err.message + '); passing through\n');
-    return;
+    return refuseInput(agentId, 'the event on stdin is not valid JSON (' + err.message + ')');
   }
   const res = await handle(adapter, raw);
   if (res.stderr) process.stderr.write(res.stderr + ' (fail-open: event passed through)\n');
