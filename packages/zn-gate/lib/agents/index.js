@@ -3,11 +3,13 @@
 /**
  * Agent adapter registry. Each adapter implements
  *   {id, detect(), install({scope}), uninstall(), normalize(raw), respond(decision)}
- * Codex, Cursor and OpenCode adapters register here when they land.
  */
 
 const ADAPTERS = {
   'claude-code': () => require('./claude-code'),
+  codex: () => require('./codex'),
+  cursor: () => require('./cursor'),
+  opencode: () => require('./opencode'),
 };
 
 const ALIASES = { claude: 'claude-code', claudecode: 'claude-code' };

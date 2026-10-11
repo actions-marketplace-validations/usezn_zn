@@ -188,7 +188,8 @@ async function decidePre(ev, d, agentId, opts) {
       }
       return notes.length ? { decision: 'allow', message: 'zn: ' + notes.join('; ') } : { decision: 'allow' };
     }
-    return { decision: 'ask', updatedInput: { command }, message: 'zn: this command ' + notes.join('; ') + '.' };
+    // kind tells adapters that cannot rewrite input what the rewrite was for.
+    return { decision: 'ask', updatedInput: { command }, kind: wrap.wrapped ? 'wrap' : 'restore', message: 'zn: this command ' + notes.join('; ') + '.' };
   }
 
   if ((tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit') && Array.isArray(input.texts)) {
@@ -217,6 +218,7 @@ async function decidePre(ev, d, agentId, opts) {
     return {
       decision: 'ask',
       updatedInput: { texts: updates },
+      kind: 'restore',
       message: 'zn: restores ' + restored + ' secret value(s) in a git-ignored file.' + why,
     };
   }
@@ -244,7 +246,7 @@ function decideMonitor(ev, pathOpts, opts) {
   }
   if (original.includes(STREAM_JS.replace(/\\/g, '/')) || original.includes(STREAM_JS)) return { decision: 'ask', message: 'zn: this monitor already pipes through the secret scrubber.' };
   const command = '{ ' + original + '\n} 2>&1 | ' + nodeQ(opts.nodePath || process.execPath) + ' ' + nodeQ(STREAM_JS);
-  return { decision: 'ask', updatedInput: { command }, message: 'zn: the monitor output is piped through the local secret scrubber, so secret values in it are replaced with __ZN_ tokens.' };
+  return { decision: 'ask', updatedInput: { command }, kind: 'monitor', message: 'zn: the monitor output is piped through the local secret scrubber, so secret values in it are replaced with __ZN_ tokens.' };
 }
 
 /* ---------------------------- post_tool --------------------------- */
