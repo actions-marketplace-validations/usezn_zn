@@ -55,14 +55,15 @@ function readConfig(home) {
 /*
  * What to do when the scrubber engine is missing from the installation:
  * "closed" (default) denies, withholds or blocks like any other error;
- * "open" lets events pass with a warning. Set in ~/.zn/config.json as
- * {"hooks": {"whenUnavailable": "deny" | "allow"}} (agents cannot write
- * there), or ZN_HOOK_FAIL_MODE=closed|open in the agent's environment.
+ * "open" lets events pass with a warning. Open is set only in
+ * ~/.zn/config.json as {"hooks": {"whenUnavailable": "allow"}} (agents cannot
+ * write there). ZN_HOOK_FAIL_MODE=closed in the environment makes it stricter;
+ * ZN_HOOK_FAIL_MODE=open is ignored, because the agent's environment can be
+ * set by the project it works in.
  */
 function failModeOf(opts) {
   if (opts.failMode) return String(opts.failMode).toLowerCase() === 'open' ? 'open' : 'closed';
-  const env = String(process.env.ZN_HOOK_FAIL_MODE || '').toLowerCase();
-  if (env === 'open' || env === 'closed') return env;
+  if (String(process.env.ZN_HOOK_FAIL_MODE || '').toLowerCase() === 'closed') return 'closed';
   const hooks = readConfig(opts.home).hooks || {};
   const when = String(hooks.whenUnavailable || '').toLowerCase();
   if (when === 'allow') return 'open';
@@ -147,8 +148,12 @@ async function decidePre(ev, d, agentId, opts) {
     if (deny) return { decision: 'deny', message: deny };
   }
   if (tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit') {
-    const deny = policy.writeDenial(input.path, pathOpts);
-    if (deny) return { decision: 'deny', message: deny };
+    // A patch can touch several files: every one is checked, not only the first.
+    if (input.unparsed) return { decision: 'deny', message: 'zn: could not read the file names in this patch, so zn cannot check it.' };
+    for (const p of Array.isArray(input.paths) ? input.paths : [input.path]) {
+      const deny = policy.writeDenial(p, pathOpts);
+      if (deny) return { decision: 'deny', message: deny };
+    }
   }
 
   if (tool === 'webfetch') {
@@ -410,7 +415,38 @@ function readStdin() {
   });
 }
 
+/*
+ * An event that cannot be read cannot be checked, so it is refused. Letting
+ * it pass is a silent fail-open: the byte order mark of PowerShell did exactly
+ * that until it was fixed. Exit code 2 blocks the call in Claude Code and
+ * Codex (their documented block code for these events); Cursor documents exit
+ * 2 as deny for preToolUse, beforeShellExecution and beforeReadFile, and its
+ * deny answer is printed too, which covers beforeSubmitPrompt. With
+ * hooks.whenUnavailable "allow" in ~/.zn/config.json, such events pass, as
+ * they do when the engine is missing.
+ */
+function refuseInput(agentId, why) {
+  if (failModeOf({}) === 'open') {
+    process.stderr.write('zn hook: ' + why + '; passed through (hooks.whenUnavailable is "allow")\n');
+    return;
+  }
+  const msg = 'zn: ' + why + ', so zn cannot check this call and it is denied. ' +
+    'Set {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json to let such events pass.';
+  process.stderr.write('zn hook: ' + msg + '\n');
+  if (agentId === 'cursor') process.stdout.write(JSON.stringify({ permission: 'deny', continue: false, user_message: msg, agent_message: msg }));
+  process.exitCode = 2;
+}
+
 async function main(args) {
+  try {
+    await handleEvent(args);
+  } catch (err) {
+    // Anything unexpected fails closed: the call is refused, not passed through.
+    refuseInput(args[0], 'the hook failed (' + ((err && err.message) || String(err)) + ')');
+  }
+}
+
+async function handleEvent(args) {
   const agentId = args[0];
   let adapter;
   try {
@@ -420,12 +456,19 @@ async function main(args) {
     process.exitCode = 1;
     return;
   }
+  // Windows PowerShell 5.1 writes a byte order mark when it pipes text to a
+  // native command, which JSON.parse rejects.
+  const text = (await readStdin()).replace(/^﻿/, '');
+  if (!text.trim()) return refuseInput(agentId, 'stdin was empty');
   let raw;
   try {
-    raw = JSON.parse(await readStdin());
+    raw = JSON.parse(text);
   } catch (err) {
-    process.stderr.write('zn hook: invalid event JSON on stdin (' + err.message + '); passing through\n');
-    return;
+    return refuseInput(agentId, 'the event on stdin is not valid JSON (' + err.message + ')');
+  }
+  // Valid JSON that is not an object (a number, a string, an array) is not an event.
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return refuseInput(agentId, 'the event on stdin is not a JSON object');
   }
   const res = await handle(adapter, raw);
   if (res.stderr) process.stderr.write(res.stderr + ' (fail-open: event passed through)\n');

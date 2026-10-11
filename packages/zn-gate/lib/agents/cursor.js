@@ -42,8 +42,12 @@ const { whichSync } = require('../broker/markers');
 
 const id = 'cursor';
 const HOOK_TIMEOUT_S = 30;
-const EVENTS = ['beforeReadFile', 'beforeShellExecution', 'beforeSubmitPrompt', 'postToolUse'];
+const EVENTS = ['beforeReadFile', 'beforeShellExecution', 'beforeSubmitPrompt', 'postToolUse', 'preToolUse'];
 const BUILTIN = { Shell: 'bash', Read: 'read', Write: 'write', Edit: 'edit', Grep: 'grep', Glob: 'glob', WebFetch: 'webfetch' };
+// preToolUse covers the built-in tools that can name a file, so the same path checks apply.
+const PRE_TOOL_MATCHER = 'Grep|Write|Delete';
+// Events whose hook must block when it fails (crash, timeout, no output).
+const FAIL_CLOSED = new Set(['beforeReadFile', 'beforeSubmitPrompt']);
 
 function parseMaybeJson(s) {
   if (typeof s !== 'string') return s;
@@ -58,6 +62,18 @@ function normalize(raw) {
   if (name === 'beforeReadFile') return { ...base, event: 'pre_tool', tool: 'read', toolName: 'Read', input: { path: raw.file_path, texts: [] } };
   if (name === 'beforeShellExecution') return { ...base, event: 'pre_tool', tool: 'bash', toolName: 'Shell', input: { command: String(raw.command || ''), texts: [] } };
   if (name === 'beforeSubmitPrompt') return { ...base, event: 'user_prompt', tool: null, input: { prompt: typeof raw.prompt === 'string' ? raw.prompt : '' } };
+  if (name === 'preToolUse') {
+    // The input keys of Grep, Write and Delete are not documented: the first
+    // string under a known name is the path. Without one, respond() fails closed for writes.
+    const toolName = String(raw.tool_name || '');
+    const ti = raw.tool_input && typeof raw.tool_input === 'object' ? raw.tool_input : {};
+    const pick = (...keys) => keys.map((k) => ti[k]).find((v) => typeof v === 'string' && v) || null;
+    if (toolName === 'Grep') return { ...base, event: 'pre_tool', tool: 'grep', toolName, input: { path: pick('path', 'target_directory') || undefined, texts: [] } };
+    if (toolName === 'Write' || toolName === 'Delete') {
+      return { ...base, event: 'pre_tool', tool: 'write', toolName, input: { path: pick('file_path', 'path', 'target_file') || undefined, texts: [] } };
+    }
+    return { ...base, event: null };
+  }
   if (name === 'postToolUse') {
     const toolName = String(raw.tool_name || '');
     const isMcp = /^MCP:/i.test(toolName) || !Object.prototype.hasOwnProperty.call(BUILTIN, toolName);
@@ -79,6 +95,15 @@ function respond(d) {
   const ev = d && d.event;
   if (!ev || !ev.event) return null;
   const h = ev.hookEvent;
+  if (h === 'preToolUse') {
+    if (d.decision === 'deny') return { permission: 'deny', user_message: d.message || 'Blocked by zn', agent_message: d.message || 'Blocked by zn' };
+    if (ev.tool === 'write' && !ev.input.path) {
+      const msg = 'zn: could not read the file this call writes, so zn cannot check it. Name the file explicitly.';
+      return { permission: 'deny', user_message: msg, agent_message: msg };
+    }
+    // No opinion, not "allow": an allow could skip Cursor's own confirmations.
+    return null;
+  }
   if (h === 'beforeReadFile') {
     if (d.decision === 'deny') return { permission: 'deny', user_message: d.message || 'Blocked by zn' };
     return { permission: 'allow' };
@@ -124,11 +149,14 @@ function install(opts = {}) {
   const data = cfg.readJson(file);
   const report = { settings: file, backup: cfg.backup(file), warnings: [] };
   data.version = data.version || 1;
-  data.hooks = data.hooks && typeof data.hooks === 'object' ? data.hooks : {};
+  data.hooks = cfg.hooksOf(data, file);
   const command = cfg.hookCommand(id, opts);
   for (const event of EVENTS) {
     data.hooks[event] = strip(data.hooks[event]);
-    data.hooks[event].push({ command, timeout: HOOK_TIMEOUT_S });
+    const entry = { command, timeout: HOOK_TIMEOUT_S };
+    if (event === 'preToolUse') entry.matcher = PRE_TOOL_MATCHER;
+    if (FAIL_CLOSED.has(event)) entry.failClosed = true;
+    data.hooks[event].push(entry);
   }
   cfg.writeJson(file, data);
   report.warnings.push('Cursor cannot rewrite the output of shell commands or file reads: zn blocks reads of secret files and redacts MCP output only (see docs/compat.md).');

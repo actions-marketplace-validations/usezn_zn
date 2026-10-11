@@ -258,6 +258,18 @@ test('every error fails closed, a missing engine too unless the user allows it',
     fs.writeFileSync(path.join(home, '.zn', 'config.json'), JSON.stringify({ hooks: { whenUnavailable: 'deny' } }));
     const denied = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), home });
     assert.ok(!JSON.stringify(denied.output).includes(AWS));
+    // The environment can only make the hooks stricter: "open" is ignored, "closed" wins over "allow".
+    process.env.ZN_HOOK_FAIL_MODE = 'open';
+    const envOpen = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), home });
+    assert.ok(!JSON.stringify(envOpen.output).includes(AWS), 'ZN_HOOK_FAIL_MODE=open must not reopen fail-open');
+    fs.writeFileSync(path.join(home, '.zn', 'config.json'), JSON.stringify({ hooks: { whenUnavailable: 'allow' } }));
+    process.env.ZN_HOOK_FAIL_MODE = 'closed';
+    const envClosed = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), home });
+    assert.ok(!JSON.stringify(envClosed.output).includes(AWS), 'ZN_HOOK_FAIL_MODE=closed makes an allow setting stricter');
+    fs.writeFileSync(path.join(home, '.zn', 'config.json'), JSON.stringify({ hooks: { whenUnavailable: 'allow' } }));
+    delete process.env.ZN_HOOK_FAIL_MODE;
+    const configOpen = await runner.handle(adapter, ev, { engine: absent, vault: createFakeVault(), home });
+    assert.equal(configOpen.output, null, 'the documented config option still opens it');
   } finally {
     if (saved !== undefined) process.env.ZN_HOOK_FAIL_MODE = saved;
   }

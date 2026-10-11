@@ -25,9 +25,10 @@
  *       zn warns about it but does not refuse: version managers (nvm, volta,
  *       pipx, Homebrew on macOS) install every tool in user-writable
  *       directories.
- *   isInterpreter(name) -> bool
+ *   isInterpreter(command) -> bool, isInterpreterPath(real) -> bool
  *       Programs that run any code they are given (python3.12, node22,
  *       pwsh...): approving one lets every script it runs read the secret.
+ *       The daemon judges the resolved program, not only the typed name.
  */
 
 const fs = require('fs');
@@ -218,23 +219,41 @@ function writableBy(real) {
 
 const INTERPRETER_BASES = new Set([
   'node', 'nodejs', 'deno', 'bun', 'tsx', 'ts-node',
-  'python', 'py', 'pypy', 'ruby', 'irb', 'perl', 'php', 'lua', 'luajit', 'tclsh', 'wish', 'rscript', 'julia', 'osascript',
+  'python', 'py', 'pypy', 'pythonw', 'ruby', 'irb', 'perl', 'php', 'lua', 'luajit', 'tclsh', 'wish',
+  'r', 'rscript', 'julia', 'osascript', 'groovy', 'groovysh', 'jshell',
   'bash', 'sh', 'zsh', 'fish', 'dash', 'ksh', 'mksh', 'csh', 'tcsh', 'busybox', 'pwsh', 'powershell', 'cmd', 'wsl',
   'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'corepack', 'make', 'cargo', 'go', 'java', 'dotnet', 'gradle', 'gradlew', 'mvn',
   'uv', 'uvx', 'pipx', 'poetry', 'pipenv', 'rake', 'bundle', 'awk', 'gawk', 'env', 'xargs', 'sudo', 'doas',
   'nohup', 'timeout', 'nice', 'watch', 'script', 'expect',
 ]);
 
-/** Base name of a command without directory, extension or version suffix. */
-function interpreterBase(name) {
-  let b = String(name || '').trim().split(/\s+/)[0].split(/[\\/]/).pop().toLowerCase();
-  b = b.replace(/\.(exe|cmd|bat|com)$/, '');
-  return b.replace(/[-_]?(?:v?\d+(?:[._-]\d+)*)?(?:[-_](?:preview|beta|nightly))?$/, '');
+/**
+ * Name of a program without directory, extension or version suffix:
+ * python3.12m -> python, /usr/bin/node22 -> node, C:\Python\pythonw.exe -> pythonw.
+ * Takes a file path (spaces allowed), so it never splits on whitespace.
+ */
+function programBase(file) {
+  const b = String(file || '').split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
+  return b.replace(/[-_]?(?:v?\d+(?:[._-]\d+)*[a-z]?)?(?:[-_](?:preview|beta|nightly))?$/, '');
 }
 
-function isInterpreter(name) {
-  const full = String(name || '').trim().split(/\s+/)[0].split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
-  return INTERPRETER_BASES.has(full) || INTERPRETER_BASES.has(interpreterBase(name));
+/** The first word of a typed command (`python3.12 script.py`) as a program name. */
+function interpreterBase(command) {
+  return programBase(String(command || '').trim().split(/\s+/)[0]);
+}
+
+/** A typed command word (`python3.12 script.py`): only the first word counts. */
+function isInterpreter(command) {
+  return INTERPRETER_BASES.has(interpreterBase(command));
+}
+
+/**
+ * The program that actually runs: the resolved real path, so a symlink is
+ * judged by the file it points to. A copy under another name is judged by
+ * its own name only.
+ */
+function isInterpreterPath(file) {
+  return INTERPRETER_BASES.has(programBase(file));
 }
 
 module.exports = {
@@ -253,4 +272,5 @@ module.exports = {
   writableBy,
   interpreterBase,
   isInterpreter,
+  isInterpreterPath,
 };

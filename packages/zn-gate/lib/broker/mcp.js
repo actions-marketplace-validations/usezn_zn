@@ -28,9 +28,12 @@ const path = require('path');
 const readline = require('readline');
 const markers = require('./markers');
 const { createMasker } = require('./mask');
-const { gitStatusOf, writeFileAtomic } = require('./files');
+const { gitStatusOf, realTargetOf } = require('./files');
 const policy = require('../hooks/policy');
 const deps = require('../deps');
+
+// Not available on Windows: 0 there, and the path checks still run.
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
 
 const SERVER_NAME = 'zn-secrets';
 let SERVER_VERSION = '0.0.0';
@@ -258,16 +261,80 @@ function createSecretsServer(opts = {}) {
     return markers.isInside(realOrSelf(dir), realOrSelf(project));
   }
 
+  /**
+   * Opens the file a secret value is about to be written to. The checks run on
+   * the open descriptor, not on the name the path was typed as: the real
+   * parent directory must be inside the real project root, fstat(fd) must be
+   * the file at that real path, and the git check is repeated on it.
+   * Without the user's approval (approvedAt null) the real directory must be
+   * inside the project; with it, the file must be the very location they saw.
+   * A new file is created with 'wx' and mode 0600 and removed on any mismatch.
+   * An existing file (already confirmed) is only opened, never created or
+   * truncated before the checks pass, and is left alone on a mismatch.
+   * Returns { fd, real, where } or { refused }.
+   */
+  function openRenderTarget(out, exists, approvedAt) {
+    try {
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+    } catch (err) {
+      return { refused: 'cannot create the directory for ' + out + ' (' + err.code + '); nothing was written' };
+    }
+    let fd;
+    try {
+      const flags = exists ? fs.constants.O_RDWR | O_NOFOLLOW
+        : fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL;
+      fd = fs.openSync(out, flags, 0o600);
+    } catch (err) {
+      return { refused: 'could not open ' + out + ' (' + err.code + '); nothing was written' };
+    }
+    let real = out;
+    let fst = null;
+    let why = null;
+    let where = null;
+    try {
+      real = path.join(fs.realpathSync(path.dirname(out)), path.basename(out));
+      fst = fs.fstatSync(fd);
+      const lst = fs.lstatSync(real);
+      const dest = policy.classifyPath(real, { home, cwd });
+      if (!lst.isFile() || lst.isSymbolicLink() || fst.dev !== lst.dev || fst.ino !== lst.ino) {
+        why = 'the file changed while it was being opened';
+      } else if (exists && fst.nlink > 1) {
+        why = 'it has other hard links, so it could be another file';
+      } else if (dest && (dest.kind === 'agent_config' || dest.kind === 'zn_state')) {
+        why = 'the location is agent or zn configuration';
+      } else if (approvedAt === null && !markers.isInside(path.dirname(real), realOrSelf(project))) {
+        why = 'its directory resolves outside the project';
+      } else if (approvedAt !== null && real !== approvedAt) {
+        why = 'it is not the location the user approved';
+      } else {
+        where = gitStatusOf(real);
+        if (where !== 'ignored' && where !== 'outside') why = 'it is tracked by git (it could be committed)';
+      }
+    } catch (err) {
+      why = 'it cannot be checked (' + err.code + ')';
+    }
+    if (why) {
+      fs.closeSync(fd);
+      // Only the file this call created is removed, and only while it is still
+      // that file: a name swapped meanwhile is someone else's file.
+      const ours = fst && (() => { try { const l = fs.lstatSync(real); return l.dev === fst.dev && l.ino === fst.ino; } catch (_) { return false; } })();
+      if (!exists && ours) { try { fs.unlinkSync(real); } catch (_) { /* already gone */ } }
+      return { refused: out + ': ' + why + '; nothing was written.' };
+    }
+    return { fd, real, where };
+  }
+
   async function renderFile(args) {
     const tpl = path.resolve(cwd, String(args.template || ''));
     const out = path.resolve(cwd, String(args.out || ''));
     if (!args.template || !args.out) return denied('template and out are required');
     const readDeny = policy.readDenial(tpl, { cwd, home });
     if (readDeny) return denied(readDeny);
-    if (policy.classifyPath(out, { cwd, home })) {
-      const c = policy.classifyPath(out, { cwd, home });
-      if (c.kind === 'zn_state') return denied('cannot write into ~/.zn');
-    }
+    const dest = policy.classifyPath(out, { cwd, home });
+    if (dest && dest.kind === 'zn_state') return denied('cannot write into ~/.zn');
+    // The agents' hook and plugin settings are never written from here: a
+    // secret there could switch off the checks that protect it.
+    if (dest && dest.kind === 'agent_config') return denied('cannot write agent hook or plugin configuration (' + dest.reason + ')');
     let exists = false;
     try {
       const st = fs.lstatSync(out);
@@ -280,8 +347,11 @@ function createSecretsServer(opts = {}) {
     // its nearest existing directory (symlinks resolved) must be inside the
     // project's real path. Anything else is confirmed by the user on the
     // vault's own channel, like the first use of a command.
+    // A credential file is written only after the user confirms it, wherever it is.
     const needsConfirm = exists ? 'the file already exists and would be overwritten'
-      : (!insideProject(out) ? 'the file is outside the project' : null);
+      : !insideProject(out) ? 'the file is outside the project'
+        : dest && dest.kind === 'credential' ? 'the file is a credential file'
+          : null;
     const where = gitStatusOf(out);
     if (where !== 'ignored' && where !== 'outside') {
       return denied(out + ' is ' + (where === 'unknown' ? 'in an unknown git state (git not available)' : 'tracked by git (it could be committed)') +
@@ -302,11 +372,15 @@ function createSecretsServer(opts = {}) {
         return denied(m.name + ' is in ' + (s.mode || 'proxy') + ' mode; only "file" mode secrets can be written to disk');
       }
     }
+    // The user is shown the real path, and the checks below run again on it
+    // after their answer: a location that moved meanwhile is refused.
+    let approvedAt = null;
     if (needsConfirm) {
       const v = await getVault();
       if (typeof v.confirmFileWrite !== 'function') return denied(out + ': ' + needsConfirm + '; this vault cannot ask the user to confirm it. Render to a new file inside the project.');
+      approvedAt = realTargetOf(out);
       try {
-        await v.confirmFileWrite(project, out, named.map((m) => m.name), needsConfirm);
+        await v.confirmFileWrite(project, approvedAt, named.map((m) => m.name), needsConfirm);
       } catch (err) {
         await audit({ secret: named[0].name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'deny', reason: 'file_write_not_confirmed' });
         return denied(out + ': ' + needsConfirm + ', and the user did not confirm it (' + String((err && err.message) || 'declined').slice(0, 200) + ').');
@@ -317,19 +391,29 @@ function createSecretsServer(opts = {}) {
       if (v == null) return textResult({ error: 'ZN_NOT_FOUND', message: 'secret ' + m.name + ' has no value' }, true);
       values.set(m.name, String(v));
     }
-    fs.mkdirSync(path.dirname(out), { recursive: true });
-    const text = markers.substitute(template, values);
-    if (exists) {
-      writeFileAtomic(out, text, 0o600);
-    } else {
-      try {
-        // 'wx': never follows or replaces anything created there meanwhile.
-        fs.writeFileSync(out, text, { flag: 'wx', mode: 0o600 });
-      } catch (err) {
-        return denied('could not create ' + out + ' (' + err.code + '); nothing was written');
-      }
+    if (approvedAt !== null && realTargetOf(out) !== approvedAt) {
+      await audit({ secret: named[0].name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'deny', reason: 'file_write_moved' });
+      return denied(out + ' resolved to a different location while it was waiting for the user; nothing was written.');
     }
-    for (const m of named) await audit({ secret: m.name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'allow', reason: 'rendered to a ' + where + ' path' });
+    const opened = openRenderTarget(out, exists, approvedAt);
+    if (opened.refused) {
+      await audit({ secret: named[0].name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'deny', reason: 'path_changed' });
+      return denied(opened.refused);
+    }
+    const text = markers.substitute(template, values);
+    try {
+      if (exists) {
+        fs.fchmodSync(opened.fd, 0o600);
+        fs.ftruncateSync(opened.fd, 0);
+      }
+      fs.writeFileSync(opened.fd, text);
+    } catch (err) {
+      if (!exists) { try { fs.unlinkSync(opened.real); } catch (_) { /* already gone */ } }
+      return denied('could not write ' + out + ' (' + err.code + '); nothing was written');
+    } finally {
+      fs.closeSync(opened.fd);
+    }
+    for (const m of named) await audit({ secret: m.name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'allow', reason: 'rendered to a ' + opened.where + ' path' });
     return textResult({
       written: out,
       secrets: named.map((m) => m.name),

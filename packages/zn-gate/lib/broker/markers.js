@@ -128,15 +128,26 @@ function isInside(child, parent) {
  * (`npx prisma`, `npm run migrate`), which zn flags as an interpreter.
  * Returns an error message or null.
  */
-function checkResolvedExecutable(resolved, projectRoot) {
+function checkResolvedExecutable(resolved, projectRoot, resolvedReal) {
   if (!resolved) return 'command not found on PATH';
-  const real = (() => { try { return fs.realpathSync(resolved); } catch (_) { return resolved; } })();
-  const tmp = (() => { try { return fs.realpathSync(os.tmpdir()); } catch (_) { return os.tmpdir(); } })();
+  // The caller passes the real path it already resolved, so it is not resolved twice.
+  const real = resolvedReal || realOf(resolved);
+  const tmp = realOf(os.tmpdir());
   if (isInside(real, tmp)) return 'resolves to a file in the temp directory';
-  if (projectRoot && (isInside(real, projectRoot) || isInside(resolved, projectRoot))) {
-    return 'resolves to a file inside the project, which the agent can edit';
+  // Both the name as found on PATH and the real file are compared with the
+  // project's real path: a project reached through a symlink (macOS /var is
+  // /private/var) must still count as the project.
+  if (projectRoot) {
+    const root = realOf(projectRoot);
+    if ([resolved, real].some((p) => isInside(p, root) || isInside(p, projectRoot))) {
+      return 'resolves to a file inside the project, which the agent can edit';
+    }
   }
   return null;
+}
+
+function realOf(p) {
+  try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); }
 }
 
 /* ------------------------------ hosts ------------------------------ */

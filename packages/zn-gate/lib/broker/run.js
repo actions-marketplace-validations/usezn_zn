@@ -35,6 +35,11 @@ const { znError, loadVault, findProjectRoot } = require('../deps');
 
 const USAGE = 'usage: zn run [--secrets NAME[,NAME...]] [--agent ID] -- <command> [args...]';
 
+// Dynamic loader settings (LD_PRELOAD, DYLD_INSERT_LIBRARIES, ...) and glibc
+// settings that load code or files of the caller's choosing (GCONV_PATH loads
+// converter modules).
+const LOADER_VAR = /^(LD_|DYLD_)|^(GCONV_PATH|GLIBC_TUNABLES|LOCPATH|NLSPATH|HOSTALIASES|RES_OPTIONS)$/i;
+
 function splitList(v) {
   return String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
 }
@@ -132,7 +137,7 @@ async function prepare(parsed, opts) {
   const meta = new Map((list || []).map((s) => [s.name, s]));
   const approvals = opts.approvals || approvalStore({ vault, znHome: opts.znHome });
   const found = exe.resolveExecutable(argv0, env);
-  const planted = markers.checkResolvedExecutable(found ? found.path : null, project);
+  const planted = markers.checkResolvedExecutable(found ? found.path : null, project, found ? found.real : undefined);
   // Open the file now: approvals are checked against this descriptor's
   // fingerprint, and the same descriptor is checked again before start.
   let opened = null;
@@ -211,6 +216,16 @@ async function prepare(parsed, opts) {
   const childEnv = {};
   for (const [k, v] of Object.entries(env)) childEnv[k] = markers.substitute(v, values);
   for (const name of parsed.secrets) childEnv[name] = values.get(name);
+  if (values.size > 0) {
+    // The loader reads these before the program runs, so they would load code
+    // of the caller's choosing into the approved program. Only dropped when
+    // secret values are handed over, and said once.
+    const loader = Object.keys(childEnv).filter((k) => LOADER_VAR.test(k));
+    for (const k of loader) delete childEnv[k];
+    if (loader.length && opts.stderr !== false) {
+      (opts.stderr || process.stderr).write('zn run: removed ' + loader.join(', ') + ' from the environment (dynamic loader variables; they are not passed when secret values are injected)\n');
+    }
+  }
   const argv = parsed.command.map((a) => markers.substitute(a, values));
 
   for (const c of chosen) {

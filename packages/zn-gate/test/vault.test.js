@@ -330,6 +330,13 @@ test('daemon: re-approval says the program changed; the opened file must match',
     assert.strictEqual(exe.isInterpreter('python3.12'), true);
     assert.strictEqual(exe.isInterpreter('node22'), true);
     assert.strictEqual(exe.isInterpreter('psql'), false);
+    for (const name of ['pythonw', 'python3.12m', 'python3.13t', 'R', 'Rscript', 'groovy', 'jshell', 'deno', 'bun', 'php', 'lua', 'osascript']) {
+      assert.strictEqual(exe.isInterpreter(name), true, name);
+    }
+    // The resolved program decides too: a renamed copy of an interpreter, and paths with spaces.
+    assert.strictEqual(exe.isInterpreterPath('/opt/My Tools/python3.12'), true);
+    assert.strictEqual(exe.isInterpreterPath('C:\\Program Files\\Python312\\python3.12.exe'), true);
+    assert.strictEqual(exe.isInterpreterPath('/usr/local/bin/psql'), false);
     // Dialog text: client-supplied fields cannot add lines.
     const confirm = require('../lib/vault/confirm');
     const text = confirm.render({ warnings: ['W'], fields: [['Runs', '/a\nRuns: /b‮']], footer: 'F' });
