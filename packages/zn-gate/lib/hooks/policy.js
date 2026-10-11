@@ -87,7 +87,7 @@ const ci = (re) => (caseInsensitive() && !re.flags.includes('i') ? new RegExp(re
 
 // Environment variables that name agent configuration. Unset, they cannot be
 // resolved here, so a path that uses them is treated as agent configuration.
-const AGENT_ENV = new Set(['CODEX_HOME', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
+const AGENT_ENV = new Set(['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
 
 /** $NAME, ${NAME}, $env:NAME and %NAME% from env. Unset credential or agent variables are reported by name. */
 function expandEnv(p, env) {
@@ -148,14 +148,22 @@ function agentContext(home, cwd, env) {
   }
   const at = (p) => path.resolve(cwd, expandHome(p, home));
   if (env.CODEX_HOME) for (const k of keysOf(at(env.CODEX_HOME))) dirs.add(k);
+  // Claude Code keeps its settings here when the variable is set, and zn installs its hooks there.
+  if (env.CLAUDE_CONFIG_DIR) for (const k of keysOf(at(env.CLAUDE_CONFIG_DIR))) dirs.add(k);
   if (env.OPENCODE_CONFIG_DIR) for (const k of keysOf(at(env.OPENCODE_CONFIG_DIR))) dirs.add(k);
   if (env.XDG_CONFIG_HOME) for (const k of keysOf(path.join(at(env.XDG_CONFIG_HOME), 'opencode'))) dirs.add(k);
   if (env.OPENCODE_CONFIG) for (const k of keysOf(at(env.OPENCODE_CONFIG))) files.add(k);
-  return { dirs: [...dirs], files };
+  // Roots that hold agent configuration: removing or moving them removes it.
+  // Only the directory itself is protected (listing it or reading it is fine).
+  const roots = new Set(keysOf(path.join(home, '.config')));
+  if (env.XDG_CONFIG_HOME) for (const k of keysOf(at(env.XDG_CONFIG_HOME))) roots.add(k);
+  return { dirs: [...dirs], files, roots: [...roots] };
 }
 
 /** Everything a classification needs, from the options of one call. */
 function contextOf(opts = {}) {
+  // A caller that classifies many words passes the context it already built.
+  if (opts.ctx) return opts.ctx;
   const home = opts.home || os.homedir();
   const cwd = opts.cwd || process.cwd();
   const env = opts.env || process.env;
@@ -172,7 +180,7 @@ function classifyResolved(abs, ctx) {
   if (s === h + '/.zn' || s.startsWith(h + '/.zn/')) return { kind: 'zn_state', reason: 'zn keeps its vault and audit log in ~/.zn' };
   for (const [re, reason] of AGENT_CONFIG_RES) if (ci(re).test(s)) return { kind: 'agent_config', reason };
   // The directory itself (`cd ~/.claude`, `mv ~/.codex`, `rm -r ~/.cursor`) and the files directly in it.
-  if (agent.dirs.includes(s)) return { kind: 'agent_config', reason: 'an agent configuration directory' };
+  if (agent.dirs.includes(s) || agent.roots.includes(s)) return { kind: 'agent_config', reason: 'an agent configuration directory' };
   if (agent.dirs.some((d) => s.startsWith(d + '/') && !s.slice(d.length + 1).includes('/'))) {
     return { kind: 'agent_config', reason: 'a file in an agent configuration directory' };
   }
@@ -661,9 +669,12 @@ function bashDenial(cmd, opts = {}) {
     return 'zn: `zn ' + admin + '` manages secret values and must be run by the user in their own terminal, not by an agent. ' +
       'Ask the user to run it.';
   }
-  // The command is read twice: a backslash before a letter is a Windows path
-  // separator, or a bash escape. A word protected in either reading is refused.
-  const words = [...allWords(cmd, false), ...allWords(cmd, true)];
+  // The context (home, project, agent directories) is built once per command.
+  opts = { ...opts, ctx: contextOf(opts) };
+  // The command is read three times: a backslash before a letter is a Windows
+  // path separator or a bash escape, and a PowerShell backtick is an escape too.
+  // A word protected in any reading is refused.
+  const words = [...allWords(cmd, false), ...allWords(cmd, true), ...allWords(String(cmd).replace(/`(.)/gs, '$1'), false)];
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   if (/\$\(|`/.test(String(cmd))) {

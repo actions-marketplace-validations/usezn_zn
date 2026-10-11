@@ -438,6 +438,15 @@ function refuseInput(agentId, why) {
 }
 
 async function main(args) {
+  try {
+    await handleEvent(args);
+  } catch (err) {
+    // Anything unexpected fails closed: the call is refused, not passed through.
+    refuseInput(args[0], 'the hook failed (' + ((err && err.message) || String(err)) + ')');
+  }
+}
+
+async function handleEvent(args) {
   const agentId = args[0];
   let adapter;
   try {
@@ -456,6 +465,10 @@ async function main(args) {
     raw = JSON.parse(text);
   } catch (err) {
     return refuseInput(agentId, 'the event on stdin is not valid JSON (' + err.message + ')');
+  }
+  // Valid JSON that is not an object (a number, a string, an array) is not an event.
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return refuseInput(agentId, 'the event on stdin is not a JSON object');
   }
   const res = await handle(adapter, raw);
   if (res.stderr) process.stderr.write(res.stderr + ' (fail-open: event passed through)\n');

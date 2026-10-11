@@ -42,7 +42,7 @@ the files (`.claude/settings*.json`, `.codex/` files, `.cursor/hooks.json`, the
 OpenCode plugin and `opencode.json`) and the directories that hold them
 (`~/.claude`, `~/.codex`, `~/.cursor`, `~/.config/opencode`, the same in the
 project, and the locations `CODEX_HOME`, `OPENCODE_CONFIG`,
-`OPENCODE_CONFIG_DIR` and `XDG_CONFIG_HOME` name). A command that moves,
+`OPENCODE_CONFIG_DIR`, `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME` name). A command that moves,
 removes or enters one of those directories is refused, and so is a write to a
 file in it. This is best effort: a write the hooks cannot read as a word of the
 command (a path built inside a script, in inline code such as
@@ -163,8 +163,9 @@ stop malware running as the same user (see above).
   not reopen fail-open.
 - **An event that cannot be read is refused:** when stdin is empty or is not
   JSON, the hook writes the reason to stderr and exits with code 2. Claude Code
-  and Codex block the call on exit code 2 (Codex only feeds the reason back
-  after a tool has run). Cursor documents exit code 2 as a block for
+  and Codex block the call on exit code 2 before the tool runs. After a tool has
+  run, exit code 2 does not undo it: Codex replaces the tool's result with the
+  reason, while Claude Code does not withdraw the output. Cursor documents exit code 2 as a block for
   `preToolUse`, `beforeShellExecution` and `beforeReadFile`; zn also prints its
   deny answer, which covers `beforeSubmitPrompt`. `whenUnavailable: "allow"`
   lets such events pass, with a note on stderr. A PowerShell byte order mark is

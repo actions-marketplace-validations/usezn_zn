@@ -6,7 +6,7 @@
 // disk, and a render never writes agent settings and asks before credentials.
 // Values are fake. The platform is restored after each simulated block.
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
@@ -34,8 +34,15 @@ function asPlatform(name, fn) {
   }
 }
 
+// Every directory a test makes is removed when the tests of this file are done.
+const created = [];
+after(() => {
+  for (const d of created) fs.rmSync(d, { recursive: true, force: true });
+});
+
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-harden-'));
+  created.push(home);
   const proj = path.join(home, 'proj');
   fs.mkdirSync(proj);
   return { home, proj };
@@ -113,6 +120,35 @@ test('the directories the environment names are agent configuration too', () => 
   assert.match(policy.bashDenial('echo {} > ' + path.join(codexHome, 'hooks.json'), opts), /protected|configuration/);
   assert.match(policy.bashDenial('rm -rf ' + codexHome, opts), /protected|configuration/);
   assert.equal(policy.bashDenial('cat ' + path.join(home, 'notes.txt'), opts), null);
+});
+
+test('the directory named by CLAUDE_CONFIG_DIR is protected too, set or not', () => {
+  const { home, proj } = tmpHome();
+  const claudeDir = path.join(home, 'claude-elsewhere');
+  const opts = { home, cwd: proj, env: { CLAUDE_CONFIG_DIR: claudeDir } };
+  assert.match(policy.bashDenial('echo {} > ' + path.join(claudeDir, 'settings.json'), opts), /protected|configuration/);
+  assert.match(policy.bashDenial('rm -rf ' + claudeDir, opts), /protected|configuration/);
+  assert.match(policy.bashDenial('echo {} > $CLAUDE_CONFIG_DIR/settings.json', { home, cwd: proj, env: {} }), /protected|configuration/);
+  assert.equal(policy.bashDenial('cat ' + path.join(claudeDir, 'settings.json'), opts), null, 'reading is allowed');
+});
+
+test('a PowerShell backtick is an escape: a word is refused with the backticks taken out', () => {
+  const { home, proj } = tmpHome();
+  const opts = { home, cwd: proj, env: {} };
+  assert.match(policy.bashDenial('cat ~/.aws/cr`edentials', opts), /credential/);
+  assert.match(policy.bashDenial('Get-Content ~/.aws/cred`entials', opts), /credential/);
+  assert.equal(policy.bashDenial('Get-Content ' + path.join(proj, 'src', 'app.js'), opts), null);
+});
+
+test('the configuration roots (~/.config and XDG_CONFIG_HOME) cannot be removed or moved, but can be listed', () => {
+  const { home, proj } = tmpHome();
+  const xdg = path.join(home, 'xdg-elsewhere');
+  const opts = { home, cwd: proj, env: { XDG_CONFIG_HOME: xdg } };
+  assert.match(policy.bashDenial('rm -rf ~/.config', opts), /protected|configuration/);
+  assert.match(policy.bashDenial('mv ~/.config /tmp/x', opts), /protected|configuration/);
+  assert.match(policy.bashDenial('rm -r ' + xdg, opts), /protected|configuration/);
+  assert.equal(policy.bashDenial('ls ~/.config', opts), null, 'listing is allowed');
+  assert.equal(policy.bashDenial('rm -rf ~/.config/somebody-else', opts), null, 'only the root is protected');
 });
 
 /* ------------------------------ globs on disk ------------------------------ */
