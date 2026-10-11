@@ -508,10 +508,7 @@ async fn start_proxy(args: Args) -> Result<()> {
                 Arc::new(b)
             }
             Err(e) => {
-                log::warning(format!(
-                    "⚠️ Neural Core Failed to Start: {}.",
-                    e
-                ))?;
+                log::warning(format!("⚠️ Neural Core Failed to Start: {}.", e))?;
                 panic!("Critical: Neural Core (Candle) failed to load: {}", e);
             }
         }

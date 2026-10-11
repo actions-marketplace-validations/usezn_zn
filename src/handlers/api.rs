@@ -391,8 +391,7 @@ mod tests {
             .expect("engine init"),
         );
         let conn = Connection::open_in_memory().expect("db init");
-        let tenants =
-            Arc::new(TenantStore::new(Arc::new(Mutex::new(conn))).expect("tenants init"));
+        let tenants = Arc::new(TenantStore::new(Arc::new(Mutex::new(conn))).expect("tenants init"));
         let consensus = Arc::new(crate::engine::consensus::ConsensusManager::new(
             ConsensusConfig::default(),
         ));
