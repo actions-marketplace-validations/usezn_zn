@@ -300,6 +300,61 @@ test('daemon: an approved executable rewritten in place loses its approval', asy
   }
 });
 
+test('daemon: re-approval says the program changed; the opened file must match', async () => {
+  const exe = require('../lib/exe');
+  const dir = fs.mkdtempSync(path.join(os.homedir(), '.zn-test-bin2-'));
+  const bin = path.join(dir, POSIX ? 'zn-chg-tool' : 'zn-chg-tool.cmd');
+  fs.writeFileSync(bin, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
+  if (POSIX) fs.chmodSync(bin, 0o755);
+  const real = fs.realpathSync(bin);
+  const c = clientMod.createClient({});
+  try {
+    confirmAnswer = true;
+    const fp1 = exe.fingerprint(real);
+    await c.recordApproval('/work/chg', 'GITHUB_TOKEN', 'zn-chg-tool', { real, fp: fp1 });
+    const first = confirmations[confirmations.length - 1];
+    assert.ok(!first.changed && !/CHANGED/.test(first.title));
+    assert.ok(/Writable by you/.test(first.message), 'a program in a user-writable place carries a warning');
+    assert.strictEqual(await c.isApproved('/work/chg', 'GITHUB_TOKEN', 'zn-chg-tool', { real, fp: fp1 }), true);
+    assert.strictEqual(await c.isApproved('/work/chg', 'GITHUB_TOKEN', 'zn-chg-tool', { real, fp: '1:2:3:4' }), false, 'a different opened file is refused');
+    await sleep(20);
+    fs.appendFileSync(bin, POSIX ? 'echo changed\n' : 'echo changed\r\n');
+    const fp2 = exe.fingerprint(real);
+    assert.strictEqual(await c.isApproved('/work/chg', 'GITHUB_TOKEN', 'zn-chg-tool', { real, fp: fp2 }), false);
+    await c.recordApproval('/work/chg', 'GITHUB_TOKEN', 'zn-chg-tool', { real, fp: fp2 });
+    const again = confirmations[confirmations.length - 1];
+    assert.ok(again.changed && /CHANGED since you approved it/.test(again.title), again.title);
+    assert.match(again.message, /Approved: .*bytes, changed/);
+    assert.match(again.message, /Now: .*bytes, changed/);
+    // Interpreter names with versions are recognised.
+    assert.strictEqual(exe.isInterpreter('python3.12'), true);
+    assert.strictEqual(exe.isInterpreter('node22'), true);
+    assert.strictEqual(exe.isInterpreter('psql'), false);
+    // Dialog text: client-supplied fields cannot add lines.
+    const confirm = require('../lib/vault/confirm');
+    const text = confirm.render({ warnings: ['W'], fields: [['Runs', '/a\nRuns: /b‮']], footer: 'F' });
+    assert.strictEqual(text.split('\n').length, 3);
+    assert.ok(!text.includes('‮'));
+  } finally {
+    c.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('daemon: writing secret values to a file outside the safe case is confirmed', async () => {
+  const c = clientMod.createClient({});
+  const file = path.join(HOME, 'outside', 'x.rc');
+  confirmAnswer = false;
+  await assert.rejects(c.confirmFileWrite('/work/app', file, ['GITHUB_TOKEN'], 'the file is outside the project'), (e) => e.code === 'ZN_POLICY_DENIED');
+  confirmAnswer = true;
+  assert.strictEqual(await c.confirmFileWrite('/work/app', file, ['GITHUB_TOKEN'], 'the file is outside the project'), true);
+  const last = confirmations[confirmations.length - 1];
+  assert.strictEqual(last.kind, 'file');
+  assert.ok(last.message.includes(file));
+  await assert.rejects(c.confirmFileWrite('/work/app', 'relative/path', ['GITHUB_TOKEN'], 'x'), (e) => e.code === 'ZN_POLICY_DENIED');
+  c.close();
+});
+
 test('engine + real daemon: tokenize and detokenize through IPC', async () => {
   const c = clientMod.createClient({});
   const pw = fake(24);

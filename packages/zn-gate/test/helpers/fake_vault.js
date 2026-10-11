@@ -71,6 +71,19 @@ function createFakeVault(opts = {}) {
       return [...secrets.entries()].map(([name, s]) => ({ name, value: s.value }));
     },
   };
+  if (opts.confirmFile) {
+    // Like the daemon's confirmFileWrite: asks opts.confirmFile, throws on no.
+    vault.fileConfirmations = [];
+    vault.confirmFileWrite = async (project, file, names, reason) => {
+      vault.fileConfirmations.push({ project, file, names, reason });
+      if (!(await opts.confirmFile({ file, names, reason }))) {
+        const err = new Error('declined by the user');
+        err.code = 'ZN_POLICY_DENIED';
+        throw err;
+      }
+      return true;
+    };
+  }
   if (opts.withApprovals) {
     // Like the daemon: recording an approval asks the user on the vault's own
     // channel (opts.confirm, default yes) and refuses when they decline.

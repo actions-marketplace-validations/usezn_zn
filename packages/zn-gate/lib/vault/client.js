@@ -26,6 +26,9 @@
  *       `zn run` passes executable = {real, fp}: the real path it resolved
  *       and the fingerprint of the file it opened, so the daemon checks the
  *       very file that will be started.
+ *   confirmFileWrite(project, file, names, reason)
+ *       secrets_render_file when the output is not a new file inside the
+ *       project: waits for the user to confirm it on the daemon's channel.
  *
  * Extras: status(), isUnlocked(), lock(), auditVerify(), createClient({home}), close().
  *
@@ -46,7 +49,7 @@ const PROTOCOL = 1;
 const TIMEOUT_MS = 15000;
 // Operations the daemon confirms with the user wait for the answer.
 const CONFIRM_TIMEOUT_MS = 150000;
-const CONFIRMED_OPS = new Set(['recordApproval', 'updateSecretMeta']);
+const CONFIRMED_OPS = new Set(['recordApproval', 'updateSecretMeta', 'confirmFileWrite']);
 const MAX_LINE = 64 * 1024 * 1024;
 
 function endpoint(opts) {
@@ -233,6 +236,7 @@ class VaultClient {
   // Optional fourth argument: {real, fp} of the executable zn run resolved.
   isApproved(project, secret, argv0) { return this.call('isApproved', approvalArgs(Array.from(arguments))); }
   recordApproval(project, secret, argv0) { return this.call('recordApproval', approvalArgs(Array.from(arguments))); }
+  confirmFileWrite(project, file, names, reason) { return this.call('confirmFileWrite', [project, file, names, reason]); }
   status() { return this.call('status', []); }
   auditVerify() { return this.call('auditVerify', []); }
   lock() { return this.call('lock', []); }
@@ -260,6 +264,7 @@ async function audit(event) { return client().audit(event); }
 async function updateSecretMeta(name, meta) { return client().updateSecretMeta(name, meta); }
 async function isApproved(project, secret, argv0) { return client().isApproved(...arguments); }
 async function recordApproval(project, secret, argv0) { return client().recordApproval(...arguments); }
+async function confirmFileWrite(project, file, names, reason) { return client().confirmFileWrite(project, file, names, reason); }
 
 module.exports = {
   mapToken,
@@ -272,6 +277,7 @@ module.exports = {
   updateSecretMeta,
   isApproved,
   recordApproval,
+  confirmFileWrite,
   status: () => client().status(),
   isUnlocked: () => client().isUnlocked(),
   lock: () => client().lock(),

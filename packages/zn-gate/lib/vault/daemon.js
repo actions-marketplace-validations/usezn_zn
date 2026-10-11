@@ -445,6 +445,26 @@ function makeOps(state, ctl) {
       });
     },
 
+    /* secrets_render_file outside the safe case (a new file inside the
+     * project): the user confirms on the daemon's channel. */
+    async confirmFileWrite(project, file, names, reason) {
+      if (typeof file !== 'string' || !file || file.length > 4096 || !path.isAbsolute(file)) throw znError(CODES.POLICY_DENIED, 'invalid file path');
+      const list = (Array.isArray(names) ? names : []).map(String).filter((n) => NAME_RE.test(n)).slice(0, 32);
+      if (list.length === 0) throw znError(CODES.POLICY_DENIED, 'no secret names');
+      const why = ['the file already exists and would be overwritten', 'the file is outside the project'].includes(reason) ? reason : 'not a new file inside the project';
+      const secrets = await state.loadSecrets();
+      for (const n of list) if (!secrets.secrets[n]) throw znError(CODES.NOT_FOUND, 'no secret named ' + n);
+      await confirmOutOfBand({
+        kind: 'file',
+        title: 'write ' + list.join(', ') + ' to a file?',
+        warnings: ['An agent asked zn to write secret values into a file: ' + why + '.'],
+        fields: [['Secrets', list.join(', ')], ['File', file], ['Project', String(project)]],
+        footer: 'If you did not ask the agent to create this file, choose Deny.',
+      }, { secret: list[0], mode: 'file' });
+      writeAudit({ secret: list[0], mode: 'file', decision: 'ask:yes', reason: 'file_write_confirmed' });
+      return true;
+    },
+
     async listSecrets() {
       const secrets = await state.loadSecrets();
       return Object.entries(secrets.secrets).map(([name, s]) => ({

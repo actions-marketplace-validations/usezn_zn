@@ -444,6 +444,15 @@ test('locked vault never lets a secret through', async () => {
   assert.match(out, /__ZN_[A-Z0-9_]+__/);
 });
 
+test('PowerShell lines with typographic quotes are not rewritten', () => {
+  const opts = { nodePath: '/usr/bin/node', runJs: '/x/run.js', agent: 'claude-code' };
+  assert.equal(policy.wrapPowerShell("psql 'a' __ZN_DB_PASSWORD__", opts).ok, true);
+  for (const q of ['‘', '’', '“', '”']) {
+    const w = policy.wrapPowerShell("psql 'a" + q + "b' __ZN_DB_PASSWORD__", opts);
+    assert.equal(w.ok, false, 'quote U+' + q.charCodeAt(0).toString(16));
+  }
+});
+
 test('policy helpers', () => {
   assert.equal(policy.hasNetworkSignals('curl -s https://x'), true);
   assert.equal(policy.hasNetworkSignals('git push origin main'), true);
