@@ -48,6 +48,9 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - `secrets_render_file` writes a new file inside the project directly; overwriting a file or writing outside the project (also through a symlinked directory) needs your confirmation in the vault prompt.
 - Confirmation dialogs show warnings first; paths and other fields sent by a client are shown on one line, with control and invisible characters escaped.
 - `age-encryption` and its `@noble` / `@scure` dependencies are bundled in the npm package at the exact versions of the lockfile (`bundleDependencies`), so installing zn-gate does not resolve them from the registry.
+- Rules engine (Node.js and Python): removed super-linear regular expressions and normalization steps (newline rejoining, hidden HTML elements, JWT redaction, Russian and Chinese rules, markdown image exfiltration) that let a crafted input of a few hundred KB stall the gate for seconds to minutes. Inputs over 256 KB are analysed as their first 192 KB and last 64 KB and the result is marked `truncated`; inputs over 8 KB no longer enter the result cache. The Python rules now use the same patterns, normalization and size limits as the Node.js rules, and a test fails if the two diverge.
+- `ignore` / `disregard` rules now require an object such as "previous instructions", so sentences like "Please ignore the noise in the logs" are no longer blocked (Node.js and Python).
+- The evidence dashboard (`zn-gate evidence --ui`) listens on 127.0.0.1 only and escapes every ledger field shown in the dashboard.
 
 ### Known limitations
 - Cursor cannot rewrite the output of shell commands or file reads. Codex can only replace output through "block", and keeps the original in its own session log.

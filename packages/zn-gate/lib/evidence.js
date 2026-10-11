@@ -275,7 +275,41 @@ function exportEvidenceLedger(filePath = EVIDENCE_FILE, format = 'jsonl') {
 }
 
 /**
- * Starts a zero-dependency local dashboard at localhost:<port>
+ * Escapes a value for use in HTML text and double-quoted attributes.
+ * Ledger fields come from tool calls and must never be interpreted as markup.
+ * Serialized into the dashboard page, so it must stay self-contained.
+ */
+function escapeHtml(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Renders one ledger record as a table row. Every field is escaped.
+ * Serialized into the dashboard page, so it may only call escapeHtml.
+ */
+function renderAuditRow(r) {
+  const verdict = String(r.verdict || 'allow');
+  const tagClass = verdict === 'block' ? 'tag-block' : (verdict === 'shadow' ? 'tag-shadow' : 'tag-allow');
+  const ruleCell = (r.rule || r.reason) ? escapeHtml(r.rule || r.reason) : '<span style="color:var(--muted);">-</span>';
+  const sha = String(r.payload_sha256 || '');
+  const latency = typeof r.latency_us === 'number' && r.latency_us ? r.latency_us + ' µs' : '< 1 ms';
+  return '<tr>' +
+    '<td class="mono">' + escapeHtml(String(r.timestamp || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+    '<td><span class="tag ' + tagClass + '">' + escapeHtml(verdict.toUpperCase()) + '</span></td>' +
+    '<td><strong>' + escapeHtml(r.tool_name || 'call') + '</strong> <span style="color:var(--muted); font-size:0.8rem;">(' + escapeHtml(r.agent_environment || 'agent') + ')</span></td>' +
+    '<td>' + ruleCell + '</td>' +
+    '<td class="mono" title="' + escapeHtml(sha) + '">' + escapeHtml(sha.slice(0, 12)) + '...</td>' +
+    '<td class="mono">' + escapeHtml(latency) + '</td>' +
+  '</tr>';
+}
+
+/**
+ * Starts a zero-dependency local dashboard at 127.0.0.1:<port> (loopback only)
  */
 function startEvidenceUi(port = 3100, filePath = EVIDENCE_FILE) {
   const server = http.createServer((req, res) => {
@@ -295,7 +329,7 @@ function startEvidenceUi(port = 3100, filePath = EVIDENCE_FILE) {
 
     // 3. API: Compliance Audit Exporter (/api/export?format=jsonl|csv)
     if (req.url.startsWith('/api/export')) {
-      const urlObj = new URL(req.url, `http://localhost:${port}`);
+      const urlObj = new URL(req.url, `http://127.0.0.1:${port}`);
       const format = urlObj.searchParams.get('format') === 'csv' ? 'csv' : 'jsonl';
       const exportData = exportEvidenceLedger(filePath, format);
 
@@ -432,6 +466,8 @@ function startEvidenceUi(port = 3100, filePath = EVIDENCE_FILE) {
   </div>
 
   <script>
+    ${escapeHtml.toString()}
+    ${renderAuditRow.toString()}
     async function fetchData() {
       try {
         const [statsRes, verifyRes] = await Promise.all([
@@ -461,19 +497,7 @@ function startEvidenceUi(port = 3100, filePath = EVIDENCE_FILE) {
           return;
         }
 
-        tbody.innerHTML = d.recent.map(r => {
-          const isBlock = r.verdict === 'block';
-          const isShadow = r.verdict === 'shadow';
-          const tagClass = isBlock ? 'tag-block' : (isShadow ? 'tag-shadow' : 'tag-allow');
-          return '<tr>' +
-            '<td class="mono">' + (r.timestamp || '').replace('T', ' ').slice(0, 19) + '</td>' +
-            '<td><span class="tag ' + tagClass + '">' + (r.verdict || 'allow').toUpperCase() + '</span></td>' +
-            '<td><strong>' + (r.tool_name || 'call') + '</strong> <span style="color:var(--muted); font-size:0.8rem;">(' + (r.agent_environment || 'agent') + ')</span></td>' +
-            '<td>' + (r.rule || r.reason || '<span style="color:var(--muted);">-</span>') + '</td>' +
-            '<td class="mono" title="' + (r.payload_sha256 || '') + '">' + (r.payload_sha256 || '').slice(0, 12) + '...</td>' +
-            '<td class="mono">' + (r.latency_us ? r.latency_us + ' µs' : '< 1 ms') + '</td>' +
-          '</tr>';
-        }).join('');
+        tbody.innerHTML = d.recent.map(renderAuditRow).join('');
       } catch (err) {
         console.error('Failed fetching data:', err);
       }
@@ -485,13 +509,15 @@ function startEvidenceUi(port = 3100, filePath = EVIDENCE_FILE) {
 </html>`);
   });
 
-  server.listen(port, () => {
+  // Loopback only: the ledger must not be reachable from the network.
+  server.listen(port, '127.0.0.1', () => {
     process.stdout.write(`
-🛡️  zn Evidence Engine Dashboard running at http://localhost:${port}
+🛡️  zn Evidence Engine Dashboard running at http://127.0.0.1:${server.address().port}
 Ledger location: ${filePath}
 Press Ctrl+C to stop dashboard.
 \n`);
   });
+  return server;
 }
 
 module.exports = {
@@ -500,6 +526,8 @@ module.exports = {
   getEvidenceStats,
   exportEvidenceLedger,
   startEvidenceUi,
+  escapeHtml,
+  renderAuditRow,
   EVIDENCE_FILE,
   GENESIS_HASH,
 };

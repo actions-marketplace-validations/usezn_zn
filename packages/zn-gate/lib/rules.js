@@ -5,14 +5,16 @@ const path = require('path');
 
 /**
  * zn deterministic rules engine - SINGLE SOURCE OF TRUTH.
- * RULES_VERSION: 2026-09-29.1
+ * RULES_VERSION: 2026-10-11.1
  */
 
-const RULES_VERSION = '2026-09-29.1';
+const RULES_VERSION = '2026-10-11.1';
 
 const INJECTION_RULES = [
-  { id: 'pi:ignore_previous', pattern: /ignore\s+(all\s+)?(the\s+)?(previous|prior|above|existing|system)?\s*(instructions|prompts|rules|guidelines|context)?/i, description: 'Override prior instructions' },
-  { id: 'pi:disregard', pattern: /disregard\s+(all\s+)?(the\s+)?(previous|prior|above)?\s*(guidelines|instructions|rules|prompts)?/i, description: 'Disregard instructions' },
+  // The verb alone is not enough: "ignore the noise in the logs" is ordinary
+  // prose. An attack names what to ignore (previous/prior/above instructions).
+  { id: 'pi:ignore_previous', pattern: /ignore\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above|existing|system)\s+(?:instructions?|prompts?|rules|guidelines|context)|ignore\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above)\b/i, description: 'Override prior instructions' },
+  { id: 'pi:disregard', pattern: /disregard\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above|existing|system)\s+(?:instructions?|prompts?|rules|guidelines|context)|disregard\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above)\b/i, description: 'Disregard instructions' },
   { id: 'pi:forget', pattern: /forget\s+(about\s+)?(everything|all|your)/i, description: 'Forget-context attack' },
   { id: 'pi:identity_override', pattern: /you\s+are\s+now/i, description: 'Identity override' },
   { id: 'pi:new_instructions', pattern: /new\s+instructions?:/i, description: 'Instruction replacement' },
@@ -28,9 +30,30 @@ const INJECTION_RULES = [
   { id: 'pi:multi_es', pattern: /ignora\s+(todas\s+las\s+)?(instrucciones|anteriores|previas)|olvida\s+(todo|las\s+instrucciones)|act[uú]a\s+como|ahora\s+eres/iu, description: 'Multilingual prompt injection (Spanish)' },
   { id: 'pi:multi_fr', pattern: /ignore[rz]?\s+(toutes\s+les\s+)?instructions|oublie[rz]?\s+tout|agis\s+comme|tu\s+es\s+maintenant/iu, description: 'Multilingual prompt injection (French)' },
   { id: 'pi:multi_de', pattern: /ignoriere\s+(alle\s+)?(anweisungen|instruktionen)|vergiss\s+(alles|jede)|du\s+bist\s+jetzt|handle\s+als/iu, description: 'Multilingual prompt injection (German)' },
-  { id: 'pi:multi_ru', pattern: /забудь\s+.*?(все|инструкции)|игнорируй\s+.*?(все|предыдущие)|действуй\s+как|ты\s+теперь|найди\s+пароли/iu, description: 'Multilingual prompt injection (Russian)' },
-  { id: 'pi:multi_zh', pattern: /忽略.*?(指示|指令|提示)|忘记.*?(指示|指令|一切)|你现在是|初始提示词/u, description: 'Multilingual prompt injection (Chinese)' },
+  { id: 'pi:multi_ru', pattern: /забудь\s+[^\n]{0,80}?(все|инструкции)|игнорируй\s+[^\n]{0,80}?(все|предыдущие)|действуй\s+как|ты\s+теперь|найди\s+пароли/iu, description: 'Multilingual prompt injection (Russian)' },
+  { id: 'pi:multi_zh', pattern: /忽略[^\n]{0,80}?(指示|指令|提示)|忘记[^\n]{0,80}?(指示|指令|一切)|你现在是|初始提示词/u, description: 'Multilingual prompt injection (Chinese)' },
 ];
+
+// Hidden-element detection in two linear passes: find the first opening tag
+// whose attributes hide it, then search once for a payload keyword after it.
+// A single regex with a lazy `[\s\S]*?` tail re-scans the rest of the input
+// from every candidate tag, which is quadratic on adversarial markup.
+const OPEN_TAG_RE = /<[a-z0-9]+\b([^>]{0,2000})>/gi;
+const HIDDEN_ATTR_RE = /\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0(?:px)?|color\s*:\s*transparent|text-indent\s*:\s*-[0-9]{3,}px|hidden\b)/i;
+const HIDDEN_PAYLOAD_RE = /ignore|system|instruction|prompt|bypass|override|exfil|leak/gi;
+
+function testHiddenTag(text) {
+  const tagRe = new RegExp(OPEN_TAG_RE.source, OPEN_TAG_RE.flags);
+  let m;
+  while ((m = tagRe.exec(text)) !== null) {
+    if (HIDDEN_ATTR_RE.test(m[1])) {
+      const payloadRe = new RegExp(HIDDEN_PAYLOAD_RE.source, HIDDEN_PAYLOAD_RE.flags);
+      payloadRe.lastIndex = tagRe.lastIndex;
+      return payloadRe.test(text);
+    }
+  }
+  return false;
+}
 
 const INDIRECT_INJECTION_RULES = [
   {
@@ -40,7 +63,10 @@ const INDIRECT_INJECTION_RULES = [
   },
   {
     id: 'indirect:hidden_tag',
-    pattern: /<[a-z0-9]+\b[^>]*\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0(?:px)?|color\s*:\s*transparent|text-indent\s*:\s*-[0-9]{3,}px|hidden\b)[^>]*>[\s\S]*?(?:ignore|system|instruction|prompt|bypass|override|exfil|leak)/i,
+    // Kept for reference and for callers that read `.pattern`; matching goes
+    // through test() below, which runs in linear time.
+    pattern: /<[a-z0-9]+\b[^>]{0,2000}\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0(?:px)?|color\s*:\s*transparent|text-indent\s*:\s*-[0-9]{3,}px|hidden\b)[^>]{0,2000}>[\s\S]*?(?:ignore|system|instruction|prompt|bypass|override|exfil|leak)/i,
+    test: testHiddenTag,
     description: 'Hidden DOM element with injection payload',
   },
 ];
@@ -76,7 +102,7 @@ const SENSITIVE_PATH_RULES = [
 const MARKDOWN_EXFIL_RULES = [
   {
     id: 'exfil:markdown_image',
-    pattern: /!\[[^\]]*\]\(https?:\/\/[^\s\)]+[\?&](?:key|token|pass|secret|cred|data|val|leak|exfil)=[^)]*\)/i,
+    pattern: /!\[[^\]]{0,500}\]\(https?:\/\/[^\s\)]{1,2048}?[\?&](?:key|token|pass|secret|cred|data|val|leak|exfil)=[^)]*\)/i,
     description: 'Covert exfiltration via markdown image URL parameter',
   },
 ];
@@ -142,6 +168,31 @@ const ZERO_WIDTH_RE = /[\u200B-\u200D\uFEFF\u00AD]/g;
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07\x1b]*\x07/g;
 const B64_EXEC_RE = /(?:echo|printf)\s+([A-Za-z0-9+/=]{16,})\s*\|\s*(?:base64\s+-(?:d|-decode)|openssl)/i;
 
+// Maximal whitespace runs; only runs that contain a line break are joined.
+// A pattern anchored on the line break (such as /[^\S\r\n]*[\r\n]/) would
+// rescan a long run of spaces from every position.
+const WHITESPACE_RUN_RE = /\s+/g;
+const LINE_BREAK_RE = /[\r\n]/;
+const JOIN_LEFT_RE = /[\p{L}\p{N}_<|/.-]/u;
+const JOIN_RIGHT_RE = /[\p{L}\p{N}_>|/.-]/u;
+
+// Removes /* ... */ comments in one pass. An unterminated "/*" ends the
+// search: no later comment can be closed either.
+function stripCComments(str) {
+  let start = str.indexOf('/*');
+  if (start === -1) return str;
+  let out = '';
+  let from = 0;
+  while (start !== -1) {
+    const end = str.indexOf('*/', start + 2);
+    if (end === -1) break;
+    out += str.slice(from, start);
+    from = end + 2;
+    start = str.indexOf('/*', from);
+  }
+  return out + str.slice(from);
+}
+
 function normalizeInput(str) {
   if (typeof str !== 'string') return { normalized: '', stripped: '' };
   // 1. Strip zero-width evasion characters
@@ -149,17 +200,38 @@ function normalizeInput(str) {
   // 2. Strip ANSI escape sequences
   stripped = stripped.replace(ANSI_ESCAPE_RE, '');
   // 3. Strip inline C-style comments (e.g. sys/*safe*/tem -> system)
-  stripped = stripped.replace(/\/\*[\s\S]*?\*\//g, '');
-  // 4. Rejoin words and tokens split across newlines (e.g. sys\ntem -> system, /l\neak -> /leak, Cyrillic & Chinese)
-  stripped = stripped.replace(/([\p{L}\p{N}_<|/.-]{1,})\s*[\r\n]+\s*([\p{L}\p{N}_>|/.-]{1,})/gu, '$1$2');
+  stripped = stripCComments(stripped);
+  // 4. Rejoin words and tokens split across newlines (e.g. sys\ntem -> system, /l\neak -> /leak, Cyrillic & Chinese).
+  //    Linear: only the character on each side of a newline run is inspected.
+  if (LINE_BREAK_RE.test(stripped)) {
+    stripped = stripped.replace(WHITESPACE_RUN_RE, (run, offset, whole) => {
+      if (!LINE_BREAK_RE.test(run)) return run;
+      const left = offset > 0 ? whole[offset - 1] : '';
+      const right = whole[offset + run.length] || '';
+      return left && right && JOIN_LEFT_RE.test(left) && JOIN_RIGHT_RE.test(right) ? '' : run;
+    });
+  }
   // 5. Normalize homoglyphs (Cyrillic to Latin for English hijack detection)
   let normalized = stripped.replace(/[\u0410-\u0456]/g, (m) => HOMOGLYPH_MAP[m] || m);
   return { normalized, stripped };
 }
 
+// Inputs longer than MAX_SCAN_CHARS are analysed as head + tail; the result
+// then carries `truncated: true`.
+const MAX_SCAN_CHARS = 256 * 1024;
+const SCAN_HEAD_CHARS = 192 * 1024;
+// One character is reserved for the separator, so the window fits the limit.
+const SCAN_TAIL_CHARS = MAX_SCAN_CHARS - SCAN_HEAD_CHARS - 1;
+
 function evaluateUncached(input, options = {}) {
   if (typeof input !== 'string') {
     return { verdict: 'allow', confidence: 1.0, rule: 'none', reason: null, engine: 'oss-local', rules_version: RULES_VERSION };
+  }
+  if (input.length > MAX_SCAN_CHARS) {
+    // NUL is neither whitespace nor a word character, so normalization cannot
+    // join the end of the head and the start of the tail into a new token.
+    const window = input.slice(0, SCAN_HEAD_CHARS) + '\u0000' + input.slice(-SCAN_TAIL_CHARS);
+    return { ...evaluateUncached(window, options), truncated: true };
   }
 
   // Pre-normalization passes: stripped (preserves non-Latin) and normalized (maps homoglyphs)
@@ -210,7 +282,7 @@ function evaluateUncached(input, options = {}) {
 
     // 3. Indirect Injection Rules (HTML comments / hidden elements)
     for (const rule of INDIRECT_INJECTION_RULES) {
-      if (rule.pattern.test(text)) {
+      if (rule.test ? rule.test(text) : rule.pattern.test(text)) {
         return { verdict: 'block', confidence: 0.95, reason: rule.description, rule: rule.id, engine: 'oss-local', rules_version: RULES_VERSION };
       }
     }
@@ -257,7 +329,10 @@ const SECRET_PATTERNS = [
   { id: 'secret:aws_secret_key', pattern: /(aws_secret_access_key|aws_secret|aws_key)\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?/gi, replacement: "$1='[REDACTED_AWS_SECRET]'" },
   { id: 'secret:github_token', pattern: /\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,40}|github_pat_[A-Za-z0-9_]{82})\b/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
   { id: 'secret:db_url_password', pattern: /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:)([^@\s\/]+)(@)/gi, replacement: '$1[REDACTED_DB_PASSWORD]$3' },
-  { id: 'secret:jwt_token', pattern: /\b(eyJ[A-Za-z0-9-_=]{10,}\.eyJ[A-Za-z0-9-_=]{10,}\.[A-Za-z0-9-_.+/=]{10,})\b/g, replacement: '[REDACTED_JWT]' },
+  // The lookahead + backreference pairs act as atomic groups, so a long run of
+  // "-eyJ" cannot make the engine retry every split point. Only used when the
+  // text contains ".eyJ" (see redactSecrets).
+  { id: 'secret:jwt_token', pattern: /\b(eyJ(?=([A-Za-z0-9_=-]{10,512}))\2\.eyJ(?=([A-Za-z0-9_=-]{10,8192}))\3\.[A-Za-z0-9_.+/=-]{10,4096})\b/g, replacement: '[REDACTED_JWT]', requires: '.eyJ' },
   { id: 'secret:env_credential', pattern: /\b((?:AWS_SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PRIVATE_KEY|DATABASE_PASSWORD)\s*[:=]\s*['"]?)([^\s'"]{12,})(['"]?)/gi, replacement: '$1[REDACTED_SECRET]$3' },
 ];
 
@@ -268,6 +343,7 @@ function redactSecrets(text) {
   let sanitized = text;
   const detections = [];
   for (const item of SECRET_PATTERNS) {
+    if (item.requires && !sanitized.includes(item.requires)) continue;
     let match;
     const regex = new RegExp(item.pattern.source, item.pattern.flags);
     while ((match = regex.exec(sanitized)) !== null) {
@@ -333,12 +409,14 @@ function sanitizeToolResult(toolOrResult, content, options = {}) {
   return { sanitized, detections };
 }
 
-// LRU cache for evaluate(): max 2048 entries keyed on raw input.
+// LRU cache for evaluate(): max 2048 entries keyed on raw input, only for
+// inputs up to 8 KB so the cache itself stays small.
 // Invalidated when RULES_VERSION changes or custom config reloads.
 const EVAL_CACHE_MAX = 2048;
+const EVAL_CACHE_MAX_INPUT = 8 * 1024;
 const evalCache = new Map();
 function evaluate(input, options = {}) {
-  if (typeof input !== 'string') return evaluateUncached(input, options);
+  if (typeof input !== 'string' || input.length > EVAL_CACHE_MAX_INPUT) return evaluateUncached(input, options);
   const cfg = loadCustomConfig();
   const hit = evalCache.get(input);
   if (hit !== undefined && hit.ver === RULES_VERSION && hit.cfg === cfg) {
@@ -360,6 +438,14 @@ module.exports = {
   loadCustomConfig,
   redactSecrets,
   sanitizeToolResult,
+  normalizeInput,
+  MAX_SCAN_CHARS,
+  SCAN_HEAD_CHARS,
+  SCAN_TAIL_CHARS,
+  EVAL_CACHE_MAX_INPUT,
+  // Helper patterns used by normalization and the hidden-element check,
+  // exported so the Python port can be checked against them.
+  HELPER_PATTERNS: { ZERO_WIDTH_RE, ANSI_ESCAPE_RE, B64_EXEC_RE, WHITESPACE_RUN_RE, OPEN_TAG_RE, HIDDEN_ATTR_RE, HIDDEN_PAYLOAD_RE },
   SECRET_PATTERNS,
   RULES_VERSION,
   INJECTION_RULES,
