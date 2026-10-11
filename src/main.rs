@@ -14,9 +14,9 @@ use chrono::Utc;
 use clap::Parser;
 use cliclack::{intro, log, note};
 use futures::stream::Stream;
-use opentelemetry::KeyValue;
+use opentelemetry::{trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{trace as sdktrace, Resource};
+use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1765,21 +1765,22 @@ fn init_tracing() -> Result<()> {
     let otlp_endpoint =
         std::env::var("ZN_OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4318".to_string());
 
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .http()
-                .with_endpoint(format!("{}/v1/traces", otlp_endpoint)),
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_endpoint(format!("{}/v1/traces", otlp_endpoint))
+        .build()
+        .map_err(|e| anyhow!("Failed to initialize OTLP exporter: {}", e))?;
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name("zn-proxy")
+                .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+                .build(),
         )
-        .with_trace_config(
-            sdktrace::Config::default().with_resource(Resource::new(vec![
-                KeyValue::new("service.name", "zn-proxy"),
-                KeyValue::new("service.version", "1.0.0"),
-            ])),
-        )
-        .install_batch(opentelemetry_sdk::runtime::Tokio)
-        .map_err(|e| anyhow!("Failed to initialize OTLP tracer: {}", e))?;
+        .build();
+    let tracer = provider.tracer("zn-proxy");
+    opentelemetry::global::set_tracer_provider(provider);
 
     let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
