@@ -55,14 +55,15 @@ function readConfig(home) {
 /*
  * What to do when the scrubber engine is missing from the installation:
  * "closed" (default) denies, withholds or blocks like any other error;
- * "open" lets events pass with a warning. Set in ~/.zn/config.json as
- * {"hooks": {"whenUnavailable": "deny" | "allow"}} (agents cannot write
- * there), or ZN_HOOK_FAIL_MODE=closed|open in the agent's environment.
+ * "open" lets events pass with a warning. Open is set only in
+ * ~/.zn/config.json as {"hooks": {"whenUnavailable": "allow"}} (agents cannot
+ * write there). ZN_HOOK_FAIL_MODE=closed in the environment makes it stricter;
+ * ZN_HOOK_FAIL_MODE=open is ignored, because the agent's environment can be
+ * set by the project it works in.
  */
 function failModeOf(opts) {
   if (opts.failMode) return String(opts.failMode).toLowerCase() === 'open' ? 'open' : 'closed';
-  const env = String(process.env.ZN_HOOK_FAIL_MODE || '').toLowerCase();
-  if (env === 'open' || env === 'closed') return env;
+  if (String(process.env.ZN_HOOK_FAIL_MODE || '').toLowerCase() === 'closed') return 'closed';
   const hooks = readConfig(opts.home).hooks || {};
   const when = String(hooks.whenUnavailable || '').toLowerCase();
   if (when === 'allow') return 'open';
@@ -147,8 +148,12 @@ async function decidePre(ev, d, agentId, opts) {
     if (deny) return { decision: 'deny', message: deny };
   }
   if (tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit') {
-    const deny = policy.writeDenial(input.path, pathOpts);
-    if (deny) return { decision: 'deny', message: deny };
+    // A patch can touch several files: every one is checked, not only the first.
+    if (input.unparsed) return { decision: 'deny', message: 'zn: could not read the file names in this patch, so zn cannot check it.' };
+    for (const p of Array.isArray(input.paths) ? input.paths : [input.path]) {
+      const deny = policy.writeDenial(p, pathOpts);
+      if (deny) return { decision: 'deny', message: deny };
+    }
   }
 
   if (tool === 'webfetch') {
@@ -422,7 +427,9 @@ async function main(args) {
   }
   let raw;
   try {
-    raw = JSON.parse(await readStdin());
+    // Windows PowerShell 5.1 writes a byte order mark when it pipes text to a
+    // native command, which JSON.parse rejects.
+    raw = JSON.parse((await readStdin()).replace(/^﻿/, ''));
   } catch (err) {
     process.stderr.write('zn hook: invalid event JSON on stdin (' + err.message + '); passing through\n');
     return;

@@ -43,11 +43,14 @@ const path = require('path');
 const { whichSync } = require('../broker/markers');
 const { writeFileAtomic } = require('../broker/files');
 const cfg = require('./config-file');
+const { patchFiles } = require('./codex');
 
 const id = 'opencode';
 const PLUGIN_FILE = 'zn-gate.js';
 const PLUGIN_MARK = '// zn-gate plugin for OpenCode';
 const BUILTIN = new Set(['bash', 'read', 'write', 'edit', 'grep', 'glob', 'webfetch', 'websearch', 'apply_patch', 'task', 'todowrite', 'todoread', 'todo', 'skill', 'question', 'plan', 'list', 'patch', 'multiedit', 'lsp']);
+
+const TOKENIZED_OUTPUT = new Set(['task', 'websearch', 'glob', 'list', 'skill', 'codesearch']);
 
 function textsOf(tool, args) {
   const texts = [];
@@ -60,14 +63,18 @@ function textsOf(tool, args) {
 
 function normalize(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const cwd = raw.cwd || process.cwd();
+  const args = raw.args && typeof raw.args === 'object' ? raw.args : {};
+  const root = raw.cwd || process.cwd();
+  // A command or file tool that names its own working directory is checked from there.
+  const cwd = typeof args.workdir === 'string' && args.workdir ? path.resolve(root, args.workdir) : root;
   const base = { cwd, sessionId: raw.sessionID || null, raw };
   if (raw.hook === 'chat.message') return { ...base, event: 'user_prompt', tool: null, input: { prompt: typeof raw.prompt === 'string' ? raw.prompt : '' } };
   const t = String(raw.tool || '');
-  const args = raw.args && typeof raw.args === 'object' ? raw.args : {};
   let tool;
   if (t === 'read_mcp_resource') tool = 'mcpresource';
   else if (t === 'apply_patch' || t === 'patch') tool = 'write';
+  // These return text the model reads, so their output is tokenized like MCP output.
+  else if (TOKENIZED_OUTPUT.has(t)) tool = 'mcp';
   else if (BUILTIN.has(t)) tool = t;
   else tool = 'mcp';
   const input = {
@@ -76,6 +83,13 @@ function normalize(raw) {
     url: typeof args.url === 'string' ? args.url : undefined,
     texts: textsOf(t === 'patch' ? 'apply_patch' : t, args),
   };
+  if (t === 'apply_patch' || t === 'patch') {
+    // Every file the patch touches is checked, as in the Codex adapter.
+    const files = patchFiles(args.patchText);
+    input.paths = files;
+    input.path = files[0];
+    input.unparsed = files.length === 0;
+  }
   if (raw.hook === 'tool.execute.before') return { ...base, event: 'pre_tool', tool, toolName: t, input };
   if (raw.hook === 'tool.execute.after') {
     const output = {};
@@ -113,17 +127,24 @@ function respond(d) {
 /* ------------------------------ plugin ------------------------------ */
 
 function pluginSource(opts = {}) {
+  // A project plugin is shared through the repository: it calls `zn` on PATH
+  // instead of naming this user's node and runner.
+  const project = (opts.scope || 'user') === 'project';
   const node = JSON.stringify((opts.nodePath || process.execPath).replace(/\\/g, '/'));
   const runner = JSON.stringify((opts.runnerPath || cfg.runnerPath()).replace(/\\/g, '/'));
+  const launch = project ? 'const NODE = "zn";\nconst RUNNER = null;' : `const NODE = ${node};\nconst RUNNER = ${runner};`;
+  const argv = project ? '["hook", "opencode"]' : '[RUNNER, "opencode"]';
   return `${PLUGIN_MARK} (written by \`zn hooks install opencode\`; remove with \`zn hooks uninstall opencode\`).
 // Sends tool calls, tool results and chat messages to the local zn hook runner,
 // which blocks reads of secret files, puts commands that use stored secrets
 // through \`zn run\`, and replaces secret values in tool output with __ZN_ tokens.
 import { spawn } from "node:child_process";
 
-const NODE = ${node};
-const RUNNER = ${runner};
+${launch}
 const TIMEOUT_MS = 20000;
+// The only answers the plugin acts on. Any other answer is an error, which
+// blocks the call (before), withholds the output (after) or stops the message.
+const ACTIONS = ["none", "deny", "error", "args", "output"];
 
 // Copy scrubbed string leaves from src into target, in place.
 function applyStrings(target, src) {
@@ -141,7 +162,7 @@ function runHook(event) {
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
     let child;
     try {
-      child = spawn(NODE, [RUNNER, "opencode"], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+      child = spawn(NODE, ${argv}, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     } catch (err) {
       finish({ action: "error", message: String(err && err.message || err) });
       return;
@@ -151,7 +172,13 @@ function runHook(event) {
     child.on("error", (err) => { clearTimeout(timer); finish({ action: "error", message: String(err && err.message || err) }); });
     child.on("close", () => {
       clearTimeout(timer);
-      try { finish(JSON.parse(out)); } catch (_) { finish({ action: "error", message: "no answer from the zn hook" }); }
+      let answer = null;
+      try { answer = JSON.parse(out); } catch (_) { answer = null; }
+      if (!answer || typeof answer !== "object" || !ACTIONS.includes(answer.action)) {
+        finish({ action: "error", message: "no answer from the zn hook" });
+      } else {
+        finish(answer);
+      }
     });
     child.stdin.end(JSON.stringify(event));
   });

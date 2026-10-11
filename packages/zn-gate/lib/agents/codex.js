@@ -47,7 +47,8 @@ const { whichSync } = require('../broker/markers');
 
 const id = 'codex';
 const PRE_MATCHER = '^(Bash|apply_patch)$';
-const POST_MATCHER = '^(Bash|apply_patch)$|^mcp__.*';
+// Every tool: output of tools zn does not know is tokenized like MCP output.
+const POST_MATCHER = '.*';
 const HOOK_TIMEOUT_S = 30;
 
 /* apply_patch: the files it touches and the text it adds. */
@@ -69,15 +70,18 @@ function normalize(raw) {
   const toolName = String(raw.tool_name || '');
   const mcp = /^mcp__(.+?)__(.+)$/.exec(toolName);
   const ti = raw.tool_input && typeof raw.tool_input === 'object' ? raw.tool_input : {};
-  let tool = mcp ? 'mcp' : toolName === 'Bash' ? 'bash' : toolName === 'apply_patch' ? 'write' : toolName.toLowerCase();
+  // Unknown tools are treated like MCP output: their text is tokenized.
+  let tool = mcp ? 'mcp' : toolName === 'Bash' ? 'bash' : toolName === 'apply_patch' ? 'write' : 'mcp';
   const input = { command: typeof ti.command === 'string' ? ti.command : undefined, texts: [] };
   if (toolName === 'apply_patch') {
-    // The policy checks one path: prefer a path inside zn's state, so a
-    // patch that touches ~/.zn anywhere is denied.
+    // Every file the patch touches is checked by the policy; a patch whose
+    // file names cannot be read is refused rather than let through.
     const files = patchFiles(ti.command);
     const home = os.homedir();
     const zn = files.find((f) => path.resolve(base.cwd, f).replace(/\\/g, '/').startsWith(path.join(home, '.zn').replace(/\\/g, '/')));
+    input.paths = files;
     input.path = zn || files[0];
+    input.unparsed = files.length === 0;
     input.texts = [{ key: ['command'], value: String(ti.command || '') }];
     input.command = undefined;
     tool = 'write';
@@ -154,8 +158,14 @@ function install(opts = {}) {
   const file = hooksFile(opts);
   const data = cfg.readJson(file);
   const report = { settings: file, backup: cfg.backup(file), warnings: [] };
-  data.hooks = data.hooks && typeof data.hooks === 'object' ? data.hooks : {};
-  const h = { type: 'command', command: cfg.hookCommand(id, opts), timeout: HOOK_TIMEOUT_S, statusMessage: 'zn: checking for secrets' };
+  data.hooks = cfg.hooksOf(data, file);
+  const h = {
+    type: 'command',
+    command: cfg.hookCommand(id, opts),
+    commandWindows: cfg.hookCommandWindows(id, opts),
+    timeout: HOOK_TIMEOUT_S,
+    statusMessage: 'zn: checking for secrets',
+  };
   const ours = {
     PreToolUse: { matcher: PRE_MATCHER, hooks: [h] },
     PostToolUse: { matcher: POST_MATCHER, hooks: [h] },
