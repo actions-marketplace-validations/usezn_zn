@@ -311,7 +311,7 @@ jobs:
 | `fail-on` | empty | Audit only: lowest severity that fails the step (`low`, `medium`, `high`, `critical`, `none`). Empty means `high` when `fail-on-threat` is `true` and `none` when it is `false`. |
 | `agents` | empty | Audit only: comma-separated agents to audit (`zn audit --agents`). Empty audits all supported agents. |
 | `format` | `github` | `github` (inline annotations), `text`, `json` or `sarif`. |
-| `sarif-file` | empty | With `format: sarif`, where to write the file. Empty writes `zn-gate.sarif` in the runner temp directory. |
+| `sarif-file` | empty | With `format: sarif`, where to write the file. Empty writes `zn-gate.sarif` in a new directory under the runner temp directory. |
 | `package-sha256` | empty | SHA-256 of the PyPI wheel for `version`. When set, the install fails if the file has a different hash. |
 | `npm-integrity` | empty | Integrity string (`sha512-...`) of the npm tarball for `version`. When set, the audit fails if the tarball has a different hash. |
 

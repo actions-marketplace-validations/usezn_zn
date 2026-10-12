@@ -48,7 +48,7 @@ inputs:
     required: false
     default: 'github'
   sarif-file:
-    description: 'With format sarif: where to write the SARIF file. Empty writes zn-gate.sarif in the runner temp directory.'
+    description: 'With format sarif: where to write the SARIF file. Empty writes zn-gate.sarif in a new directory under the runner temp directory.'
     required: false
     default: ''
 
@@ -212,6 +212,7 @@ runs:
         ZN_AGENTS: ${{ inputs.agents }}
         ZN_SARIF_FILE: ${{ inputs.sarif-file }}
         ZN_WORK: ${{ runner.temp }}/zn-gate-run
+        ZN_WORK_ROOT: ${{ runner.temp }}
       run: |
         set -uo pipefail
         rm -rf "$ZN_WORK"
@@ -348,7 +349,13 @@ runs:
 
         sarif_out=""; merge_rc=0
         if [ "$ZN_FORMAT" = sarif ]; then
-          sarif_out="${ZN_SARIF_FILE:-$ZN_WORK/zn-gate.sarif}"
+          # Default: a new directory per run, so a later run of the action in the same
+          # job does not remove or overwrite it.
+          if [ -n "$ZN_SARIF_FILE" ]; then
+            sarif_out="$ZN_SARIF_FILE"
+          else
+            sarif_out="$(mktemp -d "$ZN_WORK_ROOT/zn-gate-sarif-XXXXXX")/zn-gate.sarif"
+          fi
           [ -s "$audit_sarif" ] || audit_sarif=""
           helper merge "$sarif_out" "$ZN_VERSION" "$scan_json" "$audit_sarif" || merge_rc=2
         fi
