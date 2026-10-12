@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-12
+
 Beta of the secrets scrubber and broker: secret values stay out of what your
 coding agent sends to its model. Walkthrough: [docs/secrets.md](docs/secrets.md).
 Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
@@ -73,6 +75,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - Releases are built once by a tag-triggered workflow and published to npm and PyPI with trusted publishing (OpenID Connect, no stored tokens), after a manual approval. Each release ships `SHA256SUMS`, Sigstore bundles and GitHub build provenance attestations; npm and PyPI carry provenance too. Prereleases go to the npm dist-tags `beta`, `next` (release candidates) or `alpha` and never move `latest`. 1.5.0-beta.1 and earlier versions are not signed. How to check them: [docs/verify-release.md](docs/verify-release.md).
 
 ### Known limitations
+- Detection of credentials under prefixed variable names (e.g. OPENAI_API_KEY=) is partial in this release.
 - Cursor cannot rewrite the output of shell commands or file reads. Codex can only replace output through "block", and keeps the original in its own session log.
 - Each hook is a short Node process: measured about 78 ms p50 per tool call on a Windows desktop and 124 ms on a small server (`bench/HOOK_LATENCY.md`). The floor is Node's start-up; scanning inside the vault daemon would remove most of it and is planned after the beta, with its own review.
 - With the vault unlocked, any process of your OS user can ask the vault daemon for a stored secret by name. Approvals, fingerprints and `allowIn` protect the `zn run` and MCP paths, not that one (see `docs/threat-model.md`).
@@ -199,7 +202,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.4.1...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.5.0...next
+[1.5.0]: https://github.com/usezn/zn/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/usezn/zn/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/usezn/zn/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/usezn/zn/compare/v1.2.4...v1.3.0
