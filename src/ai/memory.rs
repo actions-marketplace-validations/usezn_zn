@@ -66,7 +66,7 @@ impl VectorMemory {
         Ok(conn)
     }
 
-    fn check_dim(&self, vector: &[f32]) -> Result<()> {
+    fn check_vector(&self, vector: &[f32]) -> Result<()> {
         if vector.len() != self.dim as usize {
             return Err(anyhow!(
                 "vector has {} dimensions, memory expects {}",
@@ -74,12 +74,15 @@ impl VectorMemory {
                 self.dim
             ));
         }
+        if !vector.iter().all(|v| v.is_finite()) {
+            return Err(anyhow!("vector contains NaN or infinite values"));
+        }
         Ok(())
     }
 
     /// Store a vector embedding for a specific agent.
     pub async fn store(&self, agent_id: &str, text: &str, vector: &[f32]) -> Result<()> {
-        self.check_dim(vector)?;
+        self.check_vector(vector)?;
         let path = self.db_path();
         let agent = agent_id.to_string();
         let text = text.to_string();
@@ -102,7 +105,7 @@ impl VectorMemory {
         vector: &[f32],
         limit: usize,
     ) -> Result<Vec<(String, f32)>> {
-        self.check_dim(vector)?;
+        self.check_vector(vector)?;
         let path = self.db_path();
         if limit == 0 || !path.exists() {
             return Ok(vec![]);
@@ -129,6 +132,11 @@ impl VectorMemory {
                         (v - q) * (v - q)
                     })
                     .sum();
+                // Rows written before non-finite input was rejected, or values
+                // that overflow, must not break the ordering of the top-k list.
+                if !d.is_finite() {
+                    continue;
+                }
                 if best.len() < limit || d < best[best.len() - 1].1 {
                     let text: String = row.get(0)?;
                     let pos = best.partition_point(|(_, bd)| *bd <= d);
@@ -192,6 +200,33 @@ mod tests {
         let m = VectorMemory::new(dir.to_str().unwrap(), 3, "m");
         assert!(m.store("a", "x", &[1.0, 2.0]).await.is_err());
         assert!(m.search("a", &[1.0], 1).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn non_finite_vectors_are_rejected_and_skipped() {
+        let dir = temp_dir("finite");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 2, "m");
+        assert!(m.store("a", "nan", &[f32::NAN, 0.0]).await.is_err());
+        assert!(m.store("a", "inf", &[f32::INFINITY, 0.0]).await.is_err());
+        assert!(m.search("a", &[0.0, f32::NAN], 1).await.is_err());
+
+        // A row that bypassed validation must not displace valid results.
+        m.store("a", "near", &[1.0, 0.0]).await.unwrap();
+        let blob: Vec<u8> = [f32::NAN, 0.0f32]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        VectorMemory::open(&m.db_path())
+            .unwrap()
+            .execute(
+                "INSERT INTO memory (agent_id, text, vector) VALUES (?1, ?2, ?3)",
+                params!["a", "bad", blob],
+            )
+            .unwrap();
+        m.store("a", "far", &[2.0, 0.0]).await.unwrap();
+        let r = m.search("a", &[0.0, 0.0], 5).await.unwrap();
+        assert_eq!(r, vec![("near".to_string(), 1.0), ("far".to_string(), 4.0)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
