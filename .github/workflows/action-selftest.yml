@@ -38,6 +38,7 @@ jobs:
           persist-credentials: false
 
       - name: Clean fixture passes
+        id: clean
         uses: ./
         with:
           path: .github/action-selftest/clean
@@ -51,6 +52,7 @@ jobs:
           format: text
 
       - name: fail-on-threat false reports without failing
+        id: nofail
         uses: ./
         with:
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
@@ -65,6 +67,30 @@ jobs:
           path: .github/action-selftest/clean
           format: text
 
+      # The same command line the action runs, on the virtualenv it just installed,
+      # to check why it fails and what each format prints.
+      - name: Scan output by format
+        shell: bash
+        env:
+          VENV: ${{ runner.temp }}/zn-gate-venv
+          FIXTURE: packages/zn-gate/test/fixtures/rules_parity_samples.json
+        run: |
+          set -euo pipefail
+          py="$VENV/bin/python"; [ -x "$py" ] || py="$VENV/Scripts/python.exe"
+          out="$RUNNER_TEMP/zn-selftest-out"; mkdir -p "$out"
+          for fmt in github text json; do
+            rc=0
+            "$py" -I -X utf8 -m zn_gate.cli scan --format "$fmt" -- "$FIXTURE" > "$out/out-$fmt.txt" 2> "$out/err-$fmt.txt" || rc=$?
+            echo "format=$fmt rc=$rc"
+            test "$rc" = 1
+            if grep -q Traceback "$out/err-$fmt.txt"; then cat "$out/err-$fmt.txt"; exit 1; fi
+          done
+          test "$(grep -c '^::error file=' "$out/out-github.txt")" -gt 0
+          grep -q 'security threats' "$out/out-github.txt"
+          grep -q 'threat vectors' "$out/out-text.txt"
+          "$py" -I -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); assert d['total_threats'] > 0, d" "$out/out-json.txt"
+          rm -rf "$out"
+
       - name: Wrong package-sha256 is refused
         id: badhash
         continue-on-error: true
@@ -73,6 +99,16 @@ jobs:
           version: '1.4.1'
           package-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
           path: .github/action-selftest/clean
+
+      - name: The wrong hash stopped the install
+        shell: bash
+        env:
+          VENV: ${{ runner.temp }}/zn-gate-venv
+        run: |
+          py="$VENV/bin/python"; [ -x "$py" ] || py="$VENV/Scripts/python.exe"
+          if "$py" -I -c 'import zn_gate' 2>/dev/null; then
+            echo "zn_gate is installed although the hash was wrong"; exit 1
+          fi
 
       - name: Non-exact version is refused
         id: badversion
@@ -88,9 +124,22 @@ jobs:
           FINDINGS: ${{ steps.findings.outcome }}
           BADHASH: ${{ steps.badhash.outcome }}
           BADVERSION: ${{ steps.badversion.outcome }}
+          CLEAN_RC: ${{ steps.clean.outputs.scan-exit-code }}
+          FINDINGS_RC: ${{ steps.findings.outputs.scan-exit-code }}
+          NOFAIL_RC: ${{ steps.nofail.outputs.scan-exit-code }}
+          BADHASH_RC: ${{ steps.badhash.outputs.scan-exit-code }}
+          BADVERSION_RC: ${{ steps.badversion.outputs.scan-exit-code }}
         run: |
           set -euo pipefail
           echo "findings=$FINDINGS badhash=$BADHASH badversion=$BADVERSION"
+          echo "scan exit codes: clean=$CLEAN_RC findings=$FINDINGS_RC nofail=$NOFAIL_RC badhash=$BADHASH_RC badversion=$BADVERSION_RC"
           test "$FINDINGS" = failure
           test "$BADHASH" = failure
           test "$BADVERSION" = failure
+          # Findings fail with exit code 1 from the scan, not a crash or a usage error.
+          test "$CLEAN_RC" = 0
+          test "$FINDINGS_RC" = 1
+          test "$NOFAIL_RC" = 0
+          # A refused hash or version stops the action before the scan runs.
+          test -z "$BADHASH_RC"
+          test -z "$BADVERSION_RC"
