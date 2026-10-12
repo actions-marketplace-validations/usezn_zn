@@ -29,6 +29,7 @@ venv/
 # Local evidence, DBs, models
 *.db
 zn.json
+zn-superadmin-key.txt
 models/
 .zn/
 *.bak.*

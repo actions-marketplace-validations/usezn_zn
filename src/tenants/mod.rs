@@ -9,6 +9,8 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -62,10 +64,46 @@ pub fn valid_tenant_namespace(ns: &str) -> bool {
 
 /// Key for the seeded default organisation.
 enum SeedKey {
-    /// From `ZN_API_KEY`; never printed.
+    /// From `ZN_API_KEY`; never printed or stored.
     FromEnv(String),
-    /// Generated at random; printed once so the operator can save it.
+    /// Generated at random; written once to the seed key file, never printed.
     Generated(String),
+}
+
+/// File that receives a generated SuperAdmin key: `zn-superadmin-key.txt`
+/// next to the database at `db_path`.
+pub fn seed_key_file_for(db_path: impl AsRef<Path>) -> PathBuf {
+    db_path.as_ref().with_file_name("zn-superadmin-key.txt")
+}
+
+/// Writes `key` to a new file at `path` that only the current user can read
+/// and write (mode 0600 on Unix; on Windows the file inherits the ACL of its
+/// directory). A file or symlink already at `path` is removed first, never
+/// followed.
+fn write_seed_key_file(path: &Path, key: &str) -> Result<()> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| anyhow!("Failed to create directory {:?}: {}", dir, e))?;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(anyhow!("Failed to replace {:?}: {}", path, e)),
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(path)
+        .map_err(|e| anyhow!("Failed to create {:?}: {}", path, e))?;
+    writeln!(file, "{}", key)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| anyhow!("Failed to write {:?}: {}", path, e))?;
+    Ok(())
 }
 
 /// `ZN_API_KEY` when it is set and not blank, otherwise a new random key.
@@ -117,8 +155,28 @@ pub struct TenantStore {
 }
 
 impl TenantStore {
-    /// Create a new TenantStore, initializing the schema if needed
+    /// Create a new TenantStore, initializing the schema if needed.
+    ///
+    /// When no tenant exists, a SuperAdmin tenant is seeded with
+    /// `ZN_API_KEY`, or with a random key that is not saved anywhere; use
+    /// [`TenantStore::open`] to keep a generated key.
     pub fn new(conn: Arc<Mutex<Connection>>) -> Result<Self> {
+        Self::open(conn, None)
+    }
+
+    /// Like [`TenantStore::new`], but a generated SuperAdmin key is written
+    /// to `seed_key_file` (readable only by the current user) before the
+    /// tenant is seeded. The key is never printed. If the file cannot be
+    /// written, nothing is seeded and an error is returned.
+    pub fn open(conn: Arc<Mutex<Connection>>, seed_key_file: Option<&Path>) -> Result<Self> {
+        Self::init(conn, std::env::var("ZN_API_KEY").ok(), seed_key_file)
+    }
+
+    fn init(
+        conn: Arc<Mutex<Connection>>,
+        env_key: Option<String>,
+        seed_key_file: Option<&Path>,
+    ) -> Result<Self> {
         {
             let db = conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
 
@@ -141,7 +199,7 @@ impl TenantStore {
                 let id = Uuid::new_v4().to_string();
 
                 // ZN_API_KEY when set and not blank, otherwise a random key.
-                let seed = seed_key(std::env::var("ZN_API_KEY").ok());
+                let seed = seed_key(env_key);
                 let (api_key, source) = match &seed {
                     SeedKey::FromEnv(k) => (k.as_str(), "Environment Variable (ZN_API_KEY)"),
                     SeedKey::Generated(k) => (k.as_str(), "Generated Random Key"),
@@ -150,22 +208,35 @@ impl TenantStore {
                 let hash = Self::hash_api_key(api_key);
                 let created_at = Utc::now().to_rfc3339();
 
+                // A generated key goes to a file only the current user can
+                // read, never to stdout or the logs, which often end up in
+                // container or CI logs. It is written before the tenant is
+                // seeded, so a failed write leaves nothing half done.
+                let written_to = match (&seed, seed_key_file) {
+                    (SeedKey::Generated(key), Some(path)) => {
+                        write_seed_key_file(path, key)?;
+                        Some(path)
+                    }
+                    _ => None,
+                };
+
                 db.execute(
                     "INSERT INTO tenants (id, name, namespace, api_key_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     params![id, "Default Org", GLOBAL_NAMESPACE, hash, "superadmin", created_at],
                 )?;
 
-                // Print the key and security warning
                 println!("\n\x1b[32;1m🛡️ zn Initialized Successfully!\x1b[0m");
                 println!("\x1b[33mNo superadmin tenant found. A new one has been seeded.\x1b[0m");
                 println!("Source: {}", source);
-                // A key from the environment is never printed: stdout often
-                // ends up in container logs. A generated key is shown once.
-                if let SeedKey::Generated(key) = &seed {
-                    println!("\x1b[32;1mSuperAdmin API Key: {}\x1b[0m", key);
-                    println!(
-                        "\x1b[31;1mIMPORTANT: Save this key! It will not be shown again.\x1b[0m\n"
-                    );
+                match (&seed, written_to) {
+                    (SeedKey::Generated(_), Some(path)) => println!(
+                        "\x1b[32;1mSuperAdmin API key written to {}\x1b[0m (only your user can read it).\n\x1b[31;1mIMPORTANT: copy it somewhere safe, then delete the file.\x1b[0m\n",
+                        path.display()
+                    ),
+                    (SeedKey::Generated(_), None) => println!(
+                        "\x1b[33mThe generated SuperAdmin key was not saved. Set ZN_API_KEY to choose the key.\x1b[0m\n"
+                    ),
+                    (SeedKey::FromEnv(_), _) => {}
                 }
 
                 tracing::info!("Seeded default SuperAdmin tenant from {}", source);
@@ -430,6 +501,72 @@ mod tests {
             seed_key(Some("operator-key".to_string())),
             SeedKey::FromEnv(k) if k == "operator-key"
         ));
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("zn-tenants-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn memory_conn() -> Arc<Mutex<Connection>> {
+        Arc::new(Mutex::new(Connection::open_in_memory().unwrap()))
+    }
+
+    #[test]
+    fn generated_seed_key_is_written_to_a_private_file() {
+        let dir = temp_dir("seed");
+        let file = seed_key_file_for(dir.join("zn.db"));
+        assert_eq!(file, dir.join("zn-superadmin-key.txt"));
+        // A stale file from an earlier seed is replaced.
+        std::fs::write(&file, "stale").unwrap();
+
+        let store = TenantStore::init(memory_conn(), None, Some(&file)).unwrap();
+        let key = std::fs::read_to_string(&file).unwrap();
+        let key = key.trim_end();
+        assert_eq!(key.len(), 32);
+        let ctx = store
+            .find_by_api_key(key)
+            .unwrap()
+            .expect("key authenticates");
+        assert_eq!(ctx.role, TenantRole::SuperAdmin);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "key file must not be readable by others");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_seed_key_is_not_written_to_a_file() {
+        let dir = temp_dir("env");
+        let file = dir.join("zn-superadmin-key.txt");
+        let store =
+            TenantStore::init(memory_conn(), Some("operator-key".into()), Some(&file)).unwrap();
+        assert!(!file.exists());
+        assert!(store.find_by_api_key("operator-key").unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_key_file_write_seeds_nothing() {
+        let dir = temp_dir("fail");
+        // The parent of the key file is a regular file, so it cannot be created.
+        std::fs::write(dir.join("not-a-dir"), "x").unwrap();
+        let file = dir.join("not-a-dir").join("zn-superadmin-key.txt");
+        let conn = memory_conn();
+        assert!(TenantStore::init(Arc::clone(&conn), None, Some(&file)).is_err());
+        let count: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM tenants", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
