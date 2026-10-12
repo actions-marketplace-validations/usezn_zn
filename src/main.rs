@@ -1592,8 +1592,8 @@ async fn policies_upload_handler(
                 }
             };
 
-            // Save to the policy directory
-            if let Err(e) = std::fs::write(&path, &data) {
+            // Save to the policy directory: temporary file + rename, no symlinks.
+            if let Err(e) = zn::engine::write_policy_file(&path, &data) {
                 return axum::response::Json(serde_json::json!({
                     "status": "error",
                     "error": format!("Failed to save file: {}", e)
@@ -1653,9 +1653,10 @@ async fn policies_delete_handler(
     // Unregister from engine
     state.engine.unregister_policy(&payload.name);
 
-    // Delete file
-    if path.exists() {
-        if let Err(e) = std::fs::remove_file(path) {
+    // Delete the file. symlink_metadata also sees a dangling symlink, and
+    // remove_file deletes a symlink itself, never what it points to.
+    if std::fs::symlink_metadata(&path).is_ok() {
+        if let Err(e) = std::fs::remove_file(&path) {
             return axum::response::Json(serde_json::json!({
                 "status": "error",
                 "error": format!("Failed to delete policy file: {}", e)

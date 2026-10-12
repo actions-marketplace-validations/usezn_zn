@@ -36,6 +36,10 @@ A token with a bad signature, another algorithm, past its expiry or before its `
 
 `POST /api/v1/policies/upload` and `POST /api/v1/policies/delete` (super-admin only) work on `engine.policy_dir` (default `./policies_bin`), the directory the gateway loads and watches. A policy name, and an uploaded file name without its `.wasm` extension, must be 1-64 ASCII letters, digits, `.`, `-` or `_`, starting with a letter or digit. Other names are refused, and so is a policy file that resolves outside the directory through a symlink. Earlier versions wrote uploads to `./policies` and joined the name from the request to that path as given, so a name such as `../x` could write or delete a `.wasm` file outside it.
 
+Uploads are written to a temporary file and renamed into place, so the watcher never loads a half-written policy, and a symlink at the target name is refused.
+
+**Upgrading:** policies uploaded with an earlier version are in `./policies` and are no longer loaded. Move the `.wasm` files, with their `.wasm.sig` / `.wasm.pqs` signatures if you use them, to `engine.policy_dir` before you start the new version, for example `mv policies/*.wasm* policies_bin/`.
+
 ## Upgrading the vector memory
 
 The per-agent vector memory is now stored in SQLite (`data/vectors/<model>_d<dim>.sqlite3`). The older Lance directories (`data/vectors/<model>_d<dim>/`) are not migrated or read and can be deleted.

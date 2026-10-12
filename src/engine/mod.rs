@@ -71,6 +71,55 @@ pub fn policy_file_path(dir: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Writes a policy file without following symlinks and without exposing a
+/// half-written file. A symlink at `path` (even a dangling one) is refused.
+/// The bytes go to a new temporary file in the same directory, created
+/// exclusively so that nothing already there is followed, and that file is
+/// then renamed over `path`; a rename replaces a symlink instead of writing
+/// through it. The temporary name does not end in `.wasm`, so the policy
+/// watcher ignores it until the rename.
+pub fn write_policy_file(path: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(anyhow!("Policy file {:?} is a symlink", path));
+        }
+    }
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("Policy file {:?} has no directory", path))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("Policy file {:?} has no name", path))?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        nonce
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| anyhow!("Failed to create a temporary policy file: {}", e))?;
+    if let Err(e) = file.write_all(data).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow!("Failed to write policy file: {}", e));
+    }
+    drop(file);
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow!("Failed to save policy file: {}", e));
+    }
+    Ok(())
+}
+
 struct ZnContext {
     memory_limit: usize,
     agent_id: Option<String>,
@@ -568,6 +617,42 @@ mod tests {
         assert!(policy_file_path(&dir, "../victim").is_err());
         assert!(policy_file_path(&dir, "sub/victim").is_err());
         assert!(root.join("victim.wasm").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_policy_file_replaces_the_file_and_leaves_no_temporary() {
+        let root = temp_dir("write");
+        let dir = root.join("policies");
+        let path = policy_file_path(&dir, "pii").unwrap();
+        write_policy_file(&path, b"first").unwrap();
+        write_policy_file(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        let names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["pii.wasm".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_policy_file_refuses_symlinks_even_dangling_ones() {
+        let root = temp_dir("write-symlink");
+        let dir = root.join("policies");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A dangling symlink resolves to nothing, so the path check lets it
+        // through; the write must still not create the target.
+        std::os::unix::fs::symlink(root.join("created.wasm"), dir.join("dangling.wasm")).unwrap();
+        let path = policy_file_path(&dir, "dangling").unwrap();
+        assert!(write_policy_file(&path, b"x").is_err());
+        assert!(!root.join("created.wasm").exists());
+
+        std::fs::write(root.join("outside.wasm"), b"keep").unwrap();
+        std::os::unix::fs::symlink(root.join("outside.wasm"), dir.join("into.wasm")).unwrap();
+        assert!(write_policy_file(&dir.join("into.wasm"), b"x").is_err());
+        assert_eq!(std::fs::read(root.join("outside.wasm")).unwrap(), b"keep");
         let _ = std::fs::remove_dir_all(&root);
     }
 
