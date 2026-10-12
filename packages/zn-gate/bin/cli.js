@@ -370,6 +370,12 @@ async function runBrokerCommand(command, rest) {
 
 async function main() {
   const args = process.argv.slice(2);
+  if (args[0] === 'vault' && args[1] === 'log') {
+    // exitCode (not process.exit) so a large log is flushed completely through a pipe.
+    process.exitCode = await require('../lib/broker/cli').dispatch('vault', args.slice(1));
+    return;
+  }
+
   if (BROKER_COMMANDS.has(args[0]) && !(args.length === 2 && (args[1] === '-h' || args[1] === '--help'))) {
     await runBrokerCommand(args[0], args.slice(1));
     return;

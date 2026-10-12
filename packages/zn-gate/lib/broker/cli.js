@@ -399,6 +399,11 @@ async function envUnshadow(args, io) {
 /* ------------------------------ audit ------------------------------ */
 
 async function audit(args, io) {
+  if (args.includes('-h') || args.includes('--help')) {
+    out(io, 'usage: zn vault log [--since 1h]   (also: zn secret log)');
+    out(io, 'Shows who used which secret where (no values), then checks the audit log chain.');
+    return 0;
+  }
   const { flags } = parseFlags(args, {});
   let mod;
   try {

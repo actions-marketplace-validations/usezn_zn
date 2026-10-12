@@ -146,3 +146,42 @@ test('the log checks the chain of an unlocked vault and exits 1 when it is broke
     assertNotice(cmd, r);
   }
 });
+
+test('a large log is printed completely through a pipe by all three commands', async (t) => {
+  const home = tempDir(t, 'zn-audit-');
+  fs.mkdirSync(path.join(home, '.zn'), { recursive: true });
+  const N = 5000;
+  const base = Date.now() - 60000;
+  const lines = [];
+  for (let i = 1; i <= N; i++) {
+    lines.push(JSON.stringify({ seq: i, ts: new Date(base + i).toISOString(), decision: 'allow', secret: 'DB_PASSWORD', mode: 'run', agent: 'claude-code', tool: 'Bash', prev: '0', mac: '00' }));
+  }
+  fs.writeFileSync(path.join(home, '.zn', 'audit.jsonl'), lines.join('\n') + '\n');
+  const env = { ...process.env, HOME: home, USERPROFILE: home, ZN_HOME: path.join(home, '.zn') };
+  for (const cmd of LOG_COMMANDS) {
+    // Asynchronous spawn: stdout is a pipe, as when another program runs zn.
+    const r = await new Promise((resolve) => {
+      const child = require('child_process').spawn(process.execPath, [CLI, ...cmd], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
+    });
+    const out = r.stdout.split('\n').filter(Boolean);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(out.length, N + 1, cmd.join(' ') + ': ' + out.length + ' lines');
+    assert.match(out[N], /^chain: /, cmd.join(' '));
+  }
+});
+
+test('zn vault log --help and zn secret log --help show the usage', (t) => {
+  const home = tempDir(t, 'zn-audit-');
+  for (const cmd of [['vault', 'log'], ['secret', 'log']]) {
+    const r = zn(home, [...cmd, '--help']);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.match(r.stdout, /usage: zn vault log/);
+  }
+});
