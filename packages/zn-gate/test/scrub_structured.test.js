@@ -166,6 +166,35 @@ function timeMs(fn) {
   return Number(process.hrtime.bigint() - t0) / 1e6;
 }
 
+test('fingerprints, hashes, timestamps and storage keys are not secrets', () => {
+  const h40 = hex(40);
+  const h64 = hex(64);
+  const docs = [
+    'ENV GPG_KEY ' + h40.toUpperCase() + '\n',
+    'gpg_key: ' + h40 + '\n',
+    'signing_key_fingerprint: ' + h40 + '\n',
+    'cache_key: ' + h64 + '\n',
+    'idempotency_key: 550e8400-e29b-41d4-a716-446655440000\n',
+    's3_key: uploads/2026/10/' + h64 + '.png\n',
+    '"S3Key": "' + h64 + '.zip",\n',
+    '"objectKey": "' + h64 + '.zip",\n',
+    'password_sha256: ' + h64 + '\n',
+    'token_hash: ' + h64 + '\n',
+    'client_secret_expires_at: 1767225600\n',
+  ];
+  for (const doc of docs) {
+    assert.deepStrictEqual(P.findPatterns(doc, {}), [], 'flagged: ' + doc.slice(0, 40));
+  }
+  // A GPG key id under another sensitive name is still a secret-like value.
+  assert.strictEqual(P.findPatterns('api_key: ' + h40 + '\n', {}).length, 1);
+});
+
+test('values must be printable ASCII', () => {
+  // Localized text with Latin letters and digits mixed in, as in UI string
+  // catalogs, has the character mix and entropy of a secret but is not ASCII.
+  assert.deepStrictEqual(P.findPatterns('pass: "\u30d1\u30b9\u30ef\u30fc\u30c912\u6587\u5b57Abc9xZ"\n', {}), []);
+});
+
 test('64 KB worst-case inputs finish quickly (no super-linear backtracking)', () => {
   const N = 65536;
   const fill = (unit) => unit.repeat(Math.ceil(N / unit.length)).slice(0, N);
@@ -185,6 +214,18 @@ test('64 KB worst-case inputs finish quickly (no super-linear backtracking)', ()
     dockerfile_env: fill('ENV A '),
     lines: fill('password: Ab1Cd2Ef3Gh4\n'),
     compose_lines: fill('      - API_SECRET=Ab1Cd2Ef3Gh4Ij5\n'),
+    // A value followed by a long run of blanks and one more character on the
+    // same line, in each line form (the line tail must stay linear).
+    yaml_value_spaces: 'password: Ab1Cd2Ef3Gh4Ij5' + fill(' ') + 'x',
+    yaml_value_tabs: 'password: Ab1Cd2Ef3Gh4Ij5' + fill('\t') + 'x',
+    dotenv_value_spaces: 'API_KEY=Ab1Cd2Ef3Gh4Ij5' + fill(' ') + 'x',
+    compose_value_spaces: '- API_KEY=Ab1Cd2Ef3Gh4Ij5' + fill(' ') + 'x',
+    dockerfile_value_spaces: 'ENV API_KEY Ab1Cd2Ef3Gh4Ij5' + fill(' ') + 'x',
+    yaml_value_spaces_cr: 'password: Ab1Cd2Ef3Gh4Ij5' + fill(' \r') + 'x',
+    // Repeated keywords in one line (generic assignment patterns).
+    keyword_lower: fill('token'),
+    keyword_upper: fill('TOKEN'),
+    keyword_upper_eq: fill('API_TOKEN_') + '=',
   };
   for (const [name, text] of Object.entries(inputs)) {
     const ms = timeMs(() => P.findPatterns(text, {}));

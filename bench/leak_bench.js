@@ -440,6 +440,13 @@ const KNOWN_OK = [
   { id: 'yaml_uuid', text: 'request_id: 550e8400-e29b-41d4-a716-446655440000\n' },
   { id: 'yaml_public_key_hex', text: 'signing:\n  public_key: ' + EMPTY_SHA256 + '\n' },
   { id: 'dockerfile_no_secrets', text: 'FROM node:20-alpine\nENV NODE_ENV=production\nARG APP_VERSION=1.4.1\n' },
+  /* Sensitive-looking names that hold fingerprints, hashes, timestamps or storage keys. */
+  { id: 'dockerfile_gpg_key', text: 'ENV GPG_KEY ' + COMMIT_SHA.toUpperCase() + '\n' },
+  { id: 'yaml_key_fingerprint', text: 'signing_key_fingerprint: ' + COMMIT_SHA + '\n' },
+  { id: 'yaml_cache_key', text: 'cache:\n  cache_key: ' + EMPTY_SHA256 + '\n' },
+  { id: 'yaml_idempotency_key', text: 'idempotency_key: 550e8400-e29b-41d4-a716-446655440000\n' },
+  { id: 'json_s3_key', text: '"S3Key": "' + EMPTY_SHA256 + '.zip",\n' },
+  { id: 'yaml_password_sha256', text: 'password_sha256: ' + EMPTY_SHA256 + '\ntoken_hash: ' + EMPTY_SHA256 + '\n' },
 ];
 
 /* ------------------------------------------------------------------ */
