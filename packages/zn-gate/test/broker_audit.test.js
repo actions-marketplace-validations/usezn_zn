@@ -1,5 +1,8 @@
 'use strict';
-/* `zn audit` (the vault audit log) works with no vault, with a locked vault and with an unlocked one. */
+/*
+ * The vault audit log (`zn vault log`, `zn secret log`, and `zn audit` in 1.5 with a notice on stderr)
+ * works with no vault, with a locked vault and with an unlocked one.
+ */
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -9,33 +12,88 @@ const { tempDir } = require('./helpers/tmp');
 
 const CLI = path.join(__dirname, '..', 'bin', 'cli.js');
 
+const NOTICE = 'zn: `zn audit` is moving: use `zn vault log` (alias `zn secret log`) to see this log. In 1.6, `zn audit` will audit your configuration instead.\n';
+const LOG_COMMANDS = [['vault', 'log'], ['secret', 'log'], ['audit']];
+
+/** Only `zn audit` prints the deprecation notice, and only on stderr. */
+function assertNotice(cmd, r) {
+  if (cmd[0] === 'audit') assert.ok(r.stderr.includes(NOTICE), r.stderr);
+  else assert.doesNotMatch(r.stderr, /zn audit/, r.stderr);
+}
+
 function zn(home, args) {
   const env = { ...process.env, HOME: home, USERPROFILE: home, ZN_HOME: path.join(home, '.zn') };
   return spawnSync(process.execPath, [CLI, ...args], { env, encoding: 'utf8', timeout: 30000 });
 }
 
-test('zn audit with no vault lists nothing and does not crash', (t) => {
+test('the log with no vault lists nothing and does not crash', (t) => {
   const home = tempDir(t, 'zn-audit-');
-  for (const args of [['audit'], ['audit', '--since', '1h']]) {
-    const r = zn(home, args);
-    assert.strictEqual(r.status, 0, r.stderr);
-    assert.doesNotMatch(r.stderr + r.stdout, /argument must be|TypeError/);
-    assert.match(r.stdout, /chain: not checked/);
+  for (const cmd of LOG_COMMANDS) {
+    for (const extra of [[], ['--since', '1h']]) {
+      const r = zn(home, [...cmd, ...extra]);
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.doesNotMatch(r.stderr + r.stdout, /argument must be|TypeError/);
+      assert.match(r.stdout, /chain: not checked/);
+      assertNotice(cmd, r);
+    }
   }
 });
 
-test('zn audit lists records of a locked vault and says the chain was not checked', (t) => {
+test('zn audit prints the same stdout as zn vault log, plus the notice on stderr', (t) => {
   const home = tempDir(t, 'zn-audit-');
   fs.mkdirSync(path.join(home, '.zn'), { recursive: true });
   const rec = { seq: 1, ts: new Date().toISOString(), decision: 'allow', secret: 'DB_PASSWORD', mode: 'run', agent: 'claude-code', tool: 'Bash', prev: '0', mac: '00' };
   fs.writeFileSync(path.join(home, '.zn', 'audit.jsonl'), JSON.stringify(rec) + '\n');
-  const r = zn(home, ['audit']);
-  assert.strictEqual(r.status, 0, r.stderr);
-  assert.match(r.stdout, /DB_PASSWORD/);
-  assert.match(r.stdout, /chain: not checked/);
+  const a = zn(home, ['audit']);
+  const v = zn(home, ['vault', 'log']);
+  const s = zn(home, ['secret', 'log']);
+  assert.strictEqual(a.stdout, v.stdout);
+  assert.strictEqual(s.stdout, v.stdout);
+  assert.strictEqual(a.stderr, NOTICE);
+  assert.strictEqual(v.stderr, '');
+  assert.strictEqual(s.stderr, '');
 });
 
-test('zn audit checks the chain of an unlocked vault and exits 1 when it is broken', async (t) => {
+test('--since filters the log in all three commands', (t) => {
+  const home = tempDir(t, 'zn-audit-');
+  fs.mkdirSync(path.join(home, '.zn'), { recursive: true });
+  const old = { seq: 1, ts: new Date(Date.now() - 3 * 3600000).toISOString(), decision: 'allow', secret: 'OLD_SECRET', mode: 'run', agent: 'claude-code', tool: 'Bash', prev: '0', mac: '00' };
+  const recent = { seq: 2, ts: new Date().toISOString(), decision: 'allow', secret: 'NEW_SECRET', mode: 'run', agent: 'claude-code', tool: 'Bash', prev: '0', mac: '00' };
+  fs.writeFileSync(path.join(home, '.zn', 'audit.jsonl'), JSON.stringify(old) + '\n' + JSON.stringify(recent) + '\n');
+  for (const cmd of LOG_COMMANDS) {
+    const all = zn(home, cmd);
+    assert.match(all.stdout, /OLD_SECRET/);
+    assert.match(all.stdout, /NEW_SECRET/);
+    const r = zn(home, [...cmd, '--since', '1h']);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /OLD_SECRET/);
+    assert.match(r.stdout, /NEW_SECRET/);
+    assertNotice(cmd, r);
+  }
+});
+
+test('zn vault with an unknown subcommand still prints the usage with zn vault log', (t) => {
+  const home = tempDir(t, 'zn-audit-');
+  const r = zn(home, ['vault', 'nope']);
+  assert.strictEqual(r.status, 2);
+  assert.match(r.stderr, /zn vault log \[--since 1h\]/);
+});
+
+test('the log lists records of a locked vault and says the chain was not checked', (t) => {
+  const home = tempDir(t, 'zn-audit-');
+  fs.mkdirSync(path.join(home, '.zn'), { recursive: true });
+  const rec = { seq: 1, ts: new Date().toISOString(), decision: 'allow', secret: 'DB_PASSWORD', mode: 'run', agent: 'claude-code', tool: 'Bash', prev: '0', mac: '00' };
+  fs.writeFileSync(path.join(home, '.zn', 'audit.jsonl'), JSON.stringify(rec) + '\n');
+  for (const cmd of LOG_COMMANDS) {
+    const r = zn(home, cmd);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.match(r.stdout, /DB_PASSWORD/);
+    assert.match(r.stdout, /chain: not checked/);
+    assertNotice(cmd, r);
+  }
+});
+
+test('the log checks the chain of an unlocked vault and exits 1 when it is broken, in all three commands', async (t) => {
   // Own cleanup (not tempDir): the daemon must stop before its home is removed.
   const home = fs.mkdtempSync(path.join(require('os').tmpdir(), 'zn-audit-'));
   const env = { HOME: home, USERPROFILE: home, ZN_HOME: path.join(home, '.zn'), ZN_KEYCHAIN_BACKEND: 'passphrase' };
@@ -65,20 +123,26 @@ test('zn audit checks the chain of an unlocked vault and exits 1 when it is brok
   const file = store.paths({}).auditFile;
   const orig = fs.readFileSync(file, 'utf8');
   const lines = orig.trim().split('\n'); // unlock writes a record too
-  let r = zn(home, ['audit']);
-  assert.strictEqual(r.status, 0, r.stderr);
-  assert.ok(r.stdout.includes('chain: valid, ' + lines.length + ' records'), r.stdout);
-
   const target = lines.findIndex((l) => l.includes('"secret":"DB_PASSWORD"'));
   const tampered = lines.slice();
   tampered[target] = tampered[target].replace('"decision":"allow"', '"decision":"deny"');
-  fs.writeFileSync(file, tampered.join('\n') + '\n');
-  r = zn(home, ['audit']);
-  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
-  assert.ok(r.stdout.includes('chain: BROKEN: bad mac (record ' + (target + 1) + ')'), r.stdout);
+  for (const cmd of LOG_COMMANDS) {
+    fs.writeFileSync(file, orig);
+    let r = zn(home, cmd);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes('chain: valid, ' + lines.length + ' records'), r.stdout);
+    assertNotice(cmd, r);
 
-  fs.writeFileSync(file, lines.slice(0, -1).join('\n') + '\n');
-  r = zn(home, ['audit']);
-  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
-  assert.match(r.stdout, /chain: BROKEN: log truncated/);
+    fs.writeFileSync(file, tampered.join('\n') + '\n');
+    r = zn(home, cmd);
+    assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes('chain: BROKEN: bad mac (record ' + (target + 1) + ')'), r.stdout);
+    assertNotice(cmd, r);
+
+    fs.writeFileSync(file, lines.slice(0, -1).join('\n') + '\n');
+    r = zn(home, cmd);
+    assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /chain: BROKEN: log truncated/);
+    assertNotice(cmd, r);
+  }
 });

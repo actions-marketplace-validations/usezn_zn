@@ -104,7 +104,7 @@ SECRETS (values stay on this machine; agents only see __ZN_<NAME>__ markers):
   env shadow [FILE]   Move .env values into the vault and leave markers in the file
   run -- <command>    Run a command with markers replaced by values (allowed commands only)
                       and its output masked [--secrets A,B to set env vars]
-  audit               Show the local audit log of secret use
+  secret log          Show the local audit log of secret use [--since 1h] (same as vault log)
   hooks install claude-code [--project]
                       Install the Claude Code hooks and the "secrets" MCP server
   secrets-mcp         Run the "secrets" MCP server (stdio)
@@ -127,6 +127,7 @@ VAULT (local, encrypted with age; the key stays in the OS keychain):
                       (first run creates it; --passphrase-stdin without a keychain)
   lock                Lock the vault now
   vault status        Show whether the vault exists and is unlocked
+  vault log           Show the audit log of secret use [--since 1h]; checks the chain when unlocked
   vault verify        Verify the HMAC-chained audit log of secret use
   vault forget [dir]  Forget the token map of a project (vault locked)
 

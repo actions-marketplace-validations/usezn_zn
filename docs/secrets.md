@@ -112,7 +112,7 @@ returns a value.
 |---|---|
 | `zn secret list` | Names, modes, hosts and commands (never values) |
 | `zn secret rm NAME` | Remove a secret |
-| `zn audit` | Local audit log: who used which secret where (no values) |
+| `zn vault log` | Local audit log: who used which secret where (no values). Also `zn secret log`; `--since 1h` limits it. `zn audit` shows it too in 1.5, with a notice, and will audit your configuration in 1.6 |
 | `zn vault verify` | Check the audit log's HMAC chain |
 | `zn lock` | Lock the vault now |
 | `zn hooks uninstall <agent>` | Remove the hooks |
