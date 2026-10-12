@@ -23,7 +23,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - **Encrypted local vault** (`zn unlock` / `zn lock`, `lib/vault/`):
   - [age](https://age-encryption.org) encryption, with the identity in the OS keychain (macOS, Windows, Secret Service) or behind a passphrase;
   - a short-lived daemon on a private socket or pipe, with mutual authentication;
-  - an HMAC-chained audit log that holds no values (`zn audit`, `zn vault verify`).
+  - an HMAC-chained audit log that holds no values (`zn vault log`, `zn vault verify`).
 - **Secrets broker**:
   - `zn secret set|list|rm|allow|approve|import|adopt` and `zn env shadow|unshadow` (move `.env` values into the vault and leave markers);
   - `zn run -- <command>` fills values only into allowed commands and masks their output;
@@ -39,6 +39,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Registry metadata: `package.json` declares `mcpName` (`io.github.usezn/zn-gate`) and `packages/zn-gate/server.json` describes the `zn-gate mcp` server (stdio) and its optional environment variables.
 
 ### Changed
+- The vault audit log is now shown with `zn vault log` (alias `zn secret log`), next to `zn vault verify`; the output and exit codes are unchanged. `zn audit` still shows the log in 1.5 and prints a one-line notice on stderr; in 1.6 `zn audit` will become the audit of your configuration only.
 - GitHub Action: installs the published `zn-gate` package from PyPI at the exact `version` (now `1.4.1` by default) as a wheel, with no dependencies, into a private virtualenv, instead of building the package from the action's own checkout. Versions that are not exact (ranges, `latest`) are refused, inputs reach the scripts only through environment variables, `actions/setup-python` is pinned to a commit SHA, and a new optional `package-sha256` input checks the wheel's hash. The other inputs, their defaults and the exit behaviour are unchanged. Two differences: zn-gate is no longer installed into the job's Python, so a later step that runs `zn-gate` or imports `zn_gate` must install it itself; and versions that are not exact, such as `1.4`, are now refused instead of being resolved by pip. A new `scan-exit-code` output gives the scan's exit code. A self-test workflow runs the action from the checkout on Linux, Windows and macOS.
 - The npm package no longer ships the test suite (`test/`); run the tests from the repository. `zn-gate test` (the built-in self-test) is unchanged.
 - The npm package now includes `THIRD_PARTY_NOTICES.md` with the licenses of the bundled `age-encryption`, `@noble` and `@scure` packages.
@@ -46,7 +47,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 
 ### Fixed
 - Python CLI: `zn-gate scan`, `test`, `evidence` and `status` no longer crash with `UnicodeEncodeError` on consoles with a legacy code page such as Windows cp1252. Symbols the console cannot encode are printed as plain markers (`[+]`, `[!]`, `[ok]`) and other characters are replaced; output on UTF-8 terminals is unchanged.
-- `zn audit` no longer fails with a Node.js error after listing the log: the chain is checked through the unlocked vault, as `zn vault verify` does (exit code 1 when the chain is broken), and a locked or missing vault is reported instead.
+- `zn vault log` (formerly `zn audit`) no longer fails with a Node.js error after listing the log: the chain is checked through the unlocked vault, as `zn vault verify` does (exit code 1 when the chain is broken), and a locked or missing vault is reported instead.
 
 ### Security
 - Scrubber: secrets without a known prefix are now caught under a sensitive key name in YAML without quotes, docker-compose `environment:` (map and `- KEY=value` list), dotenv and Dockerfile `ENV` / `ARG` lines, and `docker run -e`, including hex values of 32 digits or more. Commit hashes, colors, UUIDs and digests in other fields, placeholders and references (`${VAR}`, `$VAR`, `${{ … }}`) are left alone.
