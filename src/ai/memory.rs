@@ -23,7 +23,10 @@
 //!   use. When a store goes over it, the oldest rows of the namespace furthest
 //!   above its fair share (`max_total_rows` divided by the namespaces that
 //!   have rows) are deleted. A namespace at or under its fair share never
-//!   loses rows to another one, and a new namespace can always store.
+//!   loses rows to another one, and a new namespace can always store. Each
+//!   namespace keeps at least one row, so with more namespaces than
+//!   `max_total_rows` the file can hold slightly more rows than the limit
+//!   (at most one per namespace).
 //!
 //! The three limits can be set with `ZN_MEMORY_MAX_AGENT_ROWS`,
 //! `ZN_MEMORY_MAX_NAMESPACE_ROWS` and `ZN_MEMORY_MAX_TOTAL_ROWS` (see
