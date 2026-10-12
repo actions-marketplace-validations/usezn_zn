@@ -180,6 +180,12 @@ class TestValidatedSecretPatterns(unittest.TestCase):
                 self.assertNotIn(key, redacted)
                 self.assertIn("secret:openai_key", [d["rule"] for d in found])
 
+    def test_legacy_key_followed_by_an_underscore(self):
+        key = "sk-" + "Qw3e" * 12
+        redacted, found = R.redact_secrets("OPENAI_KEY=" + key + "_backup")
+        self.assertEqual(redacted, "OPENAI_KEY=[REDACTED_OPENAI_KEY]_backup")
+        self.assertIn("secret:openai_key", [d["rule"] for d in found])
+
     def test_openai_pattern_skips_hyphenated_slugs(self):
         slug = "/gdańsk-to-warsaw-train-schedule-2026-autumn-edition"
         self.assertEqual(R.redact_secrets(slug)[1], [])
