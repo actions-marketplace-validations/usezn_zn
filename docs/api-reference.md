@@ -50,5 +50,5 @@ from zn_gate.evidence import verify_evidence_ledger
 ### `check_tool_call(tool_name: str, arguments: Any) -> Assessment`
 - Recursively extracts and inspects all strings in arguments for malicious commands or credentials.
 
-### `check_tool_result(result: Any) -> Assessment`
-- Inspects external tool return values for indirect injection payloads. Long strings are scanned in overlapping windows up to 4 MB; `Assessment.truncated` is `True` when a string was not scanned in full.
+### `check_tool_result(result: Any, block_truncated: bool = False) -> Assessment`
+- Inspects external tool return values for indirect injection payloads. Long strings are scanned in overlapping windows up to 4 MB; `Assessment.truncated` is `True` when a string was not scanned in full. Pass `block_truncated=True` or set `ZN_BLOCK_TRUNCATED=1` to block such output (rule `size:truncated`); `@guard(check_result=True)` uses this check.

@@ -10,6 +10,7 @@ from unittest import mock
 
 from zn_gate import rules as R
 from zn_gate import evaluate, normalize_input, redact_secrets, sanitize_tool_result
+from zn_gate.guard import GuardBlockError, check_tool_result, guard
 
 SIZE = 64 * 1024
 PER_RULE_MS = 500
@@ -174,6 +175,28 @@ class TestToolResultWindows(unittest.TestCase):
         short = sanitize_tool_result('read_file', 'short output', block_truncated=True)
         self.assertTrue(short['safe_to_ingest'])
         self.assertFalse(short['truncated'])
+
+    def test_check_tool_result_and_guard_honor_block_truncated(self):
+        s = fill('A', R.MAX_TOOL_RESULT_SCAN_CHARS + 1024)
+
+        @guard(check_args=False, check_result=True)
+        def read_file():
+            return {'content': s}
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('ZN_BLOCK_TRUNCATED', None)
+            plain = check_tool_result({'content': s})
+            self.assertTrue(plain.allowed)
+            self.assertTrue(plain.truncated)
+            self.assertEqual(read_file(), {'content': s})
+            opted = check_tool_result({'content': s}, block_truncated=True)
+            self.assertFalse(opted.allowed)
+            self.assertEqual(opted.rule, 'size:truncated')
+            os.environ['ZN_BLOCK_TRUNCATED'] = '1'
+            self.assertEqual(check_tool_result([s]).rule, 'size:truncated')
+            with self.assertRaises(GuardBlockError):
+                read_file()
+            self.assertTrue(check_tool_result('short output').allowed)
 
 
 class TestDetectionAfterRewrite(unittest.TestCase):
