@@ -307,25 +307,56 @@ fn extract_text_from_image(data: &[u8], img_type: &str) -> Option<String> {
         return None;
     }
 
-    // Create temp file for tesseract input
-    let temp_dir = std::env::temp_dir();
-    let temp_input = temp_dir.join(format!(
-        "zn_ocr_input_{}.{}",
-        img_type.to_lowercase(),
-        std::process::id()
-    ));
-    let temp_output = temp_dir.join(format!("zn_ocr_output_{}", std::process::id()));
+    // Run tesseract: tesseract input output -l eng --psm 6
+    run_ocr(
+        Command::new("tesseract"),
+        data,
+        &img_type.to_ascii_lowercase(),
+    )
+}
 
-    // Write image to temp file
-    if let Err(e) = std::fs::write(&temp_input, data) {
+/// Runs an OCR command on `data` and returns the trimmed text it wrote, or
+/// None on any failure. The command gets the input file path, the output
+/// base path and `-l eng --psm 6`; like tesseract, it is expected to write
+/// its text to `<output base>.txt`.
+///
+/// Both files live in a new private temporary directory (random name,
+/// owner-only permissions) that is removed with everything in it when this
+/// returns, so no predictable path in the shared temporary directory is
+/// ever written to or followed.
+fn run_ocr(mut command: Command, data: &[u8], extension: &str) -> Option<String> {
+    use std::io::Write;
+
+    let work_dir = match tempfile::Builder::new().prefix("zn-ocr-").tempdir() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("VISION OCR: failed to create temp directory: {}", e);
+            return None;
+        }
+    };
+
+    // Created with O_EXCL and mode 0600 inside the private directory.
+    let suffix = format!(".{}", extension);
+    let mut input = match tempfile::Builder::new()
+        .prefix("input-")
+        .suffix(&suffix)
+        .tempfile_in(work_dir.path())
+    {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("VISION OCR: failed to create temp input: {}", e);
+            return None;
+        }
+    };
+    if let Err(e) = input.write_all(data).and_then(|_| input.flush()) {
         warn!("VISION OCR: failed to write temp input: {}", e);
         return None;
     }
 
-    // Run tesseract: tesseract input output -l eng --psm 6
-    let output = match Command::new("tesseract")
-        .arg(&temp_input)
-        .arg(&temp_output)
+    let output_base = work_dir.path().join("output");
+    let output = match command
+        .arg(input.path())
+        .arg(&output_base)
         .arg("-l")
         .arg("eng")
         .arg("--psm")
@@ -335,13 +366,9 @@ fn extract_text_from_image(data: &[u8], img_type: &str) -> Option<String> {
         Ok(o) => o,
         Err(e) => {
             warn!("VISION OCR: tesseract command failed: {}", e);
-            let _ = std::fs::remove_file(&temp_input);
             return None;
         }
     };
-
-    // Clean up temp input file
-    let _ = std::fs::remove_file(&temp_input);
 
     // Check if tesseract succeeded
     if !output.status.success() {
@@ -349,12 +376,11 @@ fn extract_text_from_image(data: &[u8], img_type: &str) -> Option<String> {
             "VISION OCR: tesseract exited with status: {}",
             output.status
         );
-        let _ = std::fs::remove_file(&temp_output);
         return None;
     }
 
-    // Read OCR output
-    let ocr_text = match std::fs::read_to_string(&temp_output) {
+    // tesseract appends ".txt" to the output base.
+    let ocr_text = match std::fs::read_to_string(output_base.with_extension("txt")) {
         Ok(text) => text,
         Err(e) => {
             warn!("VISION OCR: failed to read tesseract output: {}", e);
@@ -362,10 +388,8 @@ fn extract_text_from_image(data: &[u8], img_type: &str) -> Option<String> {
         }
     };
 
-    // Clean up temp output file
-    let _ = std::fs::remove_file(&temp_output);
-
-    // Return text if non-empty
+    // The input file and the directory (with the output) are removed when
+    // `input` and `work_dir` are dropped here.
     let trimmed = ocr_text.trim();
     if trimmed.is_empty() {
         None
@@ -630,5 +654,40 @@ mod tests {
         let data = vec![0u8; MAX_DECODED_BYTES + 1];
         let result = extract_text_from_image(&data, "PNG");
         assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_ocr_uses_private_temporary_files_and_removes_them() {
+        // Stand-in for tesseract: writes the input path and the input bytes
+        // to "<output base>.txt".
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(r#"{ printf '%s\n' "$1"; cat "$1"; } > "$2.txt""#)
+            .arg("sh");
+        let text = run_ocr(command, b"text from the image", "png").expect("OCR text");
+        let mut lines = text.lines();
+        let input = std::path::PathBuf::from(lines.next().unwrap());
+        assert_eq!(lines.next(), Some("text from the image"));
+        assert_eq!(input.extension().and_then(|e| e.to_str()), Some("png"));
+        let dir = input.parent().unwrap();
+        assert!(dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("zn-ocr-"));
+        assert!(!input.exists(), "input file removed");
+        assert!(!dir.exists(), "temporary directory removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_ocr_returns_none_when_the_command_fails() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("exit 1").arg("sh");
+        assert!(run_ocr(command, b"data", "png").is_none());
+        let missing = Command::new("/nonexistent/zn-ocr-command");
+        assert!(run_ocr(missing, b"data", "png").is_none());
     }
 }
