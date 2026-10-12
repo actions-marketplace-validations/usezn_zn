@@ -44,13 +44,17 @@ test('zn audit checks the chain of an unlocked vault and exits 1 when it is brok
   const daemon = require('../lib/vault/daemon');
   const clientMod = require('../lib/vault/client');
   const store = require('../lib/vault/store');
+  let daemonPid = 0;
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return false; } };
   t.after(async () => {
     try { await daemon.lock({}); } catch (err) { /* already locked */ }
-    for (let i = 0; i < 50 && await daemon.isRunning({}); i++) await new Promise((res) => setTimeout(res, 100));
+    // lock() answers before the daemon finishes shutting down (it still writes the vault), so wait for the process.
+    for (let i = 0; i < 100 && daemonPid && alive(daemonPid); i++) await new Promise((res) => setTimeout(res, 100));
     for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
     fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
-  await daemon.unlock({ passphrase: 'correct horse battery staple', workFactor: 10 });
+  const unlocked = await daemon.unlock({ passphrase: 'correct horse battery staple', workFactor: 10 });
+  daemonPid = (unlocked && unlocked.pid) || 0;
   const c = clientMod.createClient({});
   try {
     for (let i = 0; i < 3; i++) {
