@@ -8,8 +8,8 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    terminal::Terminal,
     widgets::{Block, Borders, List, ListItem, Paragraph},
+    Terminal,
 };
 use reqwest::Client;
 use serde::Deserialize;
@@ -181,7 +181,7 @@ impl TuiApp {
 }
 
 fn ui(f: &mut ratatui::Frame, app: &TuiApp) {
-    let size = f.size();
+    let size = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(

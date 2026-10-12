@@ -15,15 +15,22 @@ Security updates are provided for the following versions:
 
 ## Reporting a Vulnerability
 
-We take the security of zn, the MCP Gateway, and our client SDKs seriously. If you have discovered a security vulnerability, please report it to us responsibly.
+We take the security of zn, the MCP Gateway, and our client SDKs seriously. If you have discovered a security vulnerability, please report it to us privately. Do not open a public issue or pull request.
 
-* **Email:** [security@usezn.com](mailto:security@usezn.com)
-* **Response Time:**
+* **Preferred: GitHub private vulnerability reporting.** Open the [Security tab](https://github.com/usezn/zn/security) of this repository and click **Report a vulnerability** ([direct link](https://github.com/usezn/zn/security/advisories/new)). The report stays private between you and the maintainers, and we can work on the fix and the advisory with you there.
+* **Alternative: email** [security@usezn.com](mailto:security@usezn.com), for example if you do not have a GitHub account or the issue affects the usezn.com platform rather than this repository.
+* **Response Time** (both channels):
   * Initial acknowledgment: **within 24 hours**
   * Triage & severity assessment: **within 48 hours**
   * Remediation & patch release: typically within 7–14 days depending on complexity
 
 Please include detailed reproduction steps, proof-of-concept payloads or scripts, and affected components or commits. Testing against local Docker containers or isolated test accounts is strongly encouraged.
+
+---
+
+## Verifying Releases
+
+Starting with the first release after 1.5.0-beta.1, the npm and PyPI packages are built and published by the [`Release` workflow](.github/workflows/release.yml) with trusted publishing; no long-lived publish tokens are used. 1.5.0-beta.1 and earlier versions were published by hand and have no signatures, attestations or provenance. Each GitHub Release from the workflow includes `SHA256SUMS` and Sigstore bundles, every file has a GitHub build provenance attestation, and npm and PyPI show provenance for each version. Step-by-step checks: [docs/verify-release.md](docs/verify-release.md).
 
 ---
 
@@ -50,4 +57,4 @@ We gratefully acknowledge independent security researchers who have helped prote
 ## Security Advisories
 
 * [SEC-2026-01](docs/advisories/SEC-2026-01.md) — *Control-plane authorization gap in zn management API (Remediated in commit 6ebce2f)*
-* [SEC-2026-02](docs/advisories/SEC-2026-02.md) — *Insufficient session and token revocation on password reset (Remediated in commit 346ad12)*
+* [SEC-2026-02](docs/advisories/SEC-2026-02.md) — *Insufficient session and token revocation on password reset (Remediated in the usezn.com platform, which is not part of this repository)*

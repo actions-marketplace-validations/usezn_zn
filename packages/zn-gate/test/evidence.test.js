@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { logEvidence, verifyEvidenceLedger, getEvidenceStats, exportEvidenceLedger } = require('../lib/evidence');
+const http = require('http');
+const { logEvidence, verifyEvidenceLedger, getEvidenceStats, exportEvidenceLedger, startEvidenceUi, escapeHtml, renderAuditRow } = require('../lib/evidence');
 
 test('evidence engine - appends cryptographically chained records', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-ev-test-'));
@@ -108,6 +109,91 @@ test('evidence engine - exports ledger to JSONL and CSV with cryptographic verif
     assert.ok(csvExport.content.includes('"block"'));
     assert.ok(csvExport.content.includes('"path:sensitive_file"'));
   } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+function get(port, urlPath) {
+  return new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: urlPath }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve(body));
+    }).on('error', reject);
+  });
+}
+
+function status(port, urlPath, host) {
+  return new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: urlPath, headers: { Host: host } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    }).on('error', reject);
+  });
+}
+
+test('evidence dashboard - escapes every ledger field rendered as HTML', () => {
+  assert.equal(escapeHtml('<b>"x"</b> & \'y\''), '&lt;b&gt;&quot;x&quot;&lt;/b&gt; &amp; &#39;y&#39;');
+  const row = renderAuditRow({
+    timestamp: '<i>2026-01-01T00:00:00Z</i>',
+    verdict: '<script>',
+    tool_name: '<b>x</b>',
+    agent_environment: '<img src=x onerror=alert(1)>',
+    rule: '<u>rule</u>',
+    payload_sha256: '"><svg onload=alert(1)>',
+    latency_us: '<em>5</em>',
+  });
+  assert.ok(row.includes('&lt;b&gt;x&lt;/b&gt;'));
+  assert.ok(!row.includes('<b>x</b>'));
+  assert.ok(!row.includes('<img'));
+  assert.ok(!row.includes('<svg'));
+  assert.ok(!row.includes('<u>'));
+  assert.ok(!row.includes('<script>'));
+  assert.ok(!row.includes('<em>'));
+  assert.ok(!row.includes('<i>'));
+});
+
+test('evidence dashboard - listens on loopback only and serves the escaping renderer', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-ev-ui-'));
+  const testLedger = path.join(tmpDir, 'evidence.jsonl');
+  const origWrite = process.stdout.write;
+  let banner = '';
+  let server;
+  try {
+    logEvidence({ agent: 'test', phase: 'tool-call', tool_name: '<b>x</b>', payload: 'fake', verdict: 'block', rule: 'pi:test' }, testLedger);
+    process.stdout.write = (chunk, ...rest) => {
+      if (String(chunk).includes('Dashboard running')) { banner += String(chunk); return true; }
+      return origWrite.call(process.stdout, chunk, ...rest);
+    };
+    server = startEvidenceUi(0, testLedger);
+    await new Promise((resolve) => server.once('listening', resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    process.stdout.write = origWrite;
+
+    const addr = server.address();
+    assert.equal(addr.address, '127.0.0.1');
+    assert.ok(banner.includes(`http://127.0.0.1:${addr.port}`));
+    assert.ok(!banner.includes('localhost'));
+
+    const page = await get(addr.port, '/');
+    assert.ok(page.includes('function escapeHtml('));
+    assert.ok(page.includes('function renderAuditRow('));
+    assert.ok(page.includes('d.recent.map(renderAuditRow)'));
+    assert.ok(!page.includes("'<strong>' + (r.tool_name"));
+
+    const stats = JSON.parse(await get(addr.port, '/api/stats'));
+    const row = renderAuditRow(stats.recent[0]);
+    assert.ok(row.includes('&lt;b&gt;x&lt;/b&gt;'));
+
+    // Requests for another host name (DNS rebinding) are refused.
+    assert.equal(await status(addr.port, '/api/stats', `localhost:${addr.port}`), 200);
+    assert.equal(await status(addr.port, '/api/stats', 'attacker.example'), 403);
+    assert.equal(await status(addr.port, '/api/export', `attacker.example:${addr.port}`), 403);
+    assert.equal(await status(addr.port, '/', `127.0.0.1:${addr.port + 1}`), 403);
+  } finally {
+    process.stdout.write = origWrite;
+    if (server) await new Promise((resolve) => server.close(resolve));
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
