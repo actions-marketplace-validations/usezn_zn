@@ -11,7 +11,8 @@
 //! cannot be the isolation boundary. The caller passes the namespace of the
 //! authenticated tenant (or of the local process), and every read and write is
 //! scoped to that namespace: an agent only ever sees rows of its own
-//! namespace, and a namespace never deletes rows of another one.
+//! namespace. Only the file limit (see below) can delete rows of another
+//! namespace, and only of one above its fair share of the file.
 //!
 //! # Size limits
 //!
@@ -400,7 +401,8 @@ impl VectorMemory {
     /// Store a vector embedding for an agent of `namespace`, keeping only the
     /// agent's most recent `max_rows` rows, the namespace's most recent
     /// `max_namespace_rows` rows, and at most `max_total_rows` rows in the
-    /// file (by deleting the oldest rows of this namespace).
+    /// file (by deleting the oldest rows of the namespace furthest above its
+    /// fair share).
     ///
     /// `namespace` must come from the authenticated caller, never from the
     /// message itself.

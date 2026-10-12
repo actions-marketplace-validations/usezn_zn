@@ -72,9 +72,9 @@ Memory is scoped to a namespace: the tenant namespace of an authenticated MCP We
 |---|---|---|
 | Rows per agent | 10,000 | The agent's oldest rows are deleted. |
 | Rows per namespace | 25,000 | The namespace's oldest rows are deleted. |
-| Rows per file | 100,000 | The oldest rows of the namespace being written to are deleted, never another namespace's. |
+| Rows per file | 100,000 | The oldest rows of the namespace furthest above its fair share (the file limit divided by the namespaces that have rows) are deleted. |
 
-A namespace never deletes another namespace's rows. When the file is full, a namespace that has no rows of its own left to delete keeps no new ones until other namespaces shrink, so the file limit should be at least the namespace limit times the number of namespaces in use.
+The file limit is the only one that can delete another namespace's rows, and only those of a namespace above its fair share: a namespace within its share keeps its rows, and a new namespace can always store (see [Vector memory limits](#vector-memory-limits)).
 
 The first time a new version opens a file written by an earlier one, it upgrades it in place (schema version 2): existing rows are assigned to the `global` namespace, since earlier versions did not record who wrote them. The first store in a namespace then trims it to its limit, which for the `global` namespace of an older file can delete many rows at once. SQLite does not shrink the file on its own; run `VACUUM` on it while the gateway is stopped to reclaim the space.
 
