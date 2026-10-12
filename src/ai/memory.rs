@@ -639,6 +639,11 @@ mod tests {
         texts_in(m, NS, agent, dim).await
     }
 
+    /// A search that gave up on purpose: past its deadline or on a busy database.
+    fn gave_up(e: &anyhow::Error) -> bool {
+        e.to_string().contains("did not finish within") || VectorMemory::is_busy(e)
+    }
+
     /// Rows per namespace, read with a separate connection, after checking
     /// that the trigger-kept counts match them.
     fn rows_per_namespace(m: &VectorMemory) -> Vec<(String, i64)> {
@@ -1033,7 +1038,14 @@ mod tests {
                 let agent = format!("agent{}", i % 4);
                 m.store(NS, &agent, &format!("t{i}"), &[i as f32, 1.0])
                     .await?;
-                m.search(NS, &agent, &[0.0, 0.0], 3).await.map(|_| ())
+                // Searches run on the request path and give up under heavy
+                // contention (deadline or busy database) by design; any
+                // other error is a failure. Every store must succeed.
+                match m.search(NS, &agent, &[0.0, 0.0], 3).await {
+                    Ok(_) => Ok(()),
+                    Err(e) if gave_up(&e) => Ok(()),
+                    Err(e) => Err(e),
+                }
             }));
         }
         for t in tasks {
