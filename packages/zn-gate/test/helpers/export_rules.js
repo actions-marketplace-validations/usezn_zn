@@ -24,7 +24,7 @@ function expandSample(sample) {
 }
 
 const samplesFile = process.argv[2] || path.join(__dirname, '..', 'fixtures', 'rules_parity_samples.json');
-const { samples } = JSON.parse(fs.readFileSync(samplesFile, 'utf8'));
+const { samples, redact_samples: redactSamples } = JSON.parse(fs.readFileSync(samplesFile, 'utf8'));
 
 const out = {
   rules_version: rules.RULES_VERSION,
@@ -61,6 +61,10 @@ const out = {
       // Short inputs also compare the normalized text.
       stripped: text.length <= 256 ? stripped : null,
     };
+  }),
+  redactions: (redactSamples || []).map((sample) => {
+    const { sanitized, detections } = rules.redactSecrets(expandSample(sample));
+    return { sanitized, rules: detections.map((d) => d.rule) };
   }),
 };
 

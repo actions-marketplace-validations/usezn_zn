@@ -131,6 +131,45 @@ class TestBehaviourParity(unittest.TestCase):
                 if expected["stripped"] is not None:
                     self.assertEqual(R.normalize_input(text)[1], expected["stripped"])
 
+    def test_same_redaction_on_shared_samples(self):
+        js = _node_export()
+        samples = json.loads(SAMPLES_FILE.read_text(encoding="utf-8"))["redact_samples"]
+        self.assertEqual(len(samples), len(js["redactions"]))
+        for i, (sample, expected) in enumerate(zip(samples, js["redactions"])):
+            text = _expand(sample)
+            redacted, found = R.redact_secrets(text)
+            with self.subTest(sample=i):
+                self.assertEqual([d["rule"] for d in found], expected["rules"])
+                if not set(expected["rules"]) & set(SECRET_PATTERN_EXCEPTIONS):
+                    self.assertEqual(redacted, expected["sanitized"])
+
+
+class TestAsciiTokenBoundaries(unittest.TestCase):
+    """A key next to a non-ASCII letter is still a separate token."""
+
+    def test_keys_next_to_non_ascii_letters_are_redacted(self):
+        cases = [
+            ("clé" + "AKIA" + "Z" * 16 + "é", "secret:aws_access_key"),
+            ("ñ" + "ghp_" + "a" * 36 + "ü", "secret:github_token"),
+            ("ç" + "sk-ant-" + "b" * 32 + "ß", "secret:anthropic_key"),
+            ("ä" + "sk-proj-" + "c" * 30 + "ä", "secret:openai_key"),
+            ("é" + "API_KEY=" + "d" * 16, "secret:env_credential"),
+        ]
+        for text, rule in cases:
+            with self.subTest(rule=rule):
+                redacted, found = R.redact_secrets(text)
+                self.assertIn(rule, [d["rule"] for d in found])
+                self.assertNotIn("Z" * 16, redacted)
+                self.assertNotIn("a" * 36, redacted)
+                self.assertNotIn("b" * 32, redacted)
+                self.assertNotIn("c" * 30, redacted)
+                self.assertNotIn("d" * 16, redacted)
+
+    def test_ascii_neighbours_still_do_not_match(self):
+        for text in ("x" + "AKIA" + "Z" * 16, "AKIA" + "Z" * 16 + "_x", "MY_" + "API_KEY=" + "d" * 16):
+            with self.subTest(text=text[:12]):
+                self.assertEqual(R.redact_secrets(text)[1], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ const path = require('path');
  * RULES_VERSION: 2026-10-11.1
  */
 
-const RULES_VERSION = '2026-10-11.1';
+const RULES_VERSION = '2026-10-12.1';
 
 // "ignore" and "disregard" are ordinary words ("ignore the noise in the
 // logs", "ignore whitespace changes"). They only count as an override when
@@ -422,18 +422,18 @@ function evaluateUncached(input, options = {}) {
 // -------------------------------------------------------------------------
 const SECRET_PATTERNS = [
   { id: 'secret:private_key', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
-  { id: 'secret:anthropic_key', pattern: /\b(sk-ant-[A-Za-z0-9_-]{30,})\b/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
-  { id: 'secret:openai_key', pattern: /\b(sk-(?!ant-)(?:proj-|svcacct-|none-)?[A-Za-z0-9_-]{28,})\b/g, replacement: '[REDACTED_OPENAI_KEY]' },
-  { id: 'secret:aws_access_key', pattern: /\b(AKIA[0-9A-Z]{16})\b/g, replacement: '[REDACTED_AWS_KEY]' },
+  { id: 'secret:anthropic_key', pattern: /(?<![A-Za-z0-9_])(sk-ant-[A-Za-z0-9_-]{30,})(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
+  { id: 'secret:openai_key', pattern: /(?<![A-Za-z0-9_])(sk-(?!ant-)(?:proj-|svcacct-|none-)?[A-Za-z0-9_-]{28,})(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))/g, replacement: '[REDACTED_OPENAI_KEY]' },
+  { id: 'secret:aws_access_key', pattern: /(?<![A-Za-z0-9_])(AKIA[0-9A-Z]{16})(?![A-Za-z0-9_])/g, replacement: '[REDACTED_AWS_KEY]' },
   { id: 'secret:aws_secret_key', pattern: /(aws_secret_access_key|aws_secret|aws_key)\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?/gi, replacement: "$1='[REDACTED_AWS_SECRET]'" },
-  { id: 'secret:github_token', pattern: /\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,40}|github_pat_[A-Za-z0-9_]{82})\b/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  { id: 'secret:github_token', pattern: /(?<![A-Za-z0-9_])((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,40}|github_pat_[A-Za-z0-9_]{82})(?![A-Za-z0-9_])/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
   { id: 'secret:db_url_password', pattern: /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:)([^@\s\/]+)(@)/gi, replacement: '$1[REDACTED_DB_PASSWORD]$3' },
   // The lookahead + backreference pairs act as atomic groups, so a long run of
   // "-eyJ" cannot make the engine retry every split point, and the lookbehind
   // allows a single start per token. Only used when the
   // text contains ".eyJ" (see redactSecrets).
-  { id: 'secret:jwt_token', pattern: /(?<![A-Za-z0-9_-])(eyJ(?=([A-Za-z0-9_-]{10,512}))\2\.eyJ(?=([A-Za-z0-9_=-]{10,8192}))\3\.[A-Za-z0-9_.+/=-]{10,4096})\b/g, replacement: '[REDACTED_JWT]', requires: '.eyJ' },
-  { id: 'secret:env_credential', pattern: /\b((?:AWS_SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PRIVATE_KEY|DATABASE_PASSWORD)\s*[:=]\s*['"]?)([^\s'"]{12,})(['"]?)/gi, replacement: '$1[REDACTED_SECRET]$3' },
+  { id: 'secret:jwt_token', pattern: /(?<![A-Za-z0-9_-])(eyJ(?=([A-Za-z0-9_-]{10,512}))\2\.eyJ(?=([A-Za-z0-9_=-]{10,8192}))\3\.[A-Za-z0-9_.+/=-]{10,4096})(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))/g, replacement: '[REDACTED_JWT]', requires: '.eyJ' },
+  { id: 'secret:env_credential', pattern: /(?<![A-Za-z0-9_])((?:AWS_SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PRIVATE_KEY|DATABASE_PASSWORD)\s*[:=]\s*['"]?)([^\s'"]{12,})(['"]?)/gi, replacement: '$1[REDACTED_SECRET]$3' },
 ];
 
 function redactSecrets(text) {

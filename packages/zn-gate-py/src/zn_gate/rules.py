@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-10-11.1"
+RULES_VERSION = "2026-10-12.1"
 
 # Cyrillic homoglyphs mapping to Latin
 HOMOGLYPH_MAP = {
@@ -388,19 +388,19 @@ def _evaluate_uncached(input_text: str) -> Assessment:
 # -------------------------------------------------------------------------
 SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
     ("secret:private_key", re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----'), "[REDACTED_PRIVATE_KEY]"),
-    ("secret:anthropic_key", re.compile(r'\b(sk-ant-[A-Za-z0-9_-]{30,})\b'), "[REDACTED_ANTHROPIC_KEY]"),
-    ("secret:openai_key", re.compile(r'\b(sk-(?!ant-)(?:proj-|svcacct-|none-)?[A-Za-z0-9_-]{28,})\b'), "[REDACTED_OPENAI_KEY]"),
-    ("secret:aws_access_key", re.compile(r'\b(AKIA[0-9A-Z]{16})\b'), "[REDACTED_AWS_KEY]"),
+    ("secret:anthropic_key", re.compile(r'(?<![A-Za-z0-9_])(sk-ant-[A-Za-z0-9_-]{30,})(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))'), "[REDACTED_ANTHROPIC_KEY]"),
+    ("secret:openai_key", re.compile(r'(?<![A-Za-z0-9_])(sk-(?!ant-)(?:proj-|svcacct-|none-)?[A-Za-z0-9_-]{28,})(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))'), "[REDACTED_OPENAI_KEY]"),
+    ("secret:aws_access_key", re.compile(r'(?<![A-Za-z0-9_])(AKIA[0-9A-Z]{16})(?![A-Za-z0-9_])'), "[REDACTED_AWS_KEY]"),
     # Differs from Node.js on purpose: the replacement keeps the original quotes.
-    ("secret:aws_secret_key", re.compile(r'(?i)\b((?:aws_secret_access_key|aws_secret|aws_key)\s*[:=]\s*[\'"]?)([A-Za-z0-9/+=]{40})([\'"]?)'), r'\1[REDACTED_AWS_SECRET]\3'),
-    ("secret:github_token", re.compile(r'\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,40}|github_pat_[A-Za-z0-9_]{82})\b'), "[REDACTED_GITHUB_TOKEN]"),
+    ("secret:aws_secret_key", re.compile(r'(?i)(?<![A-Za-z0-9_])((?:aws_secret_access_key|aws_secret|aws_key)\s*[:=]\s*[\'"]?)([A-Za-z0-9/+=]{40})([\'"]?)'), r'\1[REDACTED_AWS_SECRET]\3'),
+    ("secret:github_token", re.compile(r'(?<![A-Za-z0-9_])((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,40}|github_pat_[A-Za-z0-9_]{82})(?![A-Za-z0-9_])'), "[REDACTED_GITHUB_TOKEN]"),
     ("secret:db_url_password", re.compile(r'((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:)([^@\s\/]+)(@)', re.IGNORECASE), r'\1[REDACTED_DB_PASSWORD]\3'),
     # The lookahead + backreference pairs act as atomic groups, so a long run of
     # "-eyJ" cannot make the engine retry every split point, and the lookbehind
     # allows a single start per token. Only used when the
     # text contains ".eyJ" (see SECRET_PATTERN_REQUIRES).
-    ("secret:jwt_token", re.compile(r'(?<![A-Za-z0-9_-])(eyJ(?=([A-Za-z0-9_-]{10,512}))\2\.eyJ(?=([A-Za-z0-9_=-]{10,8192}))\3\.[A-Za-z0-9_.+/=-]{10,4096})\b'), "[REDACTED_JWT]"),
-    ("secret:env_credential", re.compile(r"""\b((?:AWS_SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PRIVATE_KEY|DATABASE_PASSWORD)\s*[:=]\s*['"]?)([^\s'"]{12,})(['"]?)""", re.IGNORECASE), r'\1[REDACTED_SECRET]\3'),
+    ("secret:jwt_token", re.compile(r'(?<![A-Za-z0-9_-])(eyJ(?=([A-Za-z0-9_-]{10,512}))\2\.eyJ(?=([A-Za-z0-9_=-]{10,8192}))\3\.[A-Za-z0-9_.+/=-]{10,4096})(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))'), "[REDACTED_JWT]"),
+    ("secret:env_credential", re.compile(r"""(?<![A-Za-z0-9_])((?:AWS_SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PRIVATE_KEY|DATABASE_PASSWORD)\s*[:=]\s*['"]?)([^\s'"]{12,})(['"]?)""", re.IGNORECASE), r'\1[REDACTED_SECRET]\3'),
 ]
 
 # Substrings a text must contain before the pattern is run at all.
