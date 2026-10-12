@@ -4,6 +4,7 @@
 
 use axum::{
     extract::{Multipart, State},
+    http::StatusCode,
     response::Json,
     Extension,
 };
@@ -225,31 +226,42 @@ pub struct CreateTenantRequest {
     pub api_key: String,
 }
 
-/// Create a new tenant (SuperAdmin only)
+/// Create a new tenant (SuperAdmin only). Answers 403 to other roles and
+/// 400 when the tenant cannot be created (for example an invalid namespace,
+/// a blank key, or a name, namespace or key already in use).
 pub async fn tenants_create(
     State(state): State<ApiState>,
     Extension(tenant): Extension<TenantContext>,
     axum::Json(payload): axum::Json<CreateTenantRequest>,
-) -> Json<Value> {
+) -> (StatusCode, Json<Value>) {
     if tenant.role != TenantRole::SuperAdmin {
-        return Json(json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "status": "error",
+                "error": "Forbidden: SuperAdmin role required"
+            })),
+        );
     }
 
     match state
         .tenants
         .create_tenant(&payload.name, &payload.namespace, &payload.api_key)
     {
-        Ok(_) => Json(json!({
-            "status": "ok",
-            "message": "Tenant created successfully"
-        })),
-        Err(e) => Json(json!({
-            "status": "error",
-            "error": e.to_string()
-        })),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "ok",
+                "message": "Tenant created successfully"
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "error",
+                "error": e.to_string()
+            })),
+        ),
     }
 }
 
@@ -470,6 +482,47 @@ mod tests {
         let res = consensus_sign(State(state), Extension(user_tenant()), payload).await;
         assert_eq!(res.0["status"], "error");
         assert_eq!(res.0["error"], "Forbidden: SuperAdmin role required");
+    }
+
+    #[tokio::test]
+    async fn tenants_create_answers_with_http_status_codes() {
+        let state = setup_test_state();
+        let request = |namespace: &str, api_key: &str| {
+            axum::Json(CreateTenantRequest {
+                name: format!("org-{namespace}"),
+                namespace: namespace.to_string(),
+                api_key: api_key.to_string(),
+            })
+        };
+
+        let (status, body) = tenants_create(
+            State(state.clone()),
+            Extension(user_tenant()),
+            request("acme", "acme-key-for-tests"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body.0["error"], "Forbidden: SuperAdmin role required");
+
+        let (status, body) = tenants_create(
+            State(state.clone()),
+            Extension(super_admin_tenant()),
+            request("acme", "acme-key-for-tests"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.0["status"], "ok");
+
+        for (namespace, api_key) in [("global", "other-key"), ("other", "   "), ("acme", "k2")] {
+            let (status, body) = tenants_create(
+                State(state.clone()),
+                Extension(super_admin_tenant()),
+                request(namespace, api_key),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{namespace:?}");
+            assert_eq!(body.0["status"], "error");
+        }
     }
 
     #[tokio::test]

@@ -68,18 +68,23 @@ enum SeedKey {
     Generated(String),
 }
 
-/// `ZN_API_KEY` when it is set and not blank, otherwise a new random key.
-/// A blank value counts as not set, so the default organisation is never
-/// seeded with the hash of an empty key.
+/// `ZN_API_KEY` (trimmed) when it is set and not blank, otherwise a new
+/// random key. A blank value counts as not set, so the default organisation
+/// is never seeded with the hash of an empty key.
 fn seed_key(env_key: Option<String>) -> SeedKey {
-    match env_key {
-        Some(k) if !k.trim().is_empty() => SeedKey::FromEnv(k),
-        _ => {
+    match crate::config::normalize_credential(env_key) {
+        Some(k) => SeedKey::FromEnv(k),
+        None => {
             use rand::distributions::{Alphanumeric, DistString};
             SeedKey::Generated(Alphanumeric.sample_string(&mut rand::thread_rng(), 32))
         }
     }
 }
+
+/// Blank keys an older release may have stored for a tenant, for example by
+/// seeding the default organisation from `ZN_API_KEY=""`. They are refused
+/// now, so such a tenant can no longer authenticate.
+const BLANK_KEYS: [&str; 7] = ["", " ", "  ", "   ", "\t", "\n", "\r\n"];
 
 /// Represents a tenant (organization/user) in the system
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,10 +176,48 @@ impl TenantStore {
                 tracing::info!("Seeded default SuperAdmin tenant from {}", source);
             }
 
+            match Self::tenants_with_blank_keys(&db) {
+                Ok(tenants) => {
+                    for (id, name, namespace) in tenants {
+                        tracing::warn!(
+                            "Tenant '{}' (namespace '{}', id {}) has a blank API key, stored by an \
+                             older release. Blank keys are refused, so it cannot authenticate. \
+                             Give it a new key: UPDATE tenants SET api_key_hash = '<SHA-256 hex \
+                             of the new key>' WHERE id = '{}'; (see docs/rust-core.md)",
+                            name,
+                            namespace,
+                            id,
+                            id
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!("Could not check tenants for blank API keys: {}", e),
+            }
+
             tracing::info!("TenantStore initialized");
         }
 
         Ok(Self { conn })
+    }
+
+    /// (id, name, namespace) of the tenants whose stored key is blank.
+    fn tenants_with_blank_keys(db: &Connection) -> Result<Vec<(String, String, String)>> {
+        let mut stmt =
+            db.prepare("SELECT id, name, namespace FROM tenants WHERE api_key_hash = ?1")?;
+        let mut found = Vec::new();
+        for key in BLANK_KEYS {
+            let rows = stmt.query_map(params![Self::hash_api_key(key)], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                found.push(row?);
+            }
+        }
+        Ok(found)
     }
 
     /// Create a new tenant (used by main.rs)
@@ -237,8 +280,8 @@ impl TenantStore {
 
     /// Look up a tenant by API key (for authentication)
     pub fn find_by_api_key(&self, api_key: &str) -> Result<Option<TenantContext>> {
-        // An empty key never matches a tenant.
-        if api_key.is_empty() {
+        // An empty or blank key never matches a tenant.
+        if api_key.trim().is_empty() {
             return Ok(None);
         }
         let db = self
@@ -430,6 +473,39 @@ mod tests {
             seed_key(Some("operator-key".to_string())),
             SeedKey::FromEnv(k) if k == "operator-key"
         ));
+        // Surrounding whitespace is not part of the key.
+        assert!(matches!(
+            seed_key(Some("  operator-key\n".to_string())),
+            SeedKey::FromEnv(k) if k == "operator-key"
+        ));
+    }
+
+    #[test]
+    fn tenants_with_blank_keys_are_found_and_never_match() {
+        let store = setup_test_store();
+        let db = store.conn.lock().unwrap();
+        assert!(TenantStore::tenants_with_blank_keys(&db)
+            .unwrap()
+            .is_empty());
+        // As an older release could have stored them.
+        for (id, key) in [("t-empty", ""), ("t-spaces", "   ")] {
+            db.execute(
+                "INSERT INTO tenants (id, name, namespace, api_key_hash, role, created_at) VALUES (?1, ?1, ?1, ?2, 'superadmin', 'now')",
+                params![id, TenantStore::hash_api_key(key)],
+            )
+            .unwrap();
+        }
+        let mut ids: Vec<String> = TenantStore::tenants_with_blank_keys(&db)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["t-empty", "t-spaces"]);
+        drop(db);
+        for key in ["", "   ", "\t"] {
+            assert!(store.find_by_api_key(key).unwrap().is_none(), "{key:?}");
+        }
     }
 
     #[test]
