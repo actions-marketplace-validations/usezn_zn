@@ -548,11 +548,14 @@ async fn start_proxy(args: Args) -> Result<()> {
     // Initialize Neural Memory (SQLite)
     let vector_db_path = "data/vectors";
     std::fs::create_dir_all(vector_db_path).ok();
-    let memory = Arc::new(zn::ai::VectorMemory::new(
-        vector_db_path,
-        zn_config.neural.dim as i32,
-        &zn_config.neural.model_id,
-    ));
+    let memory = Arc::new(
+        zn::ai::VectorMemory::new(
+            vector_db_path,
+            zn_config.neural.dim as i32,
+            &zn_config.neural.model_id,
+        )
+        .with_limits_from_env(),
+    );
     log::info(format!("💾 Neural Memory Active: [{}]", vector_db_path))?;
 
     let pool = McpPool::auto_discover().unwrap_or_else(|e| {
@@ -770,11 +773,14 @@ async fn build_pipeline() -> Result<AnalyzerPipeline> {
     // Initialize vector memory
     let vector_db_path = "data/vectors";
     std::fs::create_dir_all(vector_db_path).ok();
-    let memory = Arc::new(zn::ai::VectorMemory::new(
-        vector_db_path,
-        config.neural.dim as i32,
-        &config.neural.model_id,
-    ));
+    let memory = Arc::new(
+        zn::ai::VectorMemory::new(
+            vector_db_path,
+            config.neural.dim as i32,
+            &config.neural.model_id,
+        )
+        .with_limits_from_env(),
+    );
 
     // Initialize canary deployer
     let canary = Arc::new(zn::ai::CanaryDeployer::new(backend));
