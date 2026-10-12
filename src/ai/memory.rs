@@ -20,11 +20,14 @@
 //! - each namespace keeps at most `max_namespace_rows` rows, so a client that
 //!   keeps changing its agent id only evicts rows of its own namespace;
 //! - the whole file keeps at most `max_total_rows` rows, as a bound on disk
-//!   use. When a store goes over it, the oldest rows of the *writing*
-//!   namespace are deleted, never those of another namespace. Once the file
-//!   is full, a namespace without rows of its own cannot keep new ones: set
-//!   `max_total_rows` to at least `max_namespace_rows` times the number of
-//!   namespaces in use.
+//!   use. When a store goes over it, the oldest rows of the namespace furthest
+//!   above its fair share (`max_total_rows` divided by the namespaces that
+//!   have rows) are deleted. A namespace at or under its fair share never
+//!   loses rows to another one, and a new namespace can always store.
+//!
+//! The three limits can be set with `ZN_MEMORY_MAX_AGENT_ROWS`,
+//! `ZN_MEMORY_MAX_NAMESPACE_ROWS` and `ZN_MEMORY_MAX_TOTAL_ROWS` (see
+//! `with_limits_from_env`).
 //!
 //! Row counts per namespace are kept exact by triggers in a small
 //! `memory_counts` table, so the limits are checked without scanning the file.
@@ -35,7 +38,9 @@
 //! searches run on the request path and have a short total deadline instead.
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection, ErrorCode, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -116,9 +121,40 @@ impl VectorMemory {
     }
 
     /// Keep at most `max_total_rows` rows in the file (at least 1). Going
-    /// over it deletes the oldest rows of the namespace being written to.
+    /// over it deletes the oldest rows of the namespace furthest above its
+    /// fair share.
     pub fn with_max_total_rows(mut self, max_total_rows: usize) -> Self {
         self.max_total_rows = max_total_rows.max(1);
+        self
+    }
+
+    /// Applies `ZN_MEMORY_MAX_AGENT_ROWS`, `ZN_MEMORY_MAX_NAMESPACE_ROWS` and
+    /// `ZN_MEMORY_MAX_TOTAL_ROWS` when they are set to a positive integer;
+    /// other values are ignored with a warning.
+    pub fn with_limits_from_env(self) -> Self {
+        self.with_limits(|name| std::env::var(name).ok())
+    }
+
+    fn with_limits(mut self, get: impl Fn(&str) -> Option<String>) -> Self {
+        let read = |name: &str| -> Option<usize> {
+            let raw = get(name)?;
+            match raw.trim().parse::<usize>() {
+                Ok(n) if n > 0 => Some(n),
+                _ => {
+                    tracing::warn!("Ignoring {}: expected a positive integer", name);
+                    None
+                }
+            }
+        };
+        if let Some(n) = read("ZN_MEMORY_MAX_AGENT_ROWS") {
+            self = self.with_max_rows(n);
+        }
+        if let Some(n) = read("ZN_MEMORY_MAX_NAMESPACE_ROWS") {
+            self = self.with_max_namespace_rows(n);
+        }
+        if let Some(n) = read("ZN_MEMORY_MAX_TOTAL_ROWS") {
+            self = self.with_max_total_rows(n);
+        }
         self
     }
 
@@ -232,6 +268,18 @@ impl VectorMemory {
                  DELETE FROM memory_counts WHERE namespace = OLD.namespace AND row_count <= 0;
              END;
              PRAGMA user_version = 2;",
+        )?;
+        Ok(())
+    }
+
+    /// Deletes the `n` oldest rows of `namespace`.
+    fn delete_oldest(tx: &Transaction<'_>, namespace: &str, n: i64) -> Result<()> {
+        tx.execute(
+            "DELETE FROM memory WHERE id IN (
+                 SELECT id FROM memory WHERE namespace = ?1
+                 ORDER BY id LIMIT ?2
+             )",
+            params![namespace, n],
         )?;
         Ok(())
     }
@@ -365,22 +413,36 @@ impl VectorMemory {
                     params![ns],
                     |r| r.get(0),
                 )?;
-                let total_rows: i64 = tx.query_row(
-                    "SELECT COALESCE(SUM(row_count), 0) FROM memory_counts",
-                    [],
+                // The namespace limit only prunes the writing namespace.
+                if namespace_rows > max_namespace {
+                    Self::delete_oldest(&tx, &ns, namespace_rows - max_namespace)?;
+                }
+                // The file limit prunes the namespace furthest above its fair
+                // share, so a namespace at or under it never loses rows to
+                // another one and a new namespace can always store. Each round
+                // deletes at least one row, so the loop ends.
+                let mut excess: i64 = tx.query_row(
+                    "SELECT COALESCE(SUM(row_count), 0) - ?1 FROM memory_counts",
+                    params![max_total],
                     |r| r.get(0),
                 )?;
-                // Both limits are enforced on this namespace only, so one
-                // namespace never deletes another one's rows.
-                let excess = (namespace_rows - max_namespace).max(total_rows - max_total);
-                if excess > 0 {
-                    tx.execute(
-                        "DELETE FROM memory WHERE id IN (
-                             SELECT id FROM memory WHERE namespace = ?1
-                             ORDER BY id LIMIT ?2
-                         )",
-                        params![ns, excess],
-                    )?;
+                while excess > 0 {
+                    let namespaces: i64 =
+                        tx.query_row("SELECT COUNT(*) FROM memory_counts", [], |r| r.get(0))?;
+                    let fair = max_total / namespaces.max(1);
+                    let over: Option<(String, i64)> = tx
+                        .query_row(
+                            "SELECT namespace, row_count FROM memory_counts
+                             WHERE row_count > ?1
+                             ORDER BY row_count DESC, namespace LIMIT 1",
+                            params![fair],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional()?;
+                    let Some((victim, rows)) = over else { break };
+                    let n = excess.min(rows - fair);
+                    Self::delete_oldest(&tx, &victim, n)?;
+                    excess -= n;
                 }
                 tx.commit()?;
                 Ok(())
@@ -705,7 +767,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn namespaces_are_isolated_and_never_evict_each_other() {
+    async fn namespaces_are_isolated_and_evict_only_above_their_fair_share() {
         let dir = temp_dir("namespaces");
         let m = VectorMemory::new(dir.to_str().unwrap(), 1, "m")
             .with_max_namespace_rows(3)
@@ -732,16 +794,67 @@ mod tests {
         assert_eq!(texts_in(&m, "flood", "agent19", 1).await, vec!["f19"]);
         assert!(texts_in(&m, "flood", "a", 1).await.is_empty());
 
-        // The file is full (5 rows): a namespace with no rows of its own
-        // cannot keep new ones, and still evicts nobody else.
+        // The file is full (5 rows). A new namespace still stores: the row
+        // comes from the namespace furthest above its fair share (5 / 3 = 1),
+        // the flooding one, and the victim keeps its rows.
         m.store("late", "a", "l0", &[0.0]).await.unwrap();
-        assert!(texts_in(&m, "late", "a", 1).await.is_empty());
+        assert_eq!(texts_in(&m, "late", "a", 1).await, vec!["l0"]);
         assert_eq!(texts_in(&m, "victim", "a", 1).await, vec!["v0", "v1"]);
         assert_eq!(
             rows_per_namespace(&m),
-            vec![("flood".to_string(), 3), ("victim".to_string(), 2)]
+            vec![
+                ("flood".to_string(), 2),
+                ("late".to_string(), 1),
+                ("victim".to_string(), 2)
+            ]
+        );
+        // More flooding only takes rows from the flooding namespace.
+        for i in 20..30 {
+            m.store("flood", &format!("agent{i}"), &format!("f{i}"), &[0.0])
+                .await
+                .unwrap();
+        }
+        assert_eq!(texts_in(&m, "victim", "a", 1).await, vec!["v0", "v1"]);
+        assert_eq!(texts_in(&m, "late", "a", 1).await, vec!["l0"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_full_file_shares_space_fairly_between_namespaces() {
+        let dir = temp_dir("fair");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 1, "m").with_max_total_rows(10);
+        for i in 0..10 {
+            m.store("a", &format!("a{i}"), "x", &[0.0]).await.unwrap();
+        }
+        // "b" grows while "a" is above its fair share (10 / 2 = 5), then
+        // stops at the fair share itself once both are there.
+        for i in 0..6 {
+            m.store("b", &format!("b{i}"), "y", &[0.0]).await.unwrap();
+        }
+        assert_eq!(
+            rows_per_namespace(&m),
+            vec![("a".to_string(), 5), ("b".to_string(), 5)]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn limits_come_from_the_environment() {
+        let env = |name: &str| -> Option<String> {
+            match name {
+                "ZN_MEMORY_MAX_AGENT_ROWS" => Some("7".to_string()),
+                "ZN_MEMORY_MAX_NAMESPACE_ROWS" => Some(" 70 ".to_string()),
+                "ZN_MEMORY_MAX_TOTAL_ROWS" => Some("0".to_string()),
+                _ => None,
+            }
+        };
+        let m = VectorMemory::new("/tmp/v", 1, "m").with_limits(env);
+        assert_eq!(m.max_rows, 7);
+        assert_eq!(m.max_namespace_rows, 70);
+        // Zero is not a positive integer: the default stays.
+        assert_eq!(m.max_total_rows, DEFAULT_MAX_TOTAL_ROWS);
+        let none = VectorMemory::new("/tmp/v", 1, "m").with_limits(|_| None);
+        assert_eq!(none.max_rows, DEFAULT_MAX_ROWS_PER_AGENT);
     }
 
     #[tokio::test]
