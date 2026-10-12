@@ -2,12 +2,7 @@
 //!
 //! Contains all REST API endpoints for the zn Management API.
 
-use axum::{
-    extract::{Multipart, State},
-    http::StatusCode,
-    response::Json,
-    Extension,
-};
+use axum::{extract::State, http::StatusCode, response::Json, Extension};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -123,95 +118,6 @@ pub async fn policies_list(
         "status": "ok",
         "count": policies.len(),
         "entries": policies
-    }))
-}
-
-/// Upload new policy endpoint (SuperAdmin only)
-pub async fn policies_upload(
-    State(state): State<ApiState>,
-    Extension(tenant): Extension<TenantContext>,
-    mut multipart: Multipart,
-) -> Json<Value> {
-    if tenant.role != TenantRole::SuperAdmin {
-        return Json(json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
-    }
-
-    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
-        let name = field.name().unwrap_or("").to_string();
-        if name == "policy" {
-            let filename = field
-                .file_name()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("policy_{}.wasm", chrono::Utc::now().timestamp()));
-
-            if let Ok(bytes) = field.bytes().await {
-                // Save to policies directory
-                let path = std::path::Path::new("policies").join(&filename);
-                if let Err(e) = std::fs::write(&path, &bytes) {
-                    return Json(json!({
-                        "status": "error",
-                        "error": format!("Failed to save policy: {}", e)
-                    }));
-                }
-
-                // Register with engine
-                if let Err(e) = state.engine.register_policy_from_file(&path) {
-                    return Json(json!({
-                        "status": "error",
-                        "error": format!("Failed to load policy: {}", e)
-                    }));
-                }
-
-                return Json(json!({
-                    "status": "ok",
-                    "message": format!("Policy '{}' uploaded and registered", filename)
-                }));
-            }
-        }
-    }
-
-    Json(json!({
-        "status": "error",
-        "error": "No file uploaded"
-    }))
-}
-
-#[derive(serde::Deserialize)]
-pub struct DeletePolicyRequest {
-    pub name: String,
-}
-
-/// Delete policy endpoint (SuperAdmin only)
-pub async fn policies_delete(
-    State(state): State<ApiState>,
-    Extension(tenant): Extension<TenantContext>,
-    axum::Json(payload): axum::Json<DeletePolicyRequest>,
-) -> Json<Value> {
-    if tenant.role != TenantRole::SuperAdmin {
-        return Json(json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
-    }
-
-    state.engine.unregister_policy(&payload.name);
-
-    let path = std::path::Path::new("policies").join(format!("{}.wasm", payload.name));
-    if path.exists() {
-        if let Err(e) = std::fs::remove_file(path) {
-            return Json(json!({
-                "status": "error",
-                "error": format!("Failed to delete policy file: {}", e)
-            }));
-        }
-    }
-
-    Json(json!({
-        "status": "ok",
-        "message": format!("Policy '{}' deleted", payload.name)
     }))
 }
 
@@ -444,18 +350,6 @@ mod tests {
         // SuperAdmin MUST be authorized
         let res_admin = policies_list(State(state), Extension(super_admin_tenant())).await;
         assert_eq!(res_admin.0["status"], "ok");
-    }
-
-    #[tokio::test]
-    async fn test_policies_delete_authorization() {
-        let state = setup_test_state();
-        let payload = axum::Json(DeletePolicyRequest {
-            name: "critical_policy".to_string(),
-        });
-        // Regular non-admin tenant MUST be forbidden
-        let res = policies_delete(State(state), Extension(user_tenant()), payload).await;
-        assert_eq!(res.0["status"], "error");
-        assert_eq!(res.0["error"], "Forbidden: SuperAdmin role required");
     }
 
     #[tokio::test]

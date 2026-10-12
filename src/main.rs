@@ -463,7 +463,13 @@ async fn start_proxy(args: Args) -> Result<()> {
     )?);
 
     // Initialize Tenant Store
-    let tenants = Arc::new(TenantStore::new(vault.get_connection())?);
+    // A generated SuperAdmin key is written next to the audit database,
+    // never printed.
+    let seed_key_file = zn::tenants::seed_key_file_for(&zn_config.audit.db_path);
+    let tenants = Arc::new(TenantStore::open(
+        vault.get_connection(),
+        Some(&seed_key_file),
+    )?);
 
     // Initialize Broadcast Channel
     let (tx, _) = broadcast::channel(zn_config.server.channel_capacity);
@@ -1574,12 +1580,24 @@ async fn policies_upload_handler(
             let file_name = field.file_name().unwrap_or("policy.wasm").to_string();
 
             // Validate extension
-            if !file_name.ends_with(".wasm") {
+            let Some(policy_name) = file_name.strip_suffix(".wasm") else {
                 return axum::response::Json(serde_json::json!({
                     "status": "error",
                     "error": "Only .wasm files are allowed"
                 }));
-            }
+            };
+            // The file name comes from the client: it must be a plain policy
+            // name that stays inside the policy directory.
+            let path =
+                match zn::engine::policy_file_path(&state.config.engine.policy_dir, policy_name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return axum::response::Json(serde_json::json!({
+                            "status": "error",
+                            "error": e.to_string()
+                        }))
+                    }
+                };
 
             let data = match field.bytes().await {
                 Ok(d) => d,
@@ -1591,14 +1609,8 @@ async fn policies_upload_handler(
                 }
             };
 
-            // Ensure policies directory exists
-            if !std::path::Path::new("policies").exists() {
-                let _ = std::fs::create_dir_all("policies");
-            }
-
-            // Save to policies directory
-            let path = std::path::Path::new("policies").join(&file_name);
-            if let Err(e) = std::fs::write(&path, &data) {
+            // Save to the policy directory: temporary file + rename, no symlinks.
+            if let Err(e) = zn::engine::write_policy_file(&path, &data) {
                 return axum::response::Json(serde_json::json!({
                     "status": "error",
                     "error": format!("Failed to save file: {}", e)
@@ -1643,13 +1655,25 @@ async fn policies_delete_handler(
             "error": "Forbidden: SuperAdmin role required"
         }));
     }
+    // The name comes from the client: it must be a plain policy name that
+    // stays inside the policy directory.
+    let path = match zn::engine::policy_file_path(&state.config.engine.policy_dir, &payload.name) {
+        Ok(p) => p,
+        Err(e) => {
+            return axum::response::Json(serde_json::json!({
+                "status": "error",
+                "error": e.to_string()
+            }))
+        }
+    };
+
     // Unregister from engine
     state.engine.unregister_policy(&payload.name);
 
-    // Delete file
-    let path = std::path::Path::new("policies").join(format!("{}.wasm", payload.name));
-    if path.exists() {
-        if let Err(e) = std::fs::remove_file(path) {
+    // Delete the file. symlink_metadata also sees a dangling symlink, and
+    // remove_file deletes a symlink itself, never what it points to.
+    if std::fs::symlink_metadata(&path).is_ok() {
+        if let Err(e) = std::fs::remove_file(&path) {
             return axum::response::Json(serde_json::json!({
                 "status": "error",
                 "error": format!("Failed to delete policy file: {}", e)
