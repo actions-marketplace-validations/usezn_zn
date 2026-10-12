@@ -2,7 +2,7 @@
 //!
 //! Provides multi-modal authentication:
 //! 1. API Key (X-API-Key or Bearer) - looked up in TenantStore
-//! 2. JWT (Signed by trusted secret or OIDC)
+//! 2. JWT (HS256, signed by the trusted secret) carrying explicit roles
 //! 3. Legacy single API key (super-admin fallback)
 
 use crate::tenants::{TenantContext, TenantRole, TenantStore};
@@ -32,7 +32,88 @@ pub struct Claims {
     pub sub: String,
     pub exp: usize,
     pub iat: Option<usize>,
+    /// Roles granted to the token: superadmin, admin, user or viewer.
     pub roles: Option<Vec<String>>,
+    /// Tenant namespace; required for every role except superadmin.
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+/// Result of checking a bearer token as a JWT.
+#[derive(Debug)]
+enum JwtCheck {
+    /// Bad signature, expired, or not a JWT at all.
+    Invalid,
+    /// Valid token that grants no usable role.
+    NoRole,
+    /// Valid token with an explicit role.
+    Granted(TenantContext),
+}
+
+/// Strict role mapping for tokens: unknown names grant nothing.
+fn jwt_role(name: &str) -> Option<TenantRole> {
+    match name.to_ascii_lowercase().as_str() {
+        "superadmin" | "super_admin" => Some(TenantRole::SuperAdmin),
+        "admin" => Some(TenantRole::Admin),
+        "user" => Some(TenantRole::User),
+        "viewer" => Some(TenantRole::Viewer),
+        "blocked" => Some(TenantRole::Blocked),
+        _ => None,
+    }
+}
+
+fn role_rank(role: TenantRole) -> u8 {
+    match role {
+        TenantRole::SuperAdmin => 4,
+        TenantRole::Admin => 3,
+        TenantRole::User => 2,
+        TenantRole::Viewer => 1,
+        TenantRole::Blocked => 0,
+    }
+}
+
+/// Builds the request context from verified claims. Deny by default: the token
+/// must name a known role, `blocked` wins over everything, the highest of the
+/// remaining roles applies, and tenant roles need a namespace.
+fn context_from_claims(claims: &Claims) -> Option<TenantContext> {
+    let roles: Vec<TenantRole> = claims
+        .roles
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| jwt_role(r.as_str()))
+        .collect();
+    if roles.contains(&TenantRole::Blocked) {
+        return None;
+    }
+    let role = roles.into_iter().max_by_key(|r| role_rank(*r))?;
+    let namespace = match role {
+        TenantRole::SuperAdmin => "global".to_string(),
+        _ => claims
+            .namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|ns| !ns.is_empty())?
+            .to_string(),
+    };
+    Some(TenantContext {
+        id: format!("jwt:{}", claims.sub),
+        name: claims.sub.clone(),
+        namespace,
+        role,
+    })
+}
+
+fn check_jwt(token: &str, secret: &str) -> JwtCheck {
+    let decoding_key = DecodingKey::from_secret(secret.as_bytes());
+    let validation = Validation::new(Algorithm::HS256);
+    match decode::<Claims>(token, &decoding_key, &validation) {
+        Ok(data) => match context_from_claims(&data.claims) {
+            Some(ctx) => JwtCheck::Granted(ctx),
+            None => JwtCheck::NoRole,
+        },
+        Err(_) => JwtCheck::Invalid,
+    }
 }
 
 impl AuthConfig {
@@ -127,15 +208,18 @@ pub async fn api_key_auth(mut request: Request, next: Next) -> Result<Response, 
                 }
             }
 
-            // 3. Try JWT Validation
+            // 3. Try JWT validation: access comes only from explicit roles
             if let Some(secret) = &config.jwt_secret {
-                let decoding_key = DecodingKey::from_secret(secret.as_bytes());
-                let validation = Validation::new(Algorithm::HS256);
-
-                if let Ok(_token_data) = decode::<Claims>(&token, &decoding_key, &validation) {
-                    // Valid JWT - treat as admin for now
-                    request.extensions_mut().insert(super_admin_context());
-                    return Ok(next.run(request).await);
+                match check_jwt(&token, secret) {
+                    JwtCheck::Granted(ctx) => {
+                        request.extensions_mut().insert(ctx);
+                        return Ok(next.run(request).await);
+                    }
+                    JwtCheck::NoRole => {
+                        tracing::warn!("JWT accepted but grants no usable role");
+                        return Err(StatusCode::FORBIDDEN);
+                    }
+                    JwtCheck::Invalid => {}
                 }
             }
 
@@ -166,9 +250,112 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
 
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const SECRET: &str = "test-secret-for-unit-tests-only";
+
+    fn now() -> usize {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs() as usize
+    }
+
+    fn token(roles: Option<Vec<&str>>, namespace: Option<&str>, exp: usize) -> String {
+        let claims = Claims {
+            sub: "ops@example.com".to_string(),
+            exp,
+            iat: Some(now()),
+            roles: roles.map(|r| r.into_iter().map(String::from).collect()),
+            namespace: namespace.map(String::from),
+        };
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .expect("encode test token")
+    }
+
+    fn granted(check: JwtCheck) -> TenantContext {
+        match check {
+            JwtCheck::Granted(ctx) => ctx,
+            other => panic!("expected access, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_constant_time_compare() {
         assert!(constant_time_compare("test", "test"));
         assert!(!constant_time_compare("test", "Test"));
+    }
+
+    #[test]
+    fn jwt_without_roles_is_denied() {
+        let t = token(None, Some("acme"), now() + 600);
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::NoRole));
+        let t = token(Some(vec![]), Some("acme"), now() + 600);
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::NoRole));
+    }
+
+    #[test]
+    fn jwt_with_unknown_role_is_denied() {
+        let t = token(Some(vec!["root"]), Some("acme"), now() + 600);
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::NoRole));
+    }
+
+    #[test]
+    fn jwt_with_valid_tenant_role_is_scoped() {
+        let ctx = granted(check_jwt(
+            &token(Some(vec!["viewer"]), Some("acme"), now() + 600),
+            SECRET,
+        ));
+        assert_eq!(ctx.role, TenantRole::Viewer);
+        assert_eq!(ctx.namespace, "acme");
+        assert!(!ctx.is_super_admin());
+    }
+
+    #[test]
+    fn jwt_tenant_role_needs_a_namespace() {
+        let t = token(Some(vec!["admin"]), None, now() + 600);
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::NoRole));
+        let t = token(Some(vec!["admin"]), Some("  "), now() + 600);
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::NoRole));
+    }
+
+    #[test]
+    fn jwt_superadmin_only_when_explicit() {
+        let ctx = granted(check_jwt(
+            &token(Some(vec!["superadmin"]), None, now() + 600),
+            SECRET,
+        ));
+        assert!(ctx.is_super_admin());
+        assert_eq!(ctx.namespace, "global");
+    }
+
+    #[test]
+    fn jwt_highest_role_applies_and_blocked_wins() {
+        let ctx = granted(check_jwt(
+            &token(Some(vec!["viewer", "admin"]), Some("acme"), now() + 600),
+            SECRET,
+        ));
+        assert_eq!(ctx.role, TenantRole::Admin);
+        let t = token(
+            Some(vec!["blocked", "superadmin"]),
+            Some("acme"),
+            now() + 600,
+        );
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::NoRole));
+    }
+
+    #[test]
+    fn expired_or_foreign_jwt_is_invalid() {
+        // Past the default 60 s leeway.
+        let t = token(Some(vec!["superadmin"]), None, now() - 3600);
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::Invalid));
+        let t = token(Some(vec!["superadmin"]), None, now() + 600);
+        assert!(matches!(check_jwt(&t, "another-secret"), JwtCheck::Invalid));
+        assert!(matches!(check_jwt("not-a-jwt", SECRET), JwtCheck::Invalid));
     }
 }
