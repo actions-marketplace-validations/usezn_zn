@@ -124,7 +124,9 @@ fn context_from_claims(claims: &Claims) -> Option<TenantContext> {
 
 fn check_jwt(token: &str, secret: &str) -> JwtCheck {
     let decoding_key = DecodingKey::from_secret(secret.as_bytes());
-    let validation = Validation::new(Algorithm::HS256);
+    let mut validation = Validation::new(Algorithm::HS256);
+    // A token is not valid before its `nbf` (not before) time, when present.
+    validation.validate_nbf = true;
     match decode::<Claims>(token, &decoding_key, &validation) {
         Ok(data) => match context_from_claims(&data.claims) {
             Some(ctx) => JwtCheck::Granted(ctx),
@@ -382,6 +384,32 @@ mod tests {
         let t = token(Some(vec!["superadmin"]), None, now() + 600);
         assert!(matches!(check_jwt(&t, "another-secret"), JwtCheck::Invalid));
         assert!(matches!(check_jwt("not-a-jwt", SECRET), JwtCheck::Invalid));
+    }
+
+    #[test]
+    fn token_is_not_valid_before_nbf() {
+        let raw = |nbf: usize| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({
+                    "sub": "ops@example.com",
+                    "exp": now() + 7200,
+                    "nbf": nbf,
+                    "roles": ["superadmin"],
+                }),
+                &EncodingKey::from_secret(SECRET.as_bytes()),
+            )
+            .unwrap()
+        };
+        // Past the default 60 s leeway.
+        assert!(matches!(
+            check_jwt(&raw(now() + 3600), SECRET),
+            JwtCheck::Invalid
+        ));
+        assert!(matches!(
+            check_jwt(&raw(now() - 10), SECRET),
+            JwtCheck::Granted(_)
+        ));
     }
 
     #[test]
