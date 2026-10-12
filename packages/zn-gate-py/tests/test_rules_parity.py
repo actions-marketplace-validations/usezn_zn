@@ -20,9 +20,7 @@ EXPORT_SCRIPT = NODE_PKG / "test" / "helpers" / "export_rules.js"
 SAMPLES_FILE = NODE_PKG / "test" / "fixtures" / "rules_parity_samples.json"
 
 # Secret patterns whose Python form differs on purpose, with the reason.
-SECRET_PATTERN_EXCEPTIONS = {
-    "secret:aws_secret_key": "the Python replacement keeps the original quotes, so its groups differ",
-}
+SECRET_PATTERN_EXCEPTIONS: dict = {}
 
 
 def _expand(sample):
@@ -169,6 +167,47 @@ class TestAsciiTokenBoundaries(unittest.TestCase):
         for text in ("x" + "AKIA" + "Z" * 16, "AKIA" + "Z" * 16 + "_x", "MY_" + "API_KEY=" + "d" * 16):
             with self.subTest(text=text[:12]):
                 self.assertEqual(R.redact_secrets(text)[1], [])
+
+
+class TestValidatedSecretPatterns(unittest.TestCase):
+    """OpenAI key prefixes, private keys with repeated headers, ASCII case folding."""
+
+    def test_openrouter_langfuse_and_short_legacy_keys(self):
+        for key in ("sk-or-v1-" + "a1b2" * 16, "sk-lf-" + "c3d4-" * 8 + "e5f6", "sk-" + "Ab3x" * 7,
+                    "sk-admin-" + "Zy9" * 10, "sk-None-" + "Q1w" * 10):
+            with self.subTest(key=key[:9]):
+                redacted, found = R.redact_secrets("Authorization: Bearer " + key)
+                self.assertNotIn(key, redacted)
+                self.assertIn("secret:openai_key", [d["rule"] for d in found])
+
+    def test_openai_pattern_skips_hyphenated_slugs(self):
+        slug = "/gdańsk-to-warsaw-train-schedule-2026-autumn-edition"
+        self.assertEqual(R.redact_secrets(slug)[1], [])
+        legacy = "sk-" + "A1" * 24
+        self.assertIn("secret:openai_key", [d["rule"] for d in R.redact_secrets(legacy)[1]])
+        project = "sk-proj-" + "a_b-" * 10
+        self.assertIn("secret:openai_key", [d["rule"] for d in R.redact_secrets(project)[1]])
+
+    def test_private_key_with_repeated_headers(self):
+        body = "MII" + "Cd" * 30
+        text = "-----BEGIN PRIVATE KEY-----\n-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n-----END RSA PRIVATE KEY-----"
+        redacted = R.redact_secrets(text)[0]
+        self.assertNotIn(body, redacted)
+        self.assertIn("[REDACTED_PRIVATE_KEY]", redacted)
+
+    def test_case_folding_matches_nodejs(self):
+        # Python's re folds the Kelvin sign, ſ and ı into ASCII letters
+        # under IGNORECASE; the patterns use explicit [Aa] classes instead.
+        value = "d4" * 8
+        self.assertTrue(R.redact_secrets("KAPI_KEY=" + value)[1])
+        self.assertEqual(R.redact_secrets("ſECRET_KEY=" + value)[1], [])
+        self.assertEqual(R.redact_secrets("awſ_secret=" + "u" * 40)[1], [])
+
+    def test_aws_secret_keeps_quotes_in_both_engines(self):
+        secret = "A" * 20 + "/" + "b" * 19
+        out = R.redact_secrets('aws_secret_access_key = "' + secret + '"')[0]
+        self.assertNotIn(secret, out)
+        self.assertTrue(out.startswith('aws_secret_access_key = "') and out.endswith('"'), out)
 
 
 if __name__ == "__main__":
