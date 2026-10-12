@@ -15,6 +15,11 @@ on:
       - '.github/workflows/action-selftest.yml'
       - '.github/action-selftest/**'
   workflow_dispatch:
+    inputs:
+      audit-version:
+        description: 'zn-gate version (1.6.0 or later) for the audit job; empty skips it'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -40,6 +45,7 @@ jobs:
       - name: Clean fixture passes
         uses: ./
         with:
+          mode: scan
           path: .github/action-selftest/clean
 
       - name: Findings fail the step
@@ -47,12 +53,14 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
+          mode: scan
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           format: text
 
       - name: fail-on-threat false reports without failing
         uses: ./
         with:
+          mode: scan
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           fail-on-threat: 'false'
           format: json
@@ -60,6 +68,7 @@ jobs:
       - name: Matching package-sha256 installs
         uses: ./
         with:
+          mode: scan
           version: '1.4.1'
           package-sha256: 'e342c98439086f46a174f2f14d1c233c352093c569d1adcd95f5ef5e69f190b8'
           path: .github/action-selftest/clean
@@ -70,6 +79,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
+          mode: scan
           version: '1.4.1'
           package-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
           path: .github/action-selftest/clean
@@ -82,15 +92,101 @@ jobs:
           version: '>=1.4'
           path: .github/action-selftest/clean
 
-      - name: Check expected failures
+      - name: SARIF output for the scan
+        id: sarif
+        uses: ./
+        with:
+          mode: scan
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          fail-on-threat: 'false'
+          format: sarif
+
+      - name: Default mode before 1.6.0 runs the scan only
+        id: bothold
+        uses: ./
+        with:
+          version: '1.4.1'
+          path: .github/action-selftest/agent-config
+
+      - name: mode audit before 1.6.0 is refused
+        id: auditold
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: audit
+          version: '1.4.1'
+          path: .github/action-selftest/agent-config
+
+      - name: Check results
         shell: bash
         env:
           FINDINGS: ${{ steps.findings.outcome }}
           BADHASH: ${{ steps.badhash.outcome }}
           BADVERSION: ${{ steps.badversion.outcome }}
+          AUDITOLD: ${{ steps.auditold.outcome }}
+          SARIF_FILE: ${{ steps.sarif.outputs.sarif-file }}
+          SARIF_SCAN_RC: ${{ steps.sarif.outputs.scan-exit-code }}
+          BOTHOLD_SCAN_RC: ${{ steps.bothold.outputs.scan-exit-code }}
+          BOTHOLD_AUDIT_RC: ${{ steps.bothold.outputs.audit-exit-code }}
         run: |
           set -euo pipefail
-          echo "findings=$FINDINGS badhash=$BADHASH badversion=$BADVERSION"
+          echo "findings=$FINDINGS badhash=$BADHASH badversion=$BADVERSION auditold=$AUDITOLD"
           test "$FINDINGS" = failure
           test "$BADHASH" = failure
           test "$BADVERSION" = failure
+          test "$AUDITOLD" = failure
+          test "$SARIF_SCAN_RC" = 0
+          test "$BOTHOLD_SCAN_RC" = 0
+          test -z "$BOTHOLD_AUDIT_RC"
+          python - "$SARIF_FILE" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert d["version"] == "2.1.0"
+          runs = d["runs"]
+          assert [r["tool"]["driver"]["name"] for r in runs] == ["zn-gate scan"], runs
+          results = runs[0]["results"]
+          assert results and all(r["locations"][0]["physicalLocation"]["region"]["startLine"] >= 1 for r in results)
+          print(f"SARIF OK: {len(results)} results")
+          PY
+
+  # Runs once zn-gate 1.6.0 (with zn audit) is published: start the workflow by hand
+  # with audit-version set. Make it run on every pull request after the release.
+  audit:
+    name: action audit (ubuntu-latest)
+    if: github.event_name == 'workflow_dispatch' && inputs.audit-version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Audit with SARIF output
+        id: both
+        uses: ./
+        with:
+          version: ${{ inputs.audit-version }}
+          mode: both
+          path: .github/action-selftest/agent-config
+          fail-on: none
+          format: sarif
+
+      - name: Check results
+        shell: bash
+        env:
+          SARIF_FILE: ${{ steps.both.outputs.sarif-file }}
+          SCAN_RC: ${{ steps.both.outputs.scan-exit-code }}
+          AUDIT_RC: ${{ steps.both.outputs.audit-exit-code }}
+        run: |
+          set -euo pipefail
+          test "$SCAN_RC" = 0
+          test "$AUDIT_RC" = 0
+          python - "$SARIF_FILE" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          names = [r["tool"]["driver"]["name"] for r in d["runs"]]
+          ids = [r["automationDetails"]["id"] for r in d["runs"]]
+          assert names[0] == "zn-gate scan" and len(names) >= 2, names
+          assert len(set(ids)) == len(ids), ids
+          print("SARIF OK:", names)
+          PY

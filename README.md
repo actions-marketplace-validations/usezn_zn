@@ -217,7 +217,13 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 ### GitHub Action
 
-The action installs the published `zn-gate` package from PyPI at an exact version and runs `zn-gate scan` on the path you give it. The scan runs entirely on the runner and sends nothing anywhere.
+The action installs the published zn-gate packages at an exact version and runs on the runner only; it sends nothing anywhere. It has two checks, chosen with `mode`:
+
+- `scan`: `zn-gate scan` looks for prompt-injection traps and leaked secrets in prompts, tool definitions and config files (Python package from PyPI). This is what earlier releases of the action did.
+- `audit`: `zn audit` reviews what your coding agents are configured to trust: `.claude/`, `.mcp.json`, `.codex/`, `.cursor/`, hooks, `AGENTS.md` / `CLAUDE.md`, plugins and skills (npm package, zn-gate 1.6.0 or later).
+- `both` (default): runs the two. With a `version` older than 1.6.0 it runs the scan only and prints a warning.
+
+Scan prompts on pull requests:
 
 ```yaml
 name: AI agent security scan
@@ -250,15 +256,74 @@ jobs:
           format: 'github'
 ```
 
+Audit agent configs and plugins, and show the findings in code scanning:
+
+```yaml
+name: AI agent config audit
+
+on:
+  pull_request:
+    paths:
+      - '.claude/**'
+      - '.mcp.json'
+      - '.codex/**'
+      - '.cursor/**'
+      - '**/AGENTS.md'
+      - '**/CLAUDE.md'
+      - '**/SKILL.md'
+      - '**/.claude-plugin/**'
+
+permissions:
+  contents: read
+
+jobs:
+  zn-gate-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # only for the SARIF upload
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Audit agent configs
+        id: zn
+        # Pin to the full commit SHA of a release with audit (1.6.0 or later).
+        uses: usezn/zn@<commit-sha> # v1.6.0
+        with:
+          version: '1.6.0'
+          mode: 'both'
+          format: 'sarif'
+          fail-on: 'high'
+      - name: Upload SARIF
+        if: ${{ !cancelled() && steps.zn.outputs.sarif-file != '' }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: ${{ steps.zn.outputs.sarif-file }}
+```
+
 | Input | Default | Description |
 |---|---|---|
-| `version` | current stable release | Exact `zn-gate` version to install from PyPI. Ranges and `latest` are refused. |
-| `package-sha256` | empty | SHA-256 of the wheel for `version`, as listed on PyPI. When set, the install fails if the downloaded file has a different hash. |
-| `path` | `.` | File or directory to scan. |
-| `fail-on-threat` | `true` | Fail the step when a threat is found. Set `false` to report only. |
-| `format` | `github` | `github` (inline annotations), `text` or `json`. |
+| `version` | current stable release | Exact zn-gate version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
+| `mode` | `both` | `scan`, `audit` or `both`. |
+| `path` | `.` | File or directory to scan and audit. |
+| `fail-on-threat` | `true` | Fail the step on findings. For `scan`, any finding; for `audit`, findings at or above `fail-on`. Set `false` to report only. |
+| `fail-on` | empty | Audit only: lowest severity that fails the step (`low`, `medium`, `high`, `critical`, `none`). Empty means `high` when `fail-on-threat` is `true` and `none` when it is `false`. |
+| `agents` | empty | Audit only: comma-separated agents to audit (`zn audit --agents`). Empty audits all supported agents. |
+| `format` | `github` | `github` (inline annotations), `text`, `json` or `sarif`. |
+| `sarif-file` | empty | With `format: sarif`, where to write the file. Empty writes `zn-gate.sarif` in the runner temp directory. |
+| `package-sha256` | empty | SHA-256 of the PyPI wheel for `version`. When set, the install fails if the file has a different hash. |
+| `npm-integrity` | empty | Integrity string (`sha512-...`) of the npm tarball for `version`. When set, the audit fails if the tarball has a different hash. |
 
-The action needs only `contents: read`. It installs the wheel with `--only-binary=:all: --no-deps` (zn-gate has no dependencies) into a private virtualenv, so no build step runs and your job's own Python packages are not touched. It runs on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow.
+| Output | Description |
+|---|---|
+| `sarif-file` | Path of the SARIF file (`format: sarif` only). |
+| `scan-exit-code` | Exit code of the scan: 0 clean, 1 findings, 2 error. Empty if it did not run. |
+| `audit-exit-code` | Exit code of the audit: 0 clean, 1 findings at or above `fail-on`, 2 error. Empty if it did not run. |
+
+With `mode: both` and `format: sarif`, the file holds one SARIF run per check (`zn-gate scan` and the audit's own run), each with its own category, so code scanning tracks their alerts separately. The step fails with the worse of the two results: an error beats findings.
+
+Permissions: the action itself needs only `contents: read`; add `security-events: write` to the job only when you upload SARIF. Packages are installed without running install scripts or build steps (`--only-binary=:all: --no-deps` for the wheel, `--ignore-scripts` for the npm tarball, whose dependencies are bundled) into private directories under the runner temp directory. Run it on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow. With `mode: audit` or `both` the action also sets up Node.js 22 for the rest of the job.
 
 ### Repository layout
 

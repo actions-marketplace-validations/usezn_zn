@@ -1,0 +1,41 @@
+name: AI agent config audit
+
+on:
+  pull_request:
+    paths:
+      - '.claude/**'
+      - '.mcp.json'
+      - '.codex/**'
+      - '.cursor/**'
+      - '**/AGENTS.md'
+      - '**/CLAUDE.md'
+      - '**/SKILL.md'
+      - '**/.claude-plugin/**'
+
+permissions:
+  contents: read
+
+jobs:
+  zn-gate-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # only for the SARIF upload
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Audit agent configs
+        id: zn
+        # Pin to the full commit SHA of a release with audit (1.6.0 or later).
+        uses: usezn/zn@<commit-sha> # v1.6.0
+        with:
+          version: '1.6.0'
+          mode: 'both'
+          format: 'sarif'
+          fail-on: 'high'
+      - name: Upload SARIF
+        if: ${{ !cancelled() && steps.zn.outputs.sarif-file != '' }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: ${{ steps.zn.outputs.sarif-file }}
