@@ -14,6 +14,7 @@ const policy = require('../lib/hooks/policy');
 const { createFakeVault } = require('./helpers/fake_vault');
 const fakeEngine = require('./helpers/fake_engine');
 const { generateAll } = require('./fixtures/fake_secrets');
+const { tempDir } = require('./helpers/tmp');
 
 const FAKE = generateAll(4242, { perType: 1, piiPerType: 1 });
 const fake = (type) => FAKE.secrets.find((s) => s.type === type);
@@ -23,8 +24,8 @@ const PG = fake('postgres_connection_string');
 
 const PREFIX = 'ZN_AGENT=claude-code "node" "cli.js" run --';
 
-function tmpProject() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-hooks-'));
+function tmpProject(t) {
+  const dir = tempDir(t, 'zn-hooks-');
   spawnSync('git', ['init', '-q'], { cwd: dir });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n.env.local\n');
   return dir;
@@ -82,16 +83,16 @@ test('normalize maps the documented events', () => {
   assert.equal(adapter.normalize({ hook_event_name: 'Stop' }).event, null);
 });
 
-test('benign tool calls produce no output (never a bare allow)', async () => {
-  const dir = tmpProject();
+test('benign tool calls produce no output (never a bare allow)', async (t) => {
+  const dir = tmpProject(t);
   const res = await run(preBash('npm test', dir));
   assert.equal(res.output, null);
   const res2 = await run(preTool('Read', { file_path: path.join(dir, 'src.js') }, dir));
   assert.equal(res2.output, null);
 });
 
-test('PreToolUse denies reading a plain-text .env, allows it once shadowed', async () => {
-  const dir = tmpProject();
+test('PreToolUse denies reading a plain-text .env, allows it once shadowed', async (t) => {
+  const dir = tmpProject(t);
   const envFile = path.join(dir, '.env');
   fs.writeFileSync(envFile, 'AWS_ACCESS_KEY_ID=' + AWS + '\nDEBUG=true\n');
   const res = await run(preTool('Read', { file_path: envFile }, dir));
@@ -105,8 +106,8 @@ test('PreToolUse denies reading a plain-text .env, allows it once shadowed', asy
   assert.equal(example.output, null);
 });
 
-test('PreToolUse denies credential files and ~/.zn', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-home-'));
+test('PreToolUse denies credential files and ~/.zn', async (t) => {
+  const home = tempDir(t, 'zn-home-');
   for (const p of ['.aws/credentials', '.ssh/id_ed25519', '.config/gh/hosts.yml', '.npmrc', '.zn/vault/secrets.age']) {
     const res = await run(preTool('Read', { file_path: path.join(home, p) }, home), { home });
     assert.equal(res.output.hookSpecificOutput.permissionDecision, 'deny', p);
@@ -117,8 +118,8 @@ test('PreToolUse denies credential files and ~/.zn', async () => {
   assert.equal(w.output.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('PreToolUse Bash: reading secrets and managing the vault are denied', async () => {
-  const dir = tmpProject();
+test('PreToolUse Bash: reading secrets and managing the vault are denied', async (t) => {
+  const dir = tmpProject(t);
   fs.writeFileSync(path.join(dir, '.env'), 'GITHUB_TOKEN=' + GHP + '\n');
   for (const cmd of ['cat .env', 'grep TOKEN .env | head', 'cat ~/.aws/credentials', 'zn secret set FOO', 'npx zn-gate env shadow .env', 'zn unlock', 'cat ~/.zn/vault/secrets.age']) {
     const res = await run(preBash(cmd, dir));
@@ -130,8 +131,8 @@ test('PreToolUse Bash: reading secrets and managing the vault are denied', async
   assert.equal(list.output, null);
 });
 
-test('PreToolUse Bash: named markers are wrapped in zn run and asked', async () => {
-  const dir = tmpProject();
+test('PreToolUse Bash: named markers are wrapped in zn run and asked', async (t) => {
+  const dir = tmpProject(t);
   const cmd = 'psql "postgres://app:__ZN_DB_PASSWORD__@db/app" -c "select 1" | head -5';
   const res = await run(preBash(cmd, dir));
   const h = res.output.hookSpecificOutput;
@@ -144,15 +145,15 @@ test('PreToolUse Bash: named markers are wrapped in zn run and asked', async () 
   assert.equal(withEnv.output.hookSpecificOutput.updatedInput.command, 'PGHOST=db ' + PREFIX + ' psql "postgres://app:__ZN_DB_PASSWORD__@db/app"');
 });
 
-test('PreToolUse Bash: a command already wrapped in zn run is asked, not passed through', async () => {
-  const dir = tmpProject();
+test('PreToolUse Bash: a command already wrapped in zn run is asked, not passed through', async (t) => {
+  const dir = tmpProject(t);
   const res = await run(preBash('zn run -- psql "postgres://app:__ZN_DB_PASSWORD__@db/app"', dir));
   assert.equal(res.output.hookSpecificOutput.permissionDecision, 'ask');
   assert.equal(res.output.hookSpecificOutput.updatedInput, undefined);
 });
 
-test('PreToolUse Bash: unsupported marker placements are refused with guidance', async () => {
-  const dir = tmpProject();
+test('PreToolUse Bash: unsupported marker placements are refused with guidance', async (t) => {
+  const dir = tmpProject(t);
   for (const cmd of [
     'cd db && psql "postgres://app:__ZN_DB_PASSWORD__@db/app"',
     'psql "$(echo __ZN_DB_PASSWORD__)"',
@@ -172,8 +173,8 @@ test('PreToolUse WebFetch with a marker points to secrets_http_request', async (
   assert.match(res.output.hookSpecificOutput.permissionDecisionReason, /secrets_http_request/);
 });
 
-test('restore policy: detected tokens restored in local Bash and git-ignored writes, kept elsewhere', async () => {
-  const dir = tmpProject();
+test('restore policy: detected tokens restored in local Bash and git-ignored writes, kept elsewhere', async (t) => {
+  const dir = tmpProject(t);
   const vault = createFakeVault();
   const project = dir;
   const token = await vault.mapToken(project, 'AWS_KEY', AWS);
@@ -196,8 +197,8 @@ test('restore policy: detected tokens restored in local Bash and git-ignored wri
   assert.ok(!JSON.stringify(tracked.output || {}).includes(AWS));
 });
 
-test('PostToolUse replaces secrets in Bash output and keeps its shape', async () => {
-  const dir = tmpProject();
+test('PostToolUse replaces secrets in Bash output and keeps its shape', async (t) => {
+  const dir = tmpProject(t);
   const response = { stdout: 'key=' + AWS + '\ntoken ' + GHP + '\nok\n', stderr: '', interrupted: false, isImage: false };
   const res = await run(postTool('Bash', { command: 'env' }, response, dir));
   const out = res.output.hookSpecificOutput;
@@ -210,8 +211,8 @@ test('PostToolUse replaces secrets in Bash output and keeps its shape', async ()
   assert.match(out.additionalContext, /2 secret value/);
 });
 
-test('PostToolUse covers Read, Grep, WebFetch and MCP; ignores Glob; no output when clean', async () => {
-  const dir = tmpProject();
+test('PostToolUse covers Read, Grep, WebFetch and MCP; ignores Glob; no output when clean', async (t) => {
+  const dir = tmpProject(t);
   const pwLine = 'DATABASE_URL=' + PG.value;
   const read = await run(postTool('Read', { file_path: '/p/.env' }, { type: 'text', file: { filePath: '/p/.env', content: pwLine, numLines: 1 } }, dir));
   const content = read.output.hookSpecificOutput.updatedToolOutput.file.content;
@@ -235,13 +236,13 @@ test('UserPromptSubmit blocks a pasted secret and suggests zn secret set', async
   assert.equal(ok.output, null);
 });
 
-test('every error fails closed, a missing engine too unless the user allows it', async () => {
+test('every error fails closed, a missing engine too unless the user allows it', async (t) => {
   const missing = Object.assign(new Error('scrubber engine is not installed'), { code: 'ZN_UNAVAILABLE' });
   const absent = { scan() { throw missing; }, async tokenize() { throw missing; }, async detokenize() { throw missing; } };
   const broken = { scan() { throw new Error('boom'); }, async tokenize() { throw new Error('boom'); }, async detokenize() { throw new Error('boom'); } };
   const ev = postTool('Bash', {}, { stdout: 'key=' + AWS, stderr: '', interrupted: false, isImage: false }, '/');
   // Default (no option, no config): closed, with reinstall guidance for the user.
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-failmode-'));
+  const home = tempDir(t, 'zn-failmode-');
   const saved = process.env.ZN_HOOK_FAIL_MODE;
   delete process.env.ZN_HOOK_FAIL_MODE;
   try {
@@ -290,8 +291,8 @@ test('every error fails closed, a missing engine too unless the user allows it',
   assert.equal(pre.output.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('PowerShell gets the same treatment as Bash', async () => {
-  const dir = tmpProject();
+test('PowerShell gets the same treatment as Bash', async (t) => {
+  const dir = tmpProject(t);
   fs.writeFileSync(path.join(dir, '.env'), 'API_KEY=' + GHP + '\n');
   const ps = (command) => preTool('PowerShell', { command, description: 'x' }, dir);
   for (const cmd of ['Get-Content .env', 'gc ~/.aws/credentials', 'type $HOME/.zn/run/session.key', 'zn secret allow X --command node']) {
@@ -314,8 +315,8 @@ test('PowerShell gets the same treatment as Bash', async () => {
   assert.equal((await run(ps('Get-ChildItem'))).output, null);
 });
 
-test('Monitor commands are piped through the streaming scrubber; WebSocket monitors are refused', async () => {
-  const dir = tmpProject();
+test('Monitor commands are piped through the streaming scrubber; WebSocket monitors are refused', async (t) => {
+  const dir = tmpProject(t);
   fs.writeFileSync(path.join(dir, '.env'), 'API_KEY=' + GHP + '\n');
   const r = await run(preTool('Monitor', { command: 'tail -f app.log', description: 'logs' }, dir), { nodePath: '/usr/bin/node' });
   assert.equal(r.output.hookSpecificOutput.permissionDecision, 'ask');
@@ -332,10 +333,10 @@ test('Monitor commands are piped through the streaming scrubber; WebSocket monit
   assert.equal(mk.output.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('Monitor: no command can step out of the scrubber pipe', { skip: process.platform === 'win32' && 'needs bash' }, async () => {
-  const dir = tmpProject();
+test('Monitor: no command can step out of the scrubber pipe', { skip: process.platform === 'win32' && 'needs bash' }, async (t) => {
+  const dir = tmpProject(t);
   fs.writeFileSync(path.join(dir, 'cfg.txt'), 'aws_access_key_id = ' + AWS + '\ntoken: ' + GHP + '\n');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-mon-'));
+  const home = tempDir(t, 'zn-mon-');
   const streamJs = path.join(__dirname, '..', 'lib', 'scrub', 'stream.js');
   const cases = [
     'cat cfg.txt',
@@ -359,8 +360,8 @@ test('Monitor: no command can step out of the scrubber pipe', { skip: process.pl
   assert.equal(st.status, 3, 'pipefail keeps the exit status');
 });
 
-test('the streaming scrubber redacts lines (vault locked: irreversibly) and never passes a value', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-stream-'));
+test('the streaming scrubber redacts lines (vault locked: irreversibly) and never passes a value', (t) => {
+  const home = tempDir(t, 'zn-stream-');
   const input = 'starting\nkey=' + AWS + '\npartial line without newline ' + GHP;
   const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'lib', 'scrub', 'stream.js')], {
     input, encoding: 'utf8', env: { ...process.env, ZN_HOME: home }, cwd: home,
@@ -370,21 +371,29 @@ test('the streaming scrubber redacts lines (vault locked: irreversibly) and neve
   assert.match(r.stdout, /^starting\nkey=__ZN_REDACTED_AWS_KEY__\npartial line without newline __ZN_REDACTED_GITHUB_TOKEN__$/);
 });
 
-test('the streaming scrubber keeps a value written in two bursts together', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-stream2-'));
+test('the streaming scrubber keeps a value written in two bursts together', async (t) => {
+  const home = tempDir(t, 'zn-stream2-');
   const { spawn } = require('child_process');
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'lib', 'scrub', 'stream.js')], { env: { ...process.env, ZN_HOME: home }, cwd: home });
+  const closed = new Promise((r) => child.on('close', r));
   let out = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (d) => { out += d; });
+  let early;
   const half = Math.floor(GHP.length / 2);
-  child.stdin.write('token: ' + GHP.slice(0, half));
-  await new Promise((r) => setTimeout(r, 300)); // longer than the partial-line flush
-  const early = out;
-  child.stdin.write(GHP.slice(half) + ' done\n' + 'x'.repeat(5000) + ' ' + GHP.slice(0, half));
-  await new Promise((r) => setTimeout(r, 400));
-  child.stdin.end(GHP.slice(half) + '\n');
-  await new Promise((r) => child.on('close', r));
+  try {
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; });
+    child.stdin.write('token: ' + GHP.slice(0, half));
+    await new Promise((r) => setTimeout(r, 300)); // longer than the partial-line flush
+    early = out;
+    child.stdin.write(GHP.slice(half) + ' done\n' + 'x'.repeat(5000) + ' ' + GHP.slice(0, half));
+    await new Promise((r) => setTimeout(r, 400));
+    child.stdin.end(GHP.slice(half) + '\n');
+  } catch (err) {
+    child.kill(); // stop the scrubber before its working directory is removed
+    throw err;
+  } finally {
+    await closed;
+  }
   assert.ok(!early.includes(GHP.slice(0, half)), 'nothing of the partial value was written early');
   const joined = out.replace(/\n/g, '');
   assert.ok(!joined.includes(GHP), out);
@@ -392,8 +401,8 @@ test('the streaming scrubber keeps a value written in two bursts together', asyn
   assert.match(out, /^token: __ZN_REDACTED_GITHUB_TOKEN__ done\nx{5000} __ZN_REDACTED_GITHUB_TOKEN__\n$/);
 });
 
-test('LSP and MCP resources are covered', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-lsp-'));
+test('LSP and MCP resources are covered', async (t) => {
+  const home = tempDir(t, 'zn-lsp-');
   const l = await run(preTool('LSP', { operation: 'hover', filePath: path.join(home, '.aws/credentials'), line: 1, character: 1 }, home), { home });
   assert.equal(l.output.hookSpecificOutput.permissionDecision, 'deny');
   const lp = await run(postTool('LSP', { operation: 'hover' }, { result: 'const k = "' + AWS + '"' }, home));
@@ -475,8 +484,8 @@ test('policy helpers', () => {
   assert.equal(scan.operator, '|');
 });
 
-test('install / uninstall write and remove only our hooks, with backups', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cc-'));
+test('install / uninstall write and remove only our hooks, with backups', (t) => {
+  const home = tempDir(t, 'zn-cc-');
   const file = path.join(home, '.claude', 'settings.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const userHook = { matcher: 'Bash', hooks: [{ type: 'command', command: '/usr/local/bin/my-guard.sh' }] };
@@ -501,8 +510,8 @@ test('install / uninstall write and remove only our hooks, with backups', () => 
   assert.deepEqual(after, { model: 'x', hooks: { PreToolUse: [userHook] } });
 });
 
-test('project install writes .claude/settings.json and .mcp.json', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-ccp-'));
+test('project install writes .claude/settings.json and .mcp.json', (t) => {
+  const dir = tempDir(t, 'zn-ccp-');
   const rep = adapter.install({ scope: 'project', projectDir: dir, nodePath: 'node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
   assert.equal(rep.settings, path.join(dir, '.claude', 'settings.json'));
   const mcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
@@ -512,8 +521,8 @@ test('project install writes .claude/settings.json and .mcp.json', () => {
   assert.equal(mcp2.mcpServers.secrets, undefined);
 });
 
-test('CLAUDE_CONFIG_DIR is honoured for user scope', () => {
-  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cfg-'));
+test('CLAUDE_CONFIG_DIR is honoured for user scope', (t) => {
+  const cfg = tempDir(t, 'zn-cfg-');
   assert.equal(adapter.settingsFile({ scope: 'user', env: { CLAUDE_CONFIG_DIR: cfg } }), path.join(cfg, 'settings.json'));
 });
 

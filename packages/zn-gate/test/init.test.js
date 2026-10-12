@@ -18,14 +18,13 @@ test('zn-gate init - getKnownEnvironments returns list of supported agents', () 
 
 test('zn-gate init - scanEnvironments detects active MCP configs', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-init-scan-'));
-  const testClaude = path.join(tmpDir, 'claude.json');
-  fs.writeFileSync(testClaude, JSON.stringify({
-    mcpServers: {
-      fetch: { command: 'uvx', args: ['mcp-server-fetch'] }
-    }
-  }, null, 2));
-
   try {
+    const testClaude = path.join(tmpDir, 'claude.json');
+    fs.writeFileSync(testClaude, JSON.stringify({
+      mcpServers: {
+        fetch: { command: 'uvx', args: ['mcp-server-fetch'] }
+      }
+    }, null, 2));
     const mockList = [
       { name: 'Claude Desktop', id: 'claude-desktop', filePath: testClaude, key: 'mcpServers' },
       { name: 'Nonexistent', id: 'fake', filePath: path.join(tmpDir, 'no.json'), key: 'mcpServers' }
@@ -48,14 +47,13 @@ test('zn-gate init - scanEnvironments detects active MCP configs', () => {
 
 test('zn-gate init - configureEnvironments dryRun does not alter configs', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-init-dry-'));
-  const testClaude = path.join(tmpDir, 'claude.json');
-  fs.writeFileSync(testClaude, JSON.stringify({
-    mcpServers: {
-      fetch: { command: 'uvx', args: ['mcp-server-fetch'] }
-    }
-  }, null, 2));
-
   try {
+    const testClaude = path.join(tmpDir, 'claude.json');
+    fs.writeFileSync(testClaude, JSON.stringify({
+      mcpServers: {
+        fetch: { command: 'uvx', args: ['mcp-server-fetch'] }
+      }
+    }, null, 2));
     const mockList = [
       { name: 'Claude Desktop', id: 'claude-desktop', filePath: testClaude, key: 'mcpServers' }
     ];
@@ -74,14 +72,13 @@ test('zn-gate init - configureEnvironments dryRun does not alter configs', () =>
 
 test('zn-gate init - configureEnvironments wraps servers with zn-gate shield and creates backup', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-init-wrap-'));
-  const testClaude = path.join(tmpDir, 'claude.json');
-  fs.writeFileSync(testClaude, JSON.stringify({
-    mcpServers: {
-      fetch: { command: 'uvx', args: ['mcp-server-fetch'] }
-    }
-  }, null, 2));
-
   try {
+    const testClaude = path.join(tmpDir, 'claude.json');
+    fs.writeFileSync(testClaude, JSON.stringify({
+      mcpServers: {
+        fetch: { command: 'uvx', args: ['mcp-server-fetch'] }
+      }
+    }, null, 2));
     const mockList = [
       { name: 'Claude Desktop', id: 'claude-desktop', filePath: testClaude, key: 'mcpServers' }
     ];
@@ -131,27 +128,27 @@ test('zn-gate init - known paths: Codex uses config.toml, OpenCode uses ~/.confi
 
 test('zn-gate init - Codex config.toml: wraps stdio servers, keeps env tables and url servers, reverts', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-init-codex-'));
-  const file = path.join(tmpDir, 'config.toml');
-  const original = [
-    'model = "o4-mini"',
-    '',
-    '[mcp_servers.context7]',
-    'command = "npx"',
-    'args = ["-y", "@upstash/context7-mcp"]',
-    '',
-    '[mcp_servers.context7.env]',
-    'MY_ENV_VAR = "MY_ENV_VALUE"',
-    '',
-    '[mcp_servers."fetch-srv"]',
-    "command = 'uvx' # inline comment",
-    '',
-    '[mcp_servers.remote]',
-    'url = "https://mcp.example.com/mcp"',
-    '',
-  ].join('\n');
-  fs.writeFileSync(file, original);
-  const mockList = [{ name: 'Codex', id: 'codex', filePath: file, key: 'mcp_servers', format: 'codex-toml' }];
   try {
+    const file = path.join(tmpDir, 'config.toml');
+    const original = [
+      'model = "o4-mini"',
+      '',
+      '[mcp_servers.context7]',
+      'command = "npx"',
+      'args = ["-y", "@upstash/context7-mcp"]',
+      '',
+      '[mcp_servers.context7.env]',
+      'MY_ENV_VAR = "MY_ENV_VALUE"',
+      '',
+      '[mcp_servers."fetch-srv"]',
+      "command = 'uvx' # inline comment",
+      '',
+      '[mcp_servers.remote]',
+      'url = "https://mcp.example.com/mcp"',
+      '',
+    ].join('\n');
+    fs.writeFileSync(file, original);
+    const mockList = [{ name: 'Codex', id: 'codex', filePath: file, key: 'mcp_servers', format: 'codex-toml' }];
     const scan = scanEnvironments(mockList)[0];
     assert.equal(scan.serverCount, 3);
     assert.equal(scan.allShielded, false);
@@ -180,11 +177,11 @@ test('zn-gate init - Codex config.toml: wraps stdio servers, keeps env tables an
 
 test('zn-gate init - Codex config.toml with multi-line args is left untouched and reported', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-init-codex-ml-'));
-  const file = path.join(tmpDir, 'config.toml');
-  const original = '[mcp_servers.x]\ncommand = "npx"\nargs = [\n  "-y",\n  "pkg"\n]\n';
-  fs.writeFileSync(file, original);
-  const mockList = [{ name: 'Codex', id: 'codex', filePath: file, key: 'mcp_servers', format: 'codex-toml' }];
   try {
+    const file = path.join(tmpDir, 'config.toml');
+    const original = '[mcp_servers.x]\ncommand = "npx"\nargs = [\n  "-y",\n  "pkg"\n]\n';
+    fs.writeFileSync(file, original);
+    const mockList = [{ name: 'Codex', id: 'codex', filePath: file, key: 'mcp_servers', format: 'codex-toml' }];
     const { actions } = configureEnvironments({ envList: mockList });
     assert.equal(actions[0].status, 'manual_required');
     assert.equal(fs.readFileSync(file, 'utf8'), original);
@@ -195,17 +192,17 @@ test('zn-gate init - Codex config.toml with multi-line args is left untouched an
 
 test('zn-gate init - OpenCode opencode.json: wraps local servers (command array), skips remote, reverts', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-init-oc-'));
-  const file = path.join(tmpDir, 'opencode.json');
-  const original = JSON.stringify({
-    $schema: 'https://opencode.ai/config.json',
-    mcp: {
-      local1: { type: 'local', command: ['npx', '-y', 'my-mcp-command'], enabled: true, environment: { A: 'b' } },
-      remote1: { type: 'remote', url: 'https://mcp.example.com/mcp' },
-    },
-  }, null, 2);
-  fs.writeFileSync(file, original);
-  const mockList = [{ name: 'OpenCode', id: 'opencode', filePath: file, key: 'mcp', format: 'opencode-json' }];
   try {
+    const file = path.join(tmpDir, 'opencode.json');
+    const original = JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {
+        local1: { type: 'local', command: ['npx', '-y', 'my-mcp-command'], enabled: true, environment: { A: 'b' } },
+        remote1: { type: 'remote', url: 'https://mcp.example.com/mcp' },
+      },
+    }, null, 2);
+    fs.writeFileSync(file, original);
+    const mockList = [{ name: 'OpenCode', id: 'opencode', filePath: file, key: 'mcp', format: 'opencode-json' }];
     const { actions } = configureEnvironments({ envList: mockList, shadow: true });
     assert.equal(actions[0].status, 'shielded');
     const out = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -225,11 +222,11 @@ test('zn-gate init - OpenCode opencode.json: wraps local servers (command array)
 
 test('zn-gate init - OpenCode JSONC with comments is not rewritten', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-init-ocjsonc-'));
-  const file = path.join(tmpDir, 'opencode.jsonc');
-  const original = '{\n  // my servers\n  "mcp": { "x": { "type": "local", "command": ["npx", "y"] } }\n}\n';
-  fs.writeFileSync(file, original);
-  const mockList = [{ name: 'OpenCode', id: 'opencode', filePath: file, key: 'mcp', format: 'opencode-json' }];
   try {
+    const file = path.join(tmpDir, 'opencode.jsonc');
+    const original = '{\n  // my servers\n  "mcp": { "x": { "type": "local", "command": ["npx", "y"] } }\n}\n';
+    fs.writeFileSync(file, original);
+    const mockList = [{ name: 'OpenCode', id: 'opencode', filePath: file, key: 'mcp', format: 'opencode-json' }];
     const { actions } = configureEnvironments({ envList: mockList });
     assert.equal(actions[0].status, 'manual_required');
     assert.equal(fs.readFileSync(file, 'utf8'), original);
