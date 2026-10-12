@@ -10,7 +10,9 @@
 //!
 //! An invalid token gets 401; a valid JWT that grants no usable role gets 403.
 
-use crate::tenants::{TenantContext, TenantRole, TenantStore};
+use crate::tenants::{
+    valid_tenant_namespace, TenantContext, TenantRole, TenantStore, GLOBAL_NAMESPACE,
+};
 use axum::{
     extract::Request,
     http::{header, StatusCode},
@@ -44,9 +46,6 @@ pub struct Claims {
     pub namespace: Option<String>,
 }
 
-/// Namespace of the super-admin context. Reserved: tenant tokens cannot use it.
-const GLOBAL_NAMESPACE: &str = "global";
-
 /// Result of checking a bearer token as a JWT.
 #[derive(Debug)]
 enum JwtCheck {
@@ -79,16 +78,6 @@ fn role_rank(role: TenantRole) -> u8 {
         TenantRole::Viewer => 1,
         TenantRole::Blocked => 0,
     }
-}
-
-/// A tenant namespace from a token is used as is: it must be non-empty, have
-/// no whitespace or control characters, and must not be the reserved global
-/// namespace (in any letter case).
-fn valid_tenant_namespace(ns: &str) -> bool {
-    !ns.is_empty()
-        && ns.len() <= 128
-        && !ns.chars().any(|c| c.is_whitespace() || c.is_control())
-        && !ns.eq_ignore_ascii_case(GLOBAL_NAMESPACE)
 }
 
 /// Builds the request context from verified claims. Deny by default: the token
@@ -137,10 +126,12 @@ fn check_jwt(token: &str, secret: &str) -> JwtCheck {
 }
 
 impl AuthConfig {
+    /// A blank API key or JWT secret counts as not configured.
     pub fn new(api_key: Option<String>, jwt_secret: Option<String>) -> Self {
+        let non_blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
         Self {
-            api_key,
-            jwt_secret,
+            api_key: non_blank(api_key),
+            jwt_secret: non_blank(jwt_secret),
             tenant_store: None,
         }
     }
@@ -173,7 +164,11 @@ pub async fn api_key_auth(mut request: Request, next: Next) -> Result<Response, 
 
     let config = match auth_config {
         Some(c) => c,
-        None => return Ok(next.run(request).await),
+        None => {
+            // Fail closed: without its configuration the layer cannot decide.
+            tracing::error!("Auth middleware is missing its AuthConfig extension");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     };
 
     // If no auth is configured, allow all
@@ -188,26 +183,18 @@ pub async fn api_key_auth(mut request: Request, next: Next) -> Result<Response, 
         .or_else(|| request.headers().get(header::AUTHORIZATION))
         .and_then(|v| v.to_str().ok());
 
-    let token = if let Some(header_val) = auth_header {
-        Some(header_val.trim_start_matches("Bearer ").trim().to_string())
-    } else {
-        // Fallback: Check query parameters (for SSE/WebSocket)
-        request.uri().query().and_then(|query| {
-            query.split('&').find_map(|pair| {
-                let (key, val) = pair.split_once('=')?;
-                if key == "api_key" || key == "token" {
-                    Some(val.to_string())
-                } else {
-                    None
-                }
-            })
-        })
+    let token = match auth_header {
+        Some(header_val) => Some(strip_bearer(header_val).to_string()),
+        // Fallback: query parameters (for SSE/WebSocket)
+        None => request.uri().query().and_then(query_token),
     };
+    // An empty token never authenticates.
+    let token = token.filter(|t| !t.is_empty());
 
     match token {
         Some(token) => {
             // 1. Check against Legacy Super-Admin API Key
-            if let Some(expected_key) = &config.api_key {
+            if let Some(expected_key) = config.api_key.as_deref().filter(|k| !k.is_empty()) {
                 if constant_time_compare(&token, expected_key) {
                     // Inject super-admin context
                     request.extensions_mut().insert(super_admin_context());
@@ -251,6 +238,50 @@ pub async fn api_key_auth(mut request: Request, next: Next) -> Result<Response, 
             Err(StatusCode::UNAUTHORIZED)
         }
     }
+}
+
+/// Removes a `Bearer ` prefix in any letter case, and surrounding spaces.
+fn strip_bearer(value: &str) -> &str {
+    let value = value.trim();
+    match value.get(..7) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("bearer ") => value[7..].trim(),
+        _ => value,
+    }
+}
+
+/// Value of the first `api_key` or `token` query parameter, percent-decoded.
+/// A malformed value yields no token.
+fn query_token(query: &str) -> Option<String> {
+    query
+        .split('&')
+        .find_map(|pair| {
+            let (key, val) = pair.split_once('=')?;
+            (key == "api_key" || key == "token").then(|| percent_decode(val))
+        })
+        .flatten()
+}
+
+/// Decodes `%XX` escapes. `+` is kept as is: keys and tokens never contain
+/// spaces, and base64 keys may contain `+`. Malformed escapes or invalid
+/// UTF-8 yield None.
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = value.get(i + 1..i + 3)?;
+            if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Constant-time string comparison to prevent timing attacks
@@ -410,6 +441,11 @@ mod tests {
             check_jwt(&raw(now() - 10), SECRET),
             JwtCheck::Granted(_)
         ));
+        // Within the 60 s leeway.
+        assert!(matches!(
+            check_jwt(&raw(now() + 30), SECRET),
+            JwtCheck::Granted(_)
+        ));
     }
 
     #[test]
@@ -433,6 +469,43 @@ mod tests {
         ] {
             assert!(matches!(check_jwt(&t, SECRET), JwtCheck::Invalid));
         }
+    }
+
+    #[test]
+    fn tenant_namespace_length_limit() {
+        let ok = "a".repeat(128);
+        let ctx = granted(check_jwt(
+            &token(Some(vec!["viewer"]), Some(&ok), now() + 600),
+            SECRET,
+        ));
+        assert_eq!(ctx.namespace, ok);
+        let t = token(Some(vec!["viewer"]), Some(&"a".repeat(129)), now() + 600);
+        assert!(matches!(check_jwt(&t, SECRET), JwtCheck::NoRole(_)));
+    }
+
+    #[test]
+    fn bearer_prefix_and_query_values() {
+        assert_eq!(strip_bearer("Bearer abc"), "abc");
+        assert_eq!(strip_bearer("bearer abc"), "abc");
+        assert_eq!(strip_bearer("BEARER   abc "), "abc");
+        assert_eq!(strip_bearer("abc"), "abc");
+        assert_eq!(strip_bearer("Bearer"), "Bearer");
+        assert_eq!(
+            query_token("a=1&token=x%2By%2Fz%3D"),
+            Some("x+y/z=".to_string())
+        );
+        assert_eq!(query_token("api_key=a+b"), Some("a+b".to_string()));
+        assert_eq!(query_token("token=%zz"), None);
+        assert_eq!(query_token("token=%4"), None);
+        assert_eq!(query_token("token=%ff"), None);
+        assert_eq!(query_token("other=1"), None);
+    }
+
+    #[test]
+    fn blank_key_and_secret_count_as_not_configured() {
+        let c = AuthConfig::new(Some("   ".to_string()), Some(String::new()));
+        assert!(c.api_key.is_none());
+        assert!(c.jwt_secret.is_none());
     }
 
     #[test]
@@ -478,9 +551,26 @@ mod tests {
     const LEGACY_KEY: &str = "legacy-key-for-unit-tests-only";
     const TENANT_KEY: &str = "tenant-key-for-unit-tests-only";
     const BLOCKED_KEY: &str = "blocked-key-for-unit-tests-only";
+    const ENCODED_KEY: &str = "enc+key/for=unit-tests-only";
 
     async fn whoami(Extension(t): Extension<TenantContext>) -> String {
         format!("{}:{}", t.role.as_str(), t.namespace)
+    }
+
+    /// Serves `/whoami` behind the auth middleware with `config` (or without
+    /// the AuthConfig extension when None) and returns its URL.
+    async fn serve_config(config: Option<AuthConfig>) -> String {
+        let app = Router::new()
+            .route("/whoami", get(whoami))
+            .layer(axum::middleware::from_fn(api_key_auth));
+        let app = match config {
+            Some(c) => app.layer(Extension(Arc::new(c))),
+            None => app,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/whoami")
     }
 
     /// Serves `/whoami` behind the auth middleware, configured like the
@@ -496,6 +586,7 @@ mod tests {
         store
             .create_tenant("jwtkey", "jwtkey", jwt_as_tenant_key)
             .unwrap();
+        store.create_tenant("enc", "enc", ENCODED_KEY).unwrap();
         conn.lock()
             .unwrap()
             .execute(
@@ -504,18 +595,11 @@ mod tests {
             )
             .unwrap();
 
-        let config = Arc::new(
+        serve_config(Some(
             AuthConfig::new(Some(LEGACY_KEY.to_string()), Some(SECRET.to_string()))
                 .with_tenant_store(store),
-        );
-        let app = Router::new()
-            .route("/whoami", get(whoami))
-            .layer(axum::middleware::from_fn(api_key_auth))
-            .layer(Extension(config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}/whoami")
+        ))
+        .await
     }
 
     async fn call(url: &str, header: Option<(&str, String)>) -> (u16, String) {
@@ -584,5 +668,52 @@ mod tests {
             call(&url, bearer(&superadmin_jwt)).await,
             (200, "user:jwtkey".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn empty_tokens_never_authenticate() {
+        // An empty legacy key set directly on the config, as a caller that
+        // bypasses AuthConfig::new could do.
+        let config = AuthConfig {
+            api_key: Some(String::new()),
+            jwt_secret: None,
+            tenant_store: None,
+        };
+        let url = serve_config(Some(config)).await;
+        assert_eq!(call(&url, Some(("X-API-Key", String::new()))).await.0, 401);
+        assert_eq!(call(&url, bearer("")).await.0, 401);
+        assert_eq!(call(&format!("{url}?api_key="), None).await.0, 401);
+        assert_eq!(call(&format!("{url}?token="), None).await.0, 401);
+    }
+
+    #[tokio::test]
+    async fn bearer_case_and_encoded_query_are_accepted() {
+        let url = serve(&token(Some(vec!["superadmin"]), None, now() + 600)).await;
+        for prefix in ["bearer", "BEARER"] {
+            assert_eq!(
+                call(
+                    &url,
+                    Some(("Authorization", format!("{prefix} {TENANT_KEY}")))
+                )
+                .await,
+                (200, "user:acme".to_string())
+            );
+        }
+        assert_eq!(
+            call(
+                &format!("{url}?api_key=enc%2Bkey%2Ffor%3Dunit-tests-only"),
+                None
+            )
+            .await,
+            (200, "user:enc".to_string())
+        );
+        assert_eq!(call(&format!("{url}?api_key=%zz"), None).await.0, 401);
+    }
+
+    #[tokio::test]
+    async fn missing_auth_config_fails_closed() {
+        let url = serve_config(None).await;
+        assert_eq!(call(&url, bearer(LEGACY_KEY)).await.0, 500);
+        assert_eq!(call(&url, None).await.0, 500);
     }
 }

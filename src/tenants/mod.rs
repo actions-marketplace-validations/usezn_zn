@@ -46,6 +46,41 @@ impl TenantRole {
     }
 }
 
+/// Namespace of the super-admin context and of the seeded default
+/// organisation. Reserved: tenants and tenant tokens cannot use it.
+pub const GLOBAL_NAMESPACE: &str = "global";
+
+/// A tenant namespace is used as is: non-empty, at most 128 bytes, no
+/// whitespace or control characters, and not the reserved global namespace
+/// (in any letter case).
+pub fn valid_tenant_namespace(ns: &str) -> bool {
+    !ns.is_empty()
+        && ns.len() <= 128
+        && !ns.chars().any(|c| c.is_whitespace() || c.is_control())
+        && !ns.eq_ignore_ascii_case(GLOBAL_NAMESPACE)
+}
+
+/// Key for the seeded default organisation.
+enum SeedKey {
+    /// From `ZN_API_KEY`; never printed.
+    FromEnv(String),
+    /// Generated at random; printed once so the operator can save it.
+    Generated(String),
+}
+
+/// `ZN_API_KEY` when it is set and not blank, otherwise a new random key.
+/// A blank value counts as not set, so the default organisation is never
+/// seeded with the hash of an empty key.
+fn seed_key(env_key: Option<String>) -> SeedKey {
+    match env_key {
+        Some(k) if !k.trim().is_empty() => SeedKey::FromEnv(k),
+        _ => {
+            use rand::distributions::{Alphanumeric, DistString};
+            SeedKey::Generated(Alphanumeric.sample_string(&mut rand::thread_rng(), 32))
+        }
+    }
+}
+
 /// Represents a tenant (organization/user) in the system
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tenant {
@@ -105,32 +140,33 @@ impl TenantStore {
             if count == 0 {
                 let id = Uuid::new_v4().to_string();
 
-                // 1. Try to get API key from environment variable
-                // 2. Fallback to generating a high-entropy random key
-                let (api_key, source) = if let Ok(env_key) = std::env::var("ZN_API_KEY") {
-                    (env_key, "Environment Variable (ZN_API_KEY)")
-                } else {
-                    use rand::distributions::{Alphanumeric, DistString};
-                    let random_key = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
-                    (random_key, "Generated Random Key")
+                // ZN_API_KEY when set and not blank, otherwise a random key.
+                let seed = seed_key(std::env::var("ZN_API_KEY").ok());
+                let (api_key, source) = match &seed {
+                    SeedKey::FromEnv(k) => (k.as_str(), "Environment Variable (ZN_API_KEY)"),
+                    SeedKey::Generated(k) => (k.as_str(), "Generated Random Key"),
                 };
 
-                let hash = Self::hash_api_key(&api_key);
+                let hash = Self::hash_api_key(api_key);
                 let created_at = Utc::now().to_rfc3339();
 
                 db.execute(
                     "INSERT INTO tenants (id, name, namespace, api_key_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![id, "Default Org", "global", hash, "superadmin", created_at],
+                    params![id, "Default Org", GLOBAL_NAMESPACE, hash, "superadmin", created_at],
                 )?;
 
                 // Print the key and security warning
                 println!("\n\x1b[32;1m🛡️ zn Initialized Successfully!\x1b[0m");
                 println!("\x1b[33mNo superadmin tenant found. A new one has been seeded.\x1b[0m");
                 println!("Source: {}", source);
-                println!("\x1b[32;1mSuperAdmin API Key: {}\x1b[0m", api_key);
-                println!(
-                    "\x1b[31;1mIMPORTANT: Save this key! It will not be shown again.\x1b[0m\n"
-                );
+                // A key from the environment is never printed: stdout often
+                // ends up in container logs. A generated key is shown once.
+                if let SeedKey::Generated(key) = &seed {
+                    println!("\x1b[32;1mSuperAdmin API Key: {}\x1b[0m", key);
+                    println!(
+                        "\x1b[31;1mIMPORTANT: Save this key! It will not be shown again.\x1b[0m\n"
+                    );
+                }
 
                 tracing::info!("Seeded default SuperAdmin tenant from {}", source);
             }
@@ -143,6 +179,15 @@ impl TenantStore {
 
     /// Create a new tenant (used by main.rs)
     pub fn create_tenant(&self, name: &str, namespace: &str, api_key: &str) -> Result<()> {
+        if !valid_tenant_namespace(namespace) {
+            return Err(anyhow!(
+                "Invalid namespace: it must be 1-128 bytes without whitespace or control characters, and \"{}\" is reserved",
+                GLOBAL_NAMESPACE
+            ));
+        }
+        if api_key.trim().is_empty() {
+            return Err(anyhow!("API key must not be empty"));
+        }
         let db = self
             .conn
             .lock()
@@ -192,6 +237,10 @@ impl TenantStore {
 
     /// Look up a tenant by API key (for authentication)
     pub fn find_by_api_key(&self, api_key: &str) -> Result<Option<TenantContext>> {
+        // An empty key never matches a tenant.
+        if api_key.is_empty() {
+            return Ok(None);
+        }
         let db = self
             .conn
             .lock()
@@ -348,5 +397,44 @@ mod tests {
         assert_eq!(hash1, hash2); // Same key = same hash
         assert_ne!(hash1, hash3); // Different key = different hash
         assert_eq!(hash1.len(), 64); // SHA-256 = 64 hex chars
+    }
+
+    #[test]
+    fn create_tenant_checks_namespace_and_key() {
+        let store = setup_test_store();
+        for ns in ["", "global", "GLOBAL", " acme", "ac me", "acme\n"] {
+            assert!(
+                store.create_tenant("n", ns, "key_for_ns_test").is_err(),
+                "{ns:?}"
+            );
+        }
+        assert!(store
+            .create_tenant("long", &"a".repeat(129), "key_129")
+            .is_err());
+        store
+            .create_tenant("max", &"a".repeat(128), "key_128")
+            .unwrap();
+        assert!(store.create_tenant("nokey", "nokey", "").is_err());
+        assert!(store.create_tenant("blank", "blank", "   ").is_err());
+    }
+
+    #[test]
+    fn blank_seed_key_is_replaced_by_a_generated_one() {
+        for env in [None, Some(""), Some("   ")] {
+            match seed_key(env.map(String::from)) {
+                SeedKey::Generated(k) => assert_eq!(k.len(), 32),
+                SeedKey::FromEnv(_) => panic!("{env:?} must not be used as a key"),
+            }
+        }
+        assert!(matches!(
+            seed_key(Some("operator-key".to_string())),
+            SeedKey::FromEnv(k) if k == "operator-key"
+        ));
+    }
+
+    #[test]
+    fn empty_api_key_finds_no_tenant() {
+        let store = setup_test_store();
+        assert!(store.find_by_api_key("").unwrap().is_none());
     }
 }
