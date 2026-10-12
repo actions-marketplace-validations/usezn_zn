@@ -1557,12 +1557,24 @@ async fn policies_upload_handler(
             let file_name = field.file_name().unwrap_or("policy.wasm").to_string();
 
             // Validate extension
-            if !file_name.ends_with(".wasm") {
+            let Some(policy_name) = file_name.strip_suffix(".wasm") else {
                 return axum::response::Json(serde_json::json!({
                     "status": "error",
                     "error": "Only .wasm files are allowed"
                 }));
-            }
+            };
+            // The file name comes from the client: it must be a plain policy
+            // name that stays inside the policy directory.
+            let path =
+                match zn::engine::policy_file_path(&state.config.engine.policy_dir, policy_name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return axum::response::Json(serde_json::json!({
+                            "status": "error",
+                            "error": e.to_string()
+                        }))
+                    }
+                };
 
             let data = match field.bytes().await {
                 Ok(d) => d,
@@ -1574,13 +1586,7 @@ async fn policies_upload_handler(
                 }
             };
 
-            // Ensure policies directory exists
-            if !std::path::Path::new("policies").exists() {
-                let _ = std::fs::create_dir_all("policies");
-            }
-
-            // Save to policies directory
-            let path = std::path::Path::new("policies").join(&file_name);
+            // Save to the policy directory
             if let Err(e) = std::fs::write(&path, &data) {
                 return axum::response::Json(serde_json::json!({
                     "status": "error",
@@ -1626,11 +1632,22 @@ async fn policies_delete_handler(
             "error": "Forbidden: SuperAdmin role required"
         }));
     }
+    // The name comes from the client: it must be a plain policy name that
+    // stays inside the policy directory.
+    let path = match zn::engine::policy_file_path(&state.config.engine.policy_dir, &payload.name) {
+        Ok(p) => p,
+        Err(e) => {
+            return axum::response::Json(serde_json::json!({
+                "status": "error",
+                "error": e.to_string()
+            }))
+        }
+    };
+
     // Unregister from engine
     state.engine.unregister_policy(&payload.name);
 
     // Delete file
-    let path = std::path::Path::new("policies").join(format!("{}.wasm", payload.name));
     if path.exists() {
         if let Err(e) = std::fs::remove_file(path) {
             return axum::response::Json(serde_json::json!({
