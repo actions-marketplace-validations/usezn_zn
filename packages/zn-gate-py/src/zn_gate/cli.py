@@ -23,14 +23,14 @@ def cmd_test(args: argparse.Namespace) -> int:
     text = args.text
     t0 = time.perf_counter()
     assessment = evaluate(text)
-    clean_text, secrets = redact_secrets(text)
+    clean_text, findings = redact_secrets(text)
     latency_us = (time.perf_counter() - t0) * 1_000_000
 
     if args.json:
         out = assessment.to_dict()
         out["latency_us"] = round(latency_us, 2)
-        out["secrets_detected"] = len(secrets)
-        if secrets:
+        out["secrets_detected"] = len(findings)
+        if findings:
             out["redacted_preview"] = clean_text
         print(json.dumps(out, indent=2))
     else:
@@ -42,15 +42,15 @@ def cmd_test(args: argparse.Namespace) -> int:
         print(f"Rule:       {assessment.rule}")
         if assessment.reason:
             print(f"Reason:     {assessment.reason}")
-        if secrets:
-            noun = "secret" if len(secrets) == 1 else "secrets"
-            print(f"DLP Alert:  {len(secrets)} {noun} detected (verdict unchanged). Redacted: {clean_text}")
+        if findings:
+            noun = "secret" if len(findings) == 1 else "secrets"
+            print(f"DLP Alert:  {len(findings)} {noun} detected (verdict unchanged). Redacted: {clean_text}")
         print(f"Confidence: {assessment.confidence * 100:.1f}%")
         print(f"Engine:     {assessment.engine} (rules: {assessment.rules_version})\n")
 
     # Exit code: 0 only when nothing was flagged (no block and no secret), so
     # the command can be used as a check in scripts.
-    return 0 if (assessment.allowed and not secrets) else 1
+    return 0 if (assessment.allowed and not findings) else 1
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
@@ -88,7 +88,7 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
             continue
         # Snippets are printed to the terminal and, with --format github, to CI
         # logs: always show the line with any detected secret redacted.
-        redacted, secrets = redact_secrets(line)
+        redacted, findings = redact_secrets(line)
         snippet = redacted.strip()[:100]
         res = evaluate(line)
         if not res.allowed:
@@ -100,11 +100,11 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
                 "type": "injection",
                 "content": snippet,
             })
-        for s in secrets:
+        for finding in findings:
             violations.append({
                 "file": str(file_path),
                 "line": i,
-                "rule": s["rule"],
+                "rule": finding["rule"],
                 "reason": "Exposed credential detected by DLP filter",
                 "type": "secret_leak",
                 "content": snippet,
