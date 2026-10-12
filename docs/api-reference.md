@@ -44,8 +44,9 @@ from zn_gate.evidence import verify_evidence_ledger
 - Inputs over 256 KB are analysed as their first 192 KB and last 64 KB, with `truncated=True`.
 - Returns: `Assessment(verdict='allow'|'block', confidence=1.0, rule='...', reason='...')`
 
-### `@guard(on_block='raise'|'return', check_args=True, check_result=False, mask_secrets=False)`
+### `@guard(on_block='raise'|'return', check_args=True, check_result=False, mask_secrets=False, block_truncated=False)`
 - Python decorator protecting sync and async agent functions and tool handlers.
+- With `check_result=True`, `block_truncated=True` blocks a result too large to scan in full (rule `size:truncated`); `ZN_BLOCK_TRUNCATED=1` does the same for every guard.
 
 ### `check_tool_call(tool_name: str, arguments: Any) -> Assessment`
 - Recursively extracts and inspects all strings in arguments for malicious commands or credentials.

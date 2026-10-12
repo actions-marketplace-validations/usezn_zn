@@ -8,6 +8,9 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Shortest accepted `ZN_JWT_SECRET`: HS256 keys should have at least 256 bits.
+pub const MIN_JWT_SECRET_BYTES: usize = 32;
+
 /// Main configuration structure for zn
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZnConfig {
@@ -769,6 +772,15 @@ impl ZnConfig {
 
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
+        if let Some(secret) = &self.security.jwt_secret {
+            if secret.len() < MIN_JWT_SECRET_BYTES {
+                return Err(anyhow!(
+                    "ZN_JWT_SECRET must be at least {} bytes (for example `openssl rand -hex 32`)",
+                    MIN_JWT_SECRET_BYTES
+                ));
+            }
+        }
+
         if self.security.api_key.is_none() && self.environment == "production" {
             tracing::warn!("No API key configured in production - Management API is unprotected!");
         }
@@ -815,5 +827,24 @@ impl ZnConfig {
             5 => 0.3, // paranoid
             _ => 0.5,
         }
+    }
+}
+
+#[cfg(test)]
+mod jwt_secret_tests {
+    use super::*;
+
+    #[test]
+    fn short_jwt_secret_is_refused() {
+        let mut config = ZnConfig::default();
+        config.security.jwt_secret = None;
+        assert!(config.validate().is_ok());
+        let one_byte_short = "x".repeat(MIN_JWT_SECRET_BYTES - 1);
+        for short in ["", "secret", one_byte_short.as_str()] {
+            config.security.jwt_secret = Some(short.to_string());
+            assert!(config.validate().is_err(), "{} bytes", short.len());
+        }
+        config.security.jwt_secret = Some("x".repeat(MIN_JWT_SECRET_BYTES));
+        assert!(config.validate().is_ok());
     }
 }

@@ -73,9 +73,9 @@ def check_tool_result(result: Any, block_truncated: bool = False) -> Assessment:
         if not res.allowed:
             return res
         truncated = truncated or res.truncated
-    if truncated and (block_truncated or os.environ.get('ZN_BLOCK_TRUNCATED') == '1'):
-        return Assessment(verdict='block', confidence=1.0, rule='size:truncated',
-                          reason='Output too large to scan in full', truncated=True)
+    if truncated and (block_truncated or os.environ.get("ZN_BLOCK_TRUNCATED") == "1"):
+        return Assessment(verdict="block", confidence=1.0, rule="size:truncated",
+                          reason="Output too large to scan in full", truncated=True)
     return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None, truncated=truncated)
 
 
@@ -85,7 +85,8 @@ def guard(
     check_args: bool = True,
     check_result: bool = False,
     mask_secrets: bool = False,
-    callback: Optional[Callable[[Assessment, str, Any], None]] = None
+    callback: Optional[Callable[[Assessment, str, Any], None]] = None,
+    block_truncated: bool = False,
 ) -> Callable:
     """
     Decorator for Python functions and agent tools.
@@ -99,6 +100,9 @@ def guard(
     - check_result: Whether to inspect function return value (default False).
     - mask_secrets: Automatically redact leaked credentials in result (default False).
     - callback: Optional hook called on block: callback(assessment, func_name, payload).
+    - block_truncated: With check_result, block a result too large to scan in full
+                       (rule size:truncated). ZN_BLOCK_TRUNCATED=1 does the same
+                       for every guard (default False).
     """
     def decorator(func: Callable) -> Callable:
         func_name = getattr(func, "__name__", "anonymous")
@@ -120,7 +124,7 @@ def guard(
                 res = await func(*args, **kwargs)
 
                 if check_result:
-                    res_assessment = check_tool_result(res)
+                    res_assessment = check_tool_result(res, block_truncated=block_truncated)
                     if not res_assessment.allowed:
                         if callback:
                             callback(res_assessment, func_name, res)
@@ -152,7 +156,7 @@ def guard(
                 res = func(*args, **kwargs)
 
                 if check_result:
-                    res_assessment = check_tool_result(res)
+                    res_assessment = check_tool_result(res, block_truncated=block_truncated)
                     if not res_assessment.allowed:
                         if callback:
                             callback(res_assessment, func_name, res)

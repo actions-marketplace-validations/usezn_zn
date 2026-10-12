@@ -5,7 +5,7 @@ const path = require('path');
 
 /**
  * zn deterministic rules engine - SINGLE SOURCE OF TRUTH.
- * RULES_VERSION: 2026-10-11.1
+ * RULES_VERSION: 2026-10-12.1
  */
 
 const RULES_VERSION = '2026-10-12.1';
