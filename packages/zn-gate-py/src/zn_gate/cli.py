@@ -86,6 +86,10 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
     for i, line in enumerate(lines, 1):
         if not line.strip():
             continue
+        # Snippets are printed to the terminal and, with --format github, to CI
+        # logs: always show the line with any detected secret redacted.
+        redacted, secrets = redact_secrets(line)
+        snippet = redacted.strip()[:100]
         res = evaluate(line)
         if not res.allowed:
             violations.append({
@@ -94,19 +98,17 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
                 "rule": res.rule,
                 "reason": res.reason or res.rule,
                 "type": "injection",
-                "content": line.strip()[:100],
+                "content": snippet,
             })
-        _, secrets = redact_secrets(line)
-        if secrets:
-            for s in secrets:
-                violations.append({
-                    "file": str(file_path),
-                    "line": i,
-                    "rule": s["rule"],
-                    "reason": "Exposed credential detected by DLP filter",
-                    "type": "secret_leak",
-                    "content": line.strip()[:100],
-                })
+        for s in secrets:
+            violations.append({
+                "file": str(file_path),
+                "line": i,
+                "rule": s["rule"],
+                "reason": "Exposed credential detected by DLP filter",
+                "type": "secret_leak",
+                "content": snippet,
+            })
     return violations
 
 
