@@ -294,7 +294,7 @@ jobs:
           version: '1.6.0'
           mode: 'both'
           format: 'sarif'
-          fail-on: 'high'
+          severity-threshold: 'medium'   # stricter than the default (high)
       - name: Upload SARIF
         if: ${{ !cancelled() && steps.zn.outputs.sarif-file != '' }}
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
@@ -307,8 +307,9 @@ jobs:
 | `version` | current stable release | Exact zn-gate version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
 | `mode` | `both` | `scan`, `audit` or `both`. |
 | `path` | `.` | File or directory to scan and audit. |
-| `fail-on-threat` | `true` | Fail the step on findings. For `scan`, any finding; for `audit`, findings at or above `fail-on`. Set `false` to report only. |
-| `fail-on` | empty | Audit only: lowest severity that fails the step (`low`, `medium`, `high`, `critical`, `none`). Empty means `high` when `fail-on-threat` is `true` and `none` when it is `false`. |
+| `fail-on-threat` | `true` | Fail the step on findings. For `scan`, any finding; for `audit`, findings at or above `severity-threshold`. Set `false` to report only. |
+| `severity-threshold` | `high` | Audit only: lowest severity that fails the step when `fail-on-threat` is `true`: `high` (high and critical), `medium` or `low`. The scan has no severities, so any scan finding fails. |
+| `fail-on` | empty | Audit only: lowest severity that fails the step (`low`, `medium`, `high`, `critical`, `none`), passed as is to `zn audit --fail-on`. When set, it overrides `fail-on-threat` and `severity-threshold` for the audit. |
 | `agents` | empty | Audit only: comma-separated agents to audit (`zn audit --agents`). Empty audits all supported agents. |
 | `format` | `github` | `github` (inline annotations), `text`, `json` or `sarif`. |
 | `sarif-file` | empty | With `format: sarif`, where to write the file. Empty writes `zn-gate.sarif` in a new directory under the runner temp directory. |
@@ -320,6 +321,8 @@ jobs:
 | `sarif-file` | Path of the SARIF file (`format: sarif` only). |
 | `scan-exit-code` | Exit code of the scan: 0 clean, 1 findings, 2 error. Empty if it did not run. |
 | `audit-exit-code` | Exit code of the audit: 0 clean, 1 findings at or above `fail-on`, 2 error. Empty if it did not run. |
+
+Which audit findings fail the step: `fail-on` if it is set; otherwise none when `fail-on-threat` is `false`; otherwise `severity-threshold`. For the scan, only `fail-on-threat` applies.
 
 With `mode: both` and `format: sarif`, the file holds one SARIF run per check (`zn-gate scan` and the audit's own run), each with its own category, so code scanning tracks their alerts separately. The step fails with the worse of the two results: an error beats findings.
 

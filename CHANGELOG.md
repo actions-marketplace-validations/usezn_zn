@@ -16,7 +16,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 
 ### Added
 - GitHub Action: `mode` input (`scan`, `audit`, `both`; default `both`). `audit` runs `zn audit` from the npm package on agent configs, hooks, MCP servers, plugins and skills; `both` runs the scan and the audit, and runs the scan only, with a warning, when `version` is older than 1.6.0. `mode: scan` keeps the previous behaviour.
-- GitHub Action: `format: sarif` writes a SARIF file with one run per check and exposes it as the `sarif-file` output, for `github/codeql-action/upload-sarif`. New inputs `fail-on` (audit severity threshold; defaults to `high`, or `none` when `fail-on-threat` is `false`), `agents`, `sarif-file` and `npm-integrity`; new outputs `scan-exit-code` and `audit-exit-code`.
+- GitHub Action: `format: sarif` writes a SARIF file with one run per check and exposes it as the `sarif-file` output, for `github/codeql-action/upload-sarif`. New inputs `severity-threshold` (`high`, `medium` or `low`; default `high`: the lowest audit severity that fails the step when `fail-on-threat` is `true`), `fail-on` (passed to `zn audit --fail-on`; overrides `fail-on-threat` and `severity-threshold` for the audit), `agents`, `sarif-file` and `npm-integrity`; new outputs `scan-exit-code` and `audit-exit-code`.
 - **Scrubber engine** (`lib/scrub/`), 100 % local, in three layers:
   - known values from the vault and from local `.env` files;
   - about 30 secret formats (cloud keys, tokens, private keys, connection-string passwords);

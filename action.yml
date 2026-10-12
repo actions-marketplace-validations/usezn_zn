@@ -1,5 +1,5 @@
 name: 'zn-gate AI Agent Security Linter'
-description: 'Prompt-injection and secret linter for AI agent prompts and tools, and an auditor for agent configs and plugins: .claude/, .mcp.json, .codex/, .cursor/, hooks, AGENTS.md, CLAUDE.md, skills.'
+description: 'Security linter for AI coding agents: finds prompt injection and leaked secrets in prompts, agent configs and MCP files.'
 author: 'zn <admin@usezn.com>'
 branding:
   icon: 'shield'
@@ -32,11 +32,15 @@ inputs:
     required: false
     default: '.'
   fail-on-threat:
-    description: 'Whether to fail the CI step if any threat is detected (true/false). For audit, true fails on high and critical findings unless `fail-on` is set.'
+    description: 'Whether to fail the CI step if any threat is detected (true/false). For audit, true fails on findings at or above `severity-threshold` (high by default); false reports only, unless `fail-on` is set.'
     required: false
     default: 'true'
+  severity-threshold:
+    description: 'Audit only: lowest severity that fails the step when fail-on-threat is true (high, medium or low). The scan has no severities: any scan finding fails.'
+    required: false
+    default: 'high'
   fail-on:
-    description: 'Audit only: lowest severity that fails the step (low, medium, high, critical, none). Empty means high when fail-on-threat is true and none when it is false.'
+    description: 'Audit only: lowest severity that fails the step (low, medium, high, critical, none). Overrides fail-on-threat and severity-threshold when set.'
     required: false
     default: ''
   agents:
@@ -74,6 +78,7 @@ runs:
         ZN_MODE: ${{ inputs.mode }}
         ZN_FORMAT: ${{ inputs.format }}
         ZN_FAIL_ON: ${{ inputs.fail-on }}
+        ZN_SEVERITY_THRESHOLD: ${{ inputs.severity-threshold }}
         ZN_AGENTS: ${{ inputs.agents }}
         ZN_SHA256: ${{ inputs.package-sha256 }}
         ZN_NPM_INTEGRITY: ${{ inputs.npm-integrity }}
@@ -90,6 +95,7 @@ runs:
         case "$ZN_MODE" in scan|audit|both) ;; *) fail "'mode' must be scan, audit or both" ;; esac
         case "$ZN_FORMAT" in github|text|json|sarif) ;; *) fail "'format' must be github, text, json or sarif" ;; esac
         case "$ZN_FAIL_ON" in ''|low|medium|high|critical|none) ;; *) fail "'fail-on' must be low, medium, high, critical or none" ;; esac
+        case "$ZN_SEVERITY_THRESHOLD" in high|medium|low) ;; *) fail "'severity-threshold' must be high, medium or low" ;; esac
         [[ "$ZN_AGENTS" =~ ^[a-z0-9,-]*$ ]] || fail "'agents' must be a comma-separated list of agent names"
         [ -z "$ZN_SHA256" ] || [[ "$ZN_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || fail "'package-sha256' must be a 64-character hex SHA-256"
         [ -z "$ZN_NPM_INTEGRITY" ] || [[ "$ZN_NPM_INTEGRITY" =~ ^sha512-[A-Za-z0-9+/]{86}==$ ]] || fail "'npm-integrity' must be a sha512-... integrity string"
@@ -209,6 +215,7 @@ runs:
         ZN_FORMAT: ${{ inputs.format }}
         ZN_FAIL_ON_THREAT: ${{ inputs.fail-on-threat }}
         ZN_FAIL_ON: ${{ inputs.fail-on }}
+        ZN_SEVERITY_THRESHOLD: ${{ inputs.severity-threshold }}
         ZN_AGENTS: ${{ inputs.agents }}
         ZN_SARIF_FILE: ${{ inputs.sarif-file }}
         ZN_WORK: ${{ runner.temp }}/zn-gate-run
@@ -314,9 +321,10 @@ runs:
 
         if [ "$ZN_RUN_AUDIT" = true ]; then
           echo "::group::zn-gate audit"
+          # Precedence: fail-on, then fail-on-threat false (none), then severity-threshold.
           fail_on="$ZN_FAIL_ON"
           if [ -z "$fail_on" ]; then
-            if [ "$ZN_FAIL_ON_THREAT" = "false" ]; then fail_on=none; else fail_on=high; fi
+            if [ "$ZN_FAIL_ON_THREAT" = "false" ]; then fail_on=none; else fail_on="$ZN_SEVERITY_THRESHOLD"; fi
           fi
           # zn audit takes the path first; keep a path that starts with "-" from
           # being read as an option.

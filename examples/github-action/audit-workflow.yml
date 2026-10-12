@@ -33,7 +33,7 @@ jobs:
           version: '1.6.0'
           mode: 'both'
           format: 'sarif'
-          fail-on: 'high'
+          severity-threshold: 'medium'   # stricter than the default (high)
       - name: Upload SARIF
         if: ${{ !cancelled() && steps.zn.outputs.sarif-file != '' }}
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
