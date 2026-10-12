@@ -194,6 +194,24 @@ class TestValidatedSecretPatterns(unittest.TestCase):
         project = "sk-proj-" + "a_b-" * 10
         self.assertIn("secret:openai_key", [d["rule"] for d in R.redact_secrets(project)[1]])
 
+    def test_helicone_alibaba_and_marked_openai_keys(self):
+        group = "a1b2c3d"
+        for key in ("sk-helicone-" + "-".join([group] * 4), "sk-helicone-eu-rl-" + "-".join([group] * 4),
+                    "sk-" + "-".join([group] * 4), "sk-cp-gov-" + "-".join([group] * 4), "sk-sp-" + "0f" * 16,
+                    "sk-build-bot-" + "Ab1_" * 15 + "T3BlbkFJ" + "Zx9-" * 15 + "Z"):
+            with self.subTest(key=key[:12]):
+                redacted, found = R.redact_secrets("Authorization: Bearer " + key + " end")
+                self.assertEqual(redacted, "Authorization: Bearer [REDACTED_OPENAI_KEY] end")
+                self.assertIn("secret:openai_key", [d["rule"] for d in found])
+
+    def test_new_key_formats_skip_slugs_and_prose(self):
+        for text in ("/blog/sk-cp-migration-guide-for-older-releases-2026", "sk-sp-summer-sale-landing-page-2026-final",
+                     "sk-example-content-weather-another", "sk-abcdefg-hijklmn-opqrstu-vwxyzab",
+                     "sk-a1b2c3d-a1b2c3d-a1b2c3d-a1b2c3d-next-page", "sk-eu-regional-pricing-table-update-2026",
+                     "/blog/ask-helicone-how-to-route-requests-2026"):
+            with self.subTest(text=text[:20]):
+                self.assertEqual(R.redact_secrets(text)[1], [])
+
     def test_private_key_with_repeated_headers(self):
         body = "MII" + "Cd" * 30
         text = "-----BEGIN PRIVATE KEY-----\n-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n-----END RSA PRIVATE KEY-----"
