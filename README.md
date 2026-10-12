@@ -36,12 +36,12 @@
 
 **What it does:** keeps secret values out of what your agent sends to its model, checks what your agent reads and calls for prompt injection, and audits prompts, skills and configs. Everything runs on your machine, is MIT-licensed and needs no account. The Python package has no runtime dependencies; the npm package's only one is `age-encryption` (with its `@noble`/`@scure` dependencies) for the secret vault, bundled in the package.
 
-## Try the beta
+## Install
 
-The 1.5.0 beta adds the secrets scrubber and broker for coding agents: real values stay in an encrypted vault on your machine, and your agent works with markers such as `__ZN_STRIPE_KEY__`.
+**Keep secrets out of your agent's context.** The secrets scrubber and broker for coding agents keeps real values in an encrypted vault on your machine, and your agent works with markers such as `__ZN_STRIPE_KEY__`.
 
 ```bash
-npm install -g zn-gate@beta        # Node.js 18+
+npm install -g zn-gate             # Node.js 18+
 zn unlock                          # create or unlock the local vault
 zn env shadow .env                 # move .env values into the vault, leave markers
 zn hooks install claude-code       # or: codex, cursor, opencode
@@ -51,16 +51,7 @@ Cursor support is partial: zn-gate can only rewrite the output of MCP tools ther
 
 Five-minute walkthrough: [docs/secrets.md](docs/secrets.md). What each agent supports: [docs/compat.md](docs/compat.md). Limits: [docs/threat-model.md](docs/threat-model.md).
 
-Python (rules engine and redaction updates of the beta):
-```bash
-pip install --pre zn-gate
-```
-
-The stable release (1.4.1) stays the default for `npm install zn-gate` and `pip install zn-gate`.
-
-## Install (stable)
-
-Pick your agent. Each command adds zn-gate as an MCP server (Node.js 18+).
+**Add zn-gate as an MCP server.** Pick your agent. Each command adds zn-gate as an MCP server (Node.js 18+).
 
 **Claude Code**
 ```bash
@@ -90,7 +81,7 @@ npx -y zn-gate init --revert    # undo
 ```
 It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`), Codex CLI (`~/.codex/config.toml`) and OpenCode (`~/.config/opencode/opencode.json`). [Full list and rules](packages/zn-gate/README.md#wrap-the-mcp-servers-you-already-use).
 
-**Python**
+**Python** (rules engine and secret redaction; the vault, hooks and `zn run` are in the npm package)
 ```bash
 pip install zn-gate
 ```
@@ -141,8 +132,8 @@ sequenceDiagram
 ```
 
 ### Scrubber: secrets stay out of the model's context
-- **Stable (1.4.1):** redacts AWS keys, OpenAI and Anthropic keys, GitHub tokens, JWTs, private keys and database URL passwords in everything that passes through zn-gate: tool output checked with `check_tool_result`, tool arguments checked with `check_tool_call`, and output of MCP servers wrapped by `zn-gate shield` / `init`. Python: `sanitize_tool_result`, `@guard(mask_secrets=True)` and the framework integrations.
-- **Beta (1.5.0):** hooks for Claude Code, Codex CLI and OpenCode scrub the output of the agents' built-in tools and block pasted secrets (in Cursor only MCP tool output is scrubbed); a local encrypted vault with stable markers (`__ZN_AWS_KEY_1__`); `zn run` fills values only into commands you approved; personal data (cards, IBAN, national IDs, e-mail, phone) is detected too. What each agent allows differs: see [docs/compat.md](docs/compat.md).
+- **Today, through zn-gate:** redacts AWS keys, OpenAI and Anthropic keys, GitHub tokens, JWTs, private keys and database URL passwords in everything that passes through zn-gate: tool output checked with `check_tool_result`, tool arguments checked with `check_tool_call`, and output of MCP servers wrapped by `zn-gate shield` / `init`. Python: `sanitize_tool_result`, `@guard(mask_secrets=True)` and the framework integrations.
+- **Today, agent hooks and vault (npm package):** hooks for Claude Code, Codex CLI and OpenCode scrub the output of the agents' built-in tools and block pasted secrets (in Cursor only MCP tool output is scrubbed); a local encrypted vault with stable markers (`__ZN_AWS_KEY_1__`); `zn run` fills values only into commands you approved; personal data (cards, IBAN, national IDs, e-mail, phone) is detected too. What each agent allows differs: see [docs/compat.md](docs/compat.md).
 
 ### Galvanize: prompt-injection detection
 - **Today, local:** a deterministic rules engine (signatures plus normalization against homoglyphs, zero-width characters, BiDi overrides, comment splicing and Base64) checks prompts, tool arguments, tool output and MCP tool descriptions.
@@ -199,7 +190,8 @@ We only publish numbers we can reproduce, with the method next to them.
 
 - **Latency of the local engine:** one table by input size, with hardware, date and the script to reproduce it (`bench/bench_by_size.js`), in the [npm package README](packages/zn-gate/README.md#performance-local-rules-engine-no-network). Short summary from that run: about 0.01 ms for a 200 B prompt, 0.3 ms for a 4 KB tool output with redaction, about 4 ms for 64 KB with redaction (p50).
 - **Self-test:** 51 curated vectors pass. That is a smoke test, not a detection or false-positive rate.
-- **Known limitation:** on whole source files, the rules can flag ordinary code comments. The 1.5.0 beta reduces these on code and documentation, at the cost of letting some loosely worded override attempts through the local rules. To check it on your own source files, run `zn-gate scan --code <path>`; for the MCP servers you wrap, `--shadow` logs detections without blocking.
+- **Known limitation:** on whole source files, the rules can flag ordinary code comments. Version 1.5.0 reduces these on code and documentation, at the cost of letting some loosely worded override attempts through the local rules. To check it on your own source files, run `zn-gate scan --code <path>`; for the MCP servers you wrap, `--shadow` logs detections without blocking.
+- **Known limitation:** detection of credentials under prefixed variable names (e.g. `OPENAI_API_KEY=`) is partial in this release.
 - **Detection rates:** on a private held-out set of 3,309 examples, Galvanize 2 has 83.4% recall at a 0.81% false positive rate (serving threshold 0.662); these numbers are for the cloud classifier, not the local rules engine. Method, per-language results, known weak spots and a reproducible benchmark are in the [model card](https://huggingface.co/usezn/Galvanize-2) and the [announcement](https://usezn.com/blog/introducing-galvanize-2/). It is one layer of defense, not a guarantee.
 
 ## Configuration
@@ -245,7 +237,7 @@ jobs:
         # v1.4.1 does not have the package-sha256 input (v1.5.0 and later).
         uses: usezn/zn@d9da1b1a87e12c4da468cb9beec425dc3f972c5f # v1.4.1
         with:
-          version: '1.4.1'
+          version: '1.5.0'
           path: '.'
           fail-on-threat: 'true'
           format: 'github'
@@ -281,7 +273,7 @@ The action needs only `contents: read`. It installs the wheel with `--only-binar
 
 **Will it block legitimate content?** Sometimes. Use `init --shadow` or `shield --shadow` to log detections without blocking while you evaluate it.
 
-**Which agents are supported?** Any MCP client. `init` can rewrite configs for the agents listed under [Install (stable)](#install-stable).
+**Which agents are supported?** Any MCP client. `init` can rewrite configs for the agents listed under [Install](#install).
 
 **How do I remove it?** `npx -y zn-gate init --revert` restores your configs from the backup. For a standalone server, remove the `zn-gate` entry from your agent config.
 

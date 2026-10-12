@@ -161,7 +161,7 @@ zn-gate status                  # engine and what leaves the machine
 We only publish numbers we can reproduce, with the method next to them.
 
 - **Latency:** the measured table by input size is in the [npm package README](https://github.com/usezn/zn/blob/main/packages/zn-gate/README.md#performance-local-rules-engine-no-network) (Node engine, with hardware and script). For the Python engine, run `python3 bench/bench_python.py` from the [repository](https://github.com/usezn/zn).
-- **Accuracy:** the engine is a deterministic signature and normalization layer, not a semantic classifier. On whole source files it currently produces false positives on ordinary code comments (not fixed in 1.4.1). These rules have no published detection rate; held-out results for the optional cloud classifier, Galvanize 2, are on its [model card](https://huggingface.co/usezn/Galvanize-2).
+- **Accuracy:** the engine is a deterministic signature and normalization layer, not a semantic classifier. On whole source files it can flag ordinary code comments; 1.5.0 reduces these on code and documentation, at the cost of letting some loosely worded override attempts through the local rules. These rules have no published detection rate; held-out results for the optional cloud classifier, Galvanize 2, are on its [model card](https://huggingface.co/usezn/Galvanize-2).
 
 ## Configuration
 
