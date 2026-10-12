@@ -162,7 +162,7 @@ Reproduce with `node bench/bench_by_size.js` from the [repository](https://githu
 The local engine is a deterministic signature and normalization layer. It is fast and explainable, but it is not a semantic classifier.
 
 - **Self-test:** 51 curated vectors pass. That is a smoke test, not a detection or false-positive rate.
-- **Known limitation:** on whole source files, as seen by `check_tool_result`, the current normalizer produces false positives on ordinary code comments. Not fixed in 1.4.1. Until it is, use `check_tool_result` for web and third-party content rather than your own repository files.
+- **Known limitation:** on whole source files, as seen by `check_tool_result`, the rules can flag ordinary code comments. 1.5.0 reduces these on code and documentation, at the cost of letting some loosely worded override attempts through the local rules. Prefer `check_tool_result` for web and third-party content rather than your own repository files.
 - **Detection rates:** on a private held-out set of 3,309 examples, Galvanize 2 has 83.4% recall at a 0.81% false positive rate (serving threshold 0.662); these numbers are for the cloud classifier, not the local rules engine. Method, per-language results, known weak spots and a reproducible benchmark are in the [model card](https://huggingface.co/usezn/Galvanize-2) and the [announcement](https://usezn.com/blog/introducing-galvanize-2/). It is one layer of defense, not a guarantee.
 
 ---

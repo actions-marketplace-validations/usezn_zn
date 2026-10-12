@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.0] - 2026-10-12
 
-Beta of the secrets scrubber and broker: secret values stay out of what your
-coding agent sends to its model. Walkthrough: [docs/secrets.md](docs/secrets.md).
+Secrets scrubber and broker: secret values stay out of what your coding agent
+sends to its model. Walkthrough: [docs/secrets.md](docs/secrets.md).
 Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 [docs/compat.md](docs/compat.md).
 
@@ -77,7 +77,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 ### Known limitations
 - Detection of credentials under prefixed variable names (e.g. OPENAI_API_KEY=) is partial in this release.
 - Cursor cannot rewrite the output of shell commands or file reads. Codex can only replace output through "block", and keeps the original in its own session log.
-- Each hook is a short Node process: measured about 78 ms p50 per tool call on a Windows desktop and 124 ms on a small server (`bench/HOOK_LATENCY.md`). The floor is Node's start-up; scanning inside the vault daemon would remove most of it and is planned after the beta, with its own review.
+- Each hook is a short Node process: measured about 78 ms p50 per tool call on a Windows desktop and 124 ms on a small server (`bench/HOOK_LATENCY.md`). The floor is Node's start-up; scanning inside the vault daemon would remove most of it and is planned for a later release, with its own review.
 - With the vault unlocked, any process of your OS user can ask the vault daemon for a stored secret by name. Approvals, fingerprints and `allowIn` protect the `zn run` and MCP paths, not that one (see `docs/threat-model.md`).
 - Scripts (`#!`) approved for `zn run`, and every program on macOS and Windows, are started by path right after the final check: a process of your user that can write the program's directory could still swap it in that short window. Prefer approving native programs in directories your user cannot write.
 - Not covered yet: Hermes, Gemini CLI, Copilot CLI and the Cursor CLI. An egress proxy for `zn run` is not included.
