@@ -217,14 +217,53 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 ### GitHub Action
 
+The action installs the published `zn-gate` package from PyPI at an exact version and runs `zn-gate scan` on the path you give it. The scan runs entirely on the runner and sends nothing anywhere.
+
 ```yaml
-- uses: usezn/zn@main
-  with:
-    version: '1.4.1'
-    path: './prompts'
-    fail-on-threat: 'true'
-    format: 'github'
+name: AI agent security scan
+
+on:
+  pull_request:
+    paths:
+      - 'prompts/**'
+      - '**/*.prompt'
+      - '**/AGENTS.md'
+      - '**/SKILL.md'
+
+permissions:
+  contents: read
+
+jobs:
+  zn-gate-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Scan AI agent prompts and tools
+        # Pin the action to a full commit SHA; the comment names the release.
+        # v1.4.1 does not have the package-sha256 input (v1.5.0 and later).
+        uses: usezn/zn@d9da1b1a87e12c4da468cb9beec425dc3f972c5f # v1.4.1
+        with:
+          version: '1.4.1'
+          path: '.'
+          fail-on-threat: 'true'
+          format: 'github'
 ```
+
+| Input | Default | Description |
+|---|---|---|
+| `version` | current stable release | Exact `zn-gate` version to install from PyPI. Ranges and `latest` are refused. |
+| `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the wheel for `version`, as listed on PyPI. When set, the install fails if the downloaded file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
+| `path` | `.` | File or directory to scan. |
+| `fail-on-threat` | `true` | Fail the step when a threat is found. Set `false` to report only. |
+| `format` | `github` | `github` (inline annotations), `text` or `json`. |
+
+| Output | Description |
+|---|---|
+| `scan-exit-code` | Exit code of the scan: 0 clean (or `fail-on-threat: 'false'`), 1 threats found, 2 error. Empty if the scan did not run. |
+
+The action needs only `contents: read`. It installs the wheel with `--only-binary=:all: --no-deps` (zn-gate has no dependencies) into a private virtualenv, so no build step runs and your job's own Python packages are not touched. pip still reads the runner's own pip settings (`PIP_*` environment variables and `pip.conf`), so a mirror or proxy you configure there is used; set `package-sha256` so that the wheel is checked whatever index it comes from. The action runs on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow.
 
 ### Repository layout
 
