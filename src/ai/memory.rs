@@ -3,30 +3,44 @@
 //! Each (model, dimension) pair gets its own database file under `base_path`,
 //! and each agent its own rows. Search is an exact scan that returns the
 //! squared Euclidean (L2) distance, so existing anomaly thresholds keep their
-//! meaning. Each agent keeps at most `max_rows` rows (the most recent ones),
-//! which bounds both the file size and the cost of a scan.
+//! meaning.
+//!
+//! Size is bounded twice: each agent keeps at most `max_rows` rows (its most
+//! recent ones), and the whole file keeps at most `max_total_rows` rows, so a
+//! client that keeps changing its agent id cannot grow the file without limit.
 //!
 //! One connection per `VectorMemory` is opened on first use, with the schema
 //! created once; WAL mode and a busy timeout let several instances share the
-//! same file.
+//! same file, and operations that still find the database busy are retried.
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, ErrorCode, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 /// Rows kept per agent unless `with_max_rows` says otherwise.
 pub const DEFAULT_MAX_ROWS_PER_AGENT: usize = 10_000;
 
+/// Rows kept in the whole file unless `with_max_total_rows` says otherwise.
+pub const DEFAULT_MAX_TOTAL_ROWS: usize = 100_000;
+
 /// Version of the on-disk schema, stored in `PRAGMA user_version`.
 const SCHEMA_VERSION: i64 = 1;
+
+/// Attempts for an operation that finds the database busy or locked.
+const BUSY_ATTEMPTS: u32 = 5;
 
 pub struct VectorMemory {
     base_path: String,
     dim: i32,
     model_id: String,
     max_rows: usize,
+    max_total_rows: usize,
     conn: Arc<Mutex<Option<Connection>>>,
+    /// Set once the first failure has been logged as a warning.
+    warned: AtomicBool,
 }
 
 impl VectorMemory {
@@ -36,7 +50,9 @@ impl VectorMemory {
             dim,
             model_id: model_id.to_string(),
             max_rows: DEFAULT_MAX_ROWS_PER_AGENT,
+            max_total_rows: DEFAULT_MAX_TOTAL_ROWS,
             conn: Arc::new(Mutex::new(None)),
+            warned: AtomicBool::new(false),
         }
     }
 
@@ -44,6 +60,13 @@ impl VectorMemory {
     /// deleted as new ones are stored.
     pub fn with_max_rows(mut self, max_rows: usize) -> Self {
         self.max_rows = max_rows.max(1);
+        self
+    }
+
+    /// Keep at most `max_total_rows` rows in the file across all agents (at
+    /// least 1); the oldest rows are deleted first.
+    pub fn with_max_total_rows(mut self, max_total_rows: usize) -> Self {
+        self.max_total_rows = max_total_rows.max(1);
         self
     }
 
@@ -74,10 +97,16 @@ impl VectorMemory {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let conn = Connection::open(path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let mut conn = Connection::open(path)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        // Switching to WAL needs an exclusive lock: only ask when the file is
+        // not in WAL mode yet.
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0))?;
+        }
+        let tx = Transaction::new(&mut conn, TransactionBehavior::Immediate)?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > SCHEMA_VERSION {
             return Err(anyhow!(
                 "{} has schema version {}, this build supports up to {}",
@@ -89,42 +118,95 @@ impl VectorMemory {
         if version < SCHEMA_VERSION {
             // Version 0 is a new file or one written before versioning; the
             // table layout is the same, so creating it if missing is enough.
-            conn.execute_batch(
-                "BEGIN IMMEDIATE;
-                 CREATE TABLE IF NOT EXISTS memory (
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memory (
                      id INTEGER PRIMARY KEY,
                      agent_id TEXT NOT NULL,
                      text TEXT NOT NULL,
                      vector BLOB NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS memory_agent ON memory(agent_id);
-                 PRAGMA user_version = 1;
-                 COMMIT;",
+                 PRAGMA user_version = 1;",
             )?;
         }
+        tx.commit()?;
         Ok(conn)
     }
 
-    /// Runs `f` on this instance's connection, opening it on first use. With
-    /// `create` false and no database file yet, returns `Ok(None)` without
-    /// creating one.
+    /// True for SQLite "database is busy / locked" errors, which are worth a retry.
+    fn is_busy(err: &anyhow::Error) -> bool {
+        matches!(
+            err.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == ErrorCode::DatabaseBusy || e.code == ErrorCode::DatabaseLocked
+        )
+    }
+
+    /// Locks the connection slot. A panic in an earlier holder poisons the
+    /// mutex: the connection is dropped (it is reopened on next use) and the
+    /// poison is cleared, instead of disabling the memory until restart.
+    fn lock_slot(slot: &Mutex<Option<Connection>>) -> MutexGuard<'_, Option<Connection>> {
+        match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                *guard = None;
+                slot.clear_poison();
+                guard
+            }
+        }
+    }
+
+    /// Runs `f` on this instance's connection, opening it on first use, and
+    /// retries while the database is busy. With `create` false and no
+    /// database file yet, returns `Ok(None)` without creating one.
     fn with_conn<T>(
         slot: &Mutex<Option<Connection>>,
         path: &Path,
         create: bool,
-        f: impl FnOnce(&Connection) -> Result<T>,
+        mut f: impl FnMut(&mut Connection) -> Result<T>,
     ) -> Result<Option<T>> {
-        let mut guard = slot
-            .lock()
-            .map_err(|_| anyhow!("vector memory connection lock poisoned"))?;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match Self::try_with_conn(slot, path, create, &mut f) {
+                Err(e) if attempt < BUSY_ATTEMPTS && Self::is_busy(&e) => {
+                    std::thread::sleep(Duration::from_millis(50 * u64::from(attempt)));
+                }
+                other => return other,
+            }
+        }
+    }
+
+    fn try_with_conn<T>(
+        slot: &Mutex<Option<Connection>>,
+        path: &Path,
+        create: bool,
+        f: &mut impl FnMut(&mut Connection) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let mut guard = Self::lock_slot(slot);
         if guard.is_none() {
             if !create && !path.exists() {
                 return Ok(None);
             }
             *guard = Some(Self::open(path)?);
         }
-        let conn = guard.as_ref().expect("connection opened above");
+        let conn = guard.as_mut().expect("connection opened above");
         f(conn).map(Some)
+    }
+
+    /// Logs the first failure as a warning and later ones at debug level, so
+    /// a broken memory file is visible without flooding the log.
+    fn report(warned: &AtomicBool, op: &str, err: &anyhow::Error) {
+        if !warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "Vector memory {} failed (later failures are logged at debug level): {:#}",
+                op,
+                err
+            );
+        } else {
+            tracing::debug!("Vector memory {} failed: {:#}", op, err);
+        }
     }
 
     fn check_vector(&self, vector: &[f32]) -> Result<()> {
@@ -142,33 +224,59 @@ impl VectorMemory {
     }
 
     /// Store a vector embedding for a specific agent, keeping only the agent's
-    /// most recent `max_rows` rows.
+    /// most recent `max_rows` rows and the file's most recent `max_total_rows`.
     pub async fn store(&self, agent_id: &str, text: &str, vector: &[f32]) -> Result<()> {
         self.check_vector(vector)?;
         let path = self.db_path();
         let slot = Arc::clone(&self.conn);
         let max_rows = self.max_rows as i64;
+        let max_total = self.max_total_rows as i64;
         let agent = agent_id.to_string();
         let text = text.to_string();
         let blob: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
-        tokio::task::spawn_blocking(move || -> Result<()> {
+        let result = tokio::task::spawn_blocking(move || -> Result<()> {
             Self::with_conn(&slot, &path, true, |conn| {
-                conn.execute(
+                // One transaction: a single commit, and the insert and the
+                // pruning are applied together.
+                let tx = Transaction::new(conn, TransactionBehavior::Immediate)?;
+                tx.execute(
                     "INSERT INTO memory (agent_id, text, vector) VALUES (?1, ?2, ?3)",
                     params![agent, text, blob],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM memory WHERE agent_id = ?1 AND id <= (
                          SELECT id FROM memory WHERE agent_id = ?1
                          ORDER BY id DESC LIMIT 1 OFFSET ?2
                      )",
                     params![agent, max_rows],
                 )?;
+                // max(id) - min(id) + 1 is an upper bound of the row count read
+                // from the primary key; only then is the exact pruning needed.
+                let span: i64 = tx.query_row(
+                    "SELECT COALESCE(MAX(id) - MIN(id) + 1, 0) FROM memory",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if span > max_total {
+                    tx.execute(
+                        "DELETE FROM memory WHERE id <= (
+                             SELECT id FROM memory ORDER BY id DESC LIMIT 1 OFFSET ?1
+                         )",
+                        params![max_total],
+                    )?;
+                }
+                tx.commit()?;
                 Ok(())
             })?;
             Ok(())
         })
-        .await?
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|r| r);
+        if let Err(e) = &result {
+            Self::report(&self.warned, "store", e);
+        }
+        result
     }
 
     /// Nearest stored texts for an agent, closest first, as (text, squared L2 distance).
@@ -186,7 +294,7 @@ impl VectorMemory {
         let slot = Arc::clone(&self.conn);
         let agent = agent_id.to_string();
         let query = vector.to_vec();
-        tokio::task::spawn_blocking(move || -> Result<Vec<(String, f32)>> {
+        let result = tokio::task::spawn_blocking(move || -> Result<Vec<(String, f32)>> {
             let found = Self::with_conn(&slot, &path, false, |conn| {
                 let mut stmt =
                     conn.prepare_cached("SELECT text, vector FROM memory WHERE agent_id = ?1")?;
@@ -223,7 +331,13 @@ impl VectorMemory {
             })?;
             Ok(found.unwrap_or_default())
         })
-        .await?
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|r| r);
+        if let Err(e) = &result {
+            Self::report(&self.warned, "search", e);
+        }
+        result
     }
 }
 
@@ -247,6 +361,18 @@ mod tests {
         let d = std::env::temp_dir().join(format!("zn-mem-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    async fn texts(m: &VectorMemory, agent: &str, dim: usize) -> Vec<String> {
+        let mut t: Vec<String> = m
+            .search(agent, &vec![0.0; dim], 1_000)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        t.sort();
+        t
     }
 
     #[tokio::test]
@@ -316,17 +442,32 @@ mod tests {
             m.store("a", &format!("a{i}"), &[i as f32]).await.unwrap();
         }
         m.store("b", "b0", &[0.0]).await.unwrap();
-        let mut texts: Vec<String> = m
-            .search("a", &[0.0], 10)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|(t, _)| t)
-            .collect();
-        texts.sort();
-        assert_eq!(texts, vec!["a3", "a4", "a5"]);
+        assert_eq!(texts(&m, "a", 1).await, vec!["a3", "a4", "a5"]);
         // Another agent's rows are not affected.
-        assert_eq!(m.search("b", &[0.0], 10).await.unwrap().len(), 1);
+        assert_eq!(texts(&m, "b", 1).await, vec!["b0"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_whole_file_keeps_only_its_most_recent_rows() {
+        let dir = temp_dir("total");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 1, "m").with_max_total_rows(4);
+        // Rotating agent ids cannot grow the file past the total limit.
+        for i in 0..10 {
+            m.store(&format!("agent{i}"), &format!("t{i}"), &[0.0])
+                .await
+                .unwrap();
+        }
+        let raw = Connection::open(m.db_path()).unwrap();
+        let mut all: Vec<String> = raw
+            .prepare("SELECT text FROM memory")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        all.sort();
+        assert_eq!(all, vec!["t6", "t7", "t8", "t9"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -348,11 +489,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn unversioned_files_are_upgraded_in_place() {
+        let dir = temp_dir("migrate");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 1, "m");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file as the first SQLite release wrote it: same table, no version.
+        let raw = Connection::open(m.db_path()).unwrap();
+        raw.execute_batch(
+            "CREATE TABLE memory (
+                 id INTEGER PRIMARY KEY,
+                 agent_id TEXT NOT NULL,
+                 text TEXT NOT NULL,
+                 vector BLOB NOT NULL
+             );
+             CREATE INDEX memory_agent ON memory(agent_id);",
+        )
+        .unwrap();
+        raw.execute(
+            "INSERT INTO memory (agent_id, text, vector) VALUES ('a', 'old', ?1)",
+            params![2.0f32.to_le_bytes().to_vec()],
+        )
+        .unwrap();
+        let v: i64 = raw
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 0);
+
+        assert_eq!(
+            m.search("a", &[0.0], 5).await.unwrap(),
+            vec![("old".to_string(), 4.0)]
+        );
+        let v: i64 = raw
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_poisoned_lock_is_recovered() {
+        let slot = Arc::new(Mutex::new(Some(Connection::open_in_memory().unwrap())));
+        let s = Arc::clone(&slot);
+        let _ = std::thread::spawn(move || {
+            let _guard = s.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(slot.is_poisoned());
+        let guard = VectorMemory::lock_slot(&slot);
+        assert!(
+            guard.is_none(),
+            "the connection is dropped and reopened later"
+        );
+        drop(guard);
+        assert!(!slot.is_poisoned());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_stores_and_searches_share_the_file() {
         let dir = temp_dir("concurrent");
         let base = dir.to_str().unwrap().to_string();
-        // Two instances on the same file, as the proxy and the API server use.
+        // Two instances on the same new file, as the proxy and the API server use.
         let a = Arc::new(VectorMemory::new(&base, 2, "m"));
         let b = Arc::new(VectorMemory::new(&base, 2, "m"));
         let mut tasks = Vec::new();
@@ -373,13 +571,36 @@ mod tests {
         }
         let mut total = 0;
         for agent in 0..4 {
-            total += a
-                .search(&format!("agent{agent}"), &[0.0, 0.0], 100)
-                .await
-                .unwrap()
-                .len();
+            total += texts(&a, &format!("agent{agent}"), 2).await.len();
         }
         assert_eq!(total, 64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_stores_respect_the_per_agent_limit() {
+        let dir = temp_dir("concurrent-limit");
+        let base = dir.to_str().unwrap().to_string();
+        let a = Arc::new(VectorMemory::new(&base, 1, "m").with_max_rows(5));
+        let b = Arc::new(VectorMemory::new(&base, 1, "m").with_max_rows(5));
+        let mut tasks = Vec::new();
+        for i in 0..64 {
+            let m = if i % 2 == 0 {
+                Arc::clone(&a)
+            } else {
+                Arc::clone(&b)
+            };
+            tasks.push(tokio::spawn(async move {
+                m.store(&format!("agent{}", i % 4), &format!("t{i}"), &[i as f32])
+                    .await
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap().unwrap();
+        }
+        for agent in 0..4 {
+            assert_eq!(texts(&a, &format!("agent{agent}"), 1).await.len(), 5);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
