@@ -237,10 +237,12 @@ const { AhoCorasick, isSensitiveName, looksNonSecret } = require('./exact');
 
 /* Names that contain a sensitive word but do not hold a secret value:
  * public keys, references and metadata (*_ARN, *_HEADER, *_VERSION...),
- * fingerprints and hashes (signing_key_fingerprint, token_hash,
- * password_sha256), timestamps (*_AT), and storage or cache keys (cache_key,
- * idempotency_key, s3_key, objectKey, partition and sort keys). */
-const STRUCT_NAME_SKIP_EXTRA = /(?:^|_)(?:FINGERPRINT|FINGERPRINTS|HASH|HASHED|SHA1|SHA256|SHA384|SHA512|MD5|DIGEST|CHECKSUM)(?:_|$)|_AT$|(?:^|_)(?:CACHE|IDEMPOTENCY|S3|OBJECT|PARTITION|SORT|ROUTING|DEDUP|DEDUPLICATION)_KEY$/;
+ * names ending in a fingerprint or hash word (signing_key_fingerprint,
+ * token_hash, password_sha256), timestamps (*_AT), and storage or cache keys
+ * (cache_key, idempotency_key, s3_key, objectKey, partition and sort keys).
+ * A hash word elsewhere in the name does not count: HASH_KEY, hashKey and
+ * HMAC_SHA256_SECRET hold secrets. */
+const STRUCT_NAME_SKIP_EXTRA = /(?:^|_)(?:FINGERPRINT|FINGERPRINTS|HASH|HASHED|SHA1|SHA256|SHA384|SHA512|MD5|DIGEST|CHECKSUM)$|_AT$|(?:^|_)(?:CACHE|IDEMPOTENCY|S3|OBJECT|PARTITION|SORT|ROUTING|DEDUP|DEDUPLICATION)_KEY$/;
 /* GPG / PGP key ids and fingerprints (16 or 40 hex digits), as in
  * `ENV GPG_KEY <fingerprint>` of official Docker images. */
 const GPG_NAME = /(?:^|_)(?:GPG|PGP)_KEY(?:_ID)?$/;

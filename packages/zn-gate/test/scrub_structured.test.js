@@ -189,6 +189,20 @@ test('fingerprints, hashes, timestamps and storage keys are not secrets', () => 
   assert.strictEqual(P.findPatterns('api_key: ' + h40 + '\n', {}).length, 1);
 });
 
+test('a hash word that is not the end of the name does not skip it', () => {
+  const h40 = hex(40);
+  for (const doc of [
+    'hash_key: ' + h40 + '\n',
+    'COOKIE_HASH_KEY: ' + h40 + '\n',
+    'session:\n  hashKey: ' + h40 + '\n',
+    'HMAC_SHA256_KEY: ' + h40 + '\n',
+    'HMAC_SHA256_SECRET: ' + h40 + '\n',
+    'DIGEST_AUTH_PASSWORD: ' + h40 + '\n',
+  ]) {
+    assert.strictEqual(P.findPatterns(doc, {}).length, 1, 'missed: ' + doc.slice(0, 40));
+  }
+});
+
 test('values must be printable ASCII', () => {
   // Localized text with Latin letters and digits mixed in, as in UI string
   // catalogs, has the character mix and entropy of a secret but is not ASCII.
