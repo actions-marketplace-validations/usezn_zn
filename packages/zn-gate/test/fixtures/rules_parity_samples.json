@@ -105,6 +105,10 @@
     { "prefix": "key=\"sk-lf-", "repeat": "c3d4-", "times": 8, "suffix": "\"" },
     { "prefix": "sk-", "repeat": "Ab3x", "times": 7 },
     { "prefix": "sk-admin-", "repeat": "Zy9", "times": 10 },
+    { "prefix": "OPENAI_KEY=sk-", "repeat": "Qw3e", "times": 12, "suffix": "_backup" },
+    { "prefix": "sk-", "repeat": "Qw3e", "times": 12, "suffix": "-old" },
+    { "prefix": "sk-proj-", "repeat": "Qw3e", "times": 12, "suffix": "_backup" },
+    { "prefix": "MY_AWS_SECRET=", "repeat": "u", "times": 40 },
     { "prefix": "-----BEGIN PRIVATE KEY-----\nMIIE", "repeat": "Ab", "times": 30, "suffix": "\n-----END PRIVATE KEY-----" },
     { "prefix": "-----BEGIN PRIVATE KEY-----\n-----BEGIN RSA PRIVATE KEY-----\nMII", "repeat": "Cd", "times": 30, "suffix": "\n-----END RSA PRIVATE KEY-----" }
   ]
