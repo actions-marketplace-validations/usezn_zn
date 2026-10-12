@@ -84,7 +84,8 @@ test('shQuote and powershellQuote: exact strings', () => {
   // A quote is written as '"'"' (not '\''): PowerShell keeps it inside a string too.
   assert.equal(sq.shQuote("it's"), "'it'\"'\"'s'");
   assert.equal(sq.shQuote('a’b'), "'a'\"’\"'b'");
-  assert.equal(sq.shQuote('$(x) `y` $HOME \\ "'), "'$(x) `y` $HOME \\ \"'");
+  // A backslash is written as '"\\"' (fish reads \\ and \' inside single quotes).
+  assert.equal(sq.shQuote('$(x) `y` $HOME \\ "'), "'$(x) `y` $HOME '\"\\\\\"' \"'");
   assert.equal(sq.shQuote(''), "''");
   assert.equal(sq.powershellQuote("it's"), "'it''s'");
   // PowerShell also ends a single-quoted string at a typographic single quote.
