@@ -1,0 +1,96 @@
+name: Action self-test
+
+# Runs the GitHub Action from this checkout (uses: ./) against fixtures.
+on:
+  pull_request:
+    branches: [ main, next ]
+    paths:
+      - 'action.yml'
+      - '.github/workflows/action-selftest.yml'
+      - '.github/action-selftest/**'
+  push:
+    branches: [ main, next ]
+    paths:
+      - 'action.yml'
+      - '.github/workflows/action-selftest.yml'
+      - '.github/action-selftest/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-selftest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  selftest:
+    name: action (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Clean fixture passes
+        uses: ./
+        with:
+          path: .github/action-selftest/clean
+
+      - name: Findings fail the step
+        id: findings
+        continue-on-error: true
+        uses: ./
+        with:
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          format: text
+
+      - name: fail-on-threat false reports without failing
+        uses: ./
+        with:
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          fail-on-threat: 'false'
+          format: json
+
+      - name: Matching package-sha256 installs
+        uses: ./
+        with:
+          version: '1.4.1'
+          package-sha256: 'e342c98439086f46a174f2f14d1c233c352093c569d1adcd95f5ef5e69f190b8'
+          path: .github/action-selftest/clean
+          format: text
+
+      - name: Wrong package-sha256 is refused
+        id: badhash
+        continue-on-error: true
+        uses: ./
+        with:
+          version: '1.4.1'
+          package-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+          path: .github/action-selftest/clean
+
+      - name: Non-exact version is refused
+        id: badversion
+        continue-on-error: true
+        uses: ./
+        with:
+          version: '>=1.4'
+          path: .github/action-selftest/clean
+
+      - name: Check expected failures
+        shell: bash
+        env:
+          FINDINGS: ${{ steps.findings.outcome }}
+          BADHASH: ${{ steps.badhash.outcome }}
+          BADVERSION: ${{ steps.badversion.outcome }}
+        run: |
+          set -euo pipefail
+          echo "findings=$FINDINGS badhash=$BADHASH badversion=$BADVERSION"
+          test "$FINDINGS" = failure
+          test "$BADHASH" = failure
+          test "$BADVERSION" = failure
