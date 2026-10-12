@@ -43,7 +43,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - CI packs the npm tarball, checks its contents, installs it in an empty project and runs the CLI from it; it also builds the Python sdist and wheel, runs `twine check` and installs the wheel in a clean virtualenv. Every supported Node.js version (18, 20, 22, 24) runs the full `npm test`.
 
 ### Fixed
-- `zn audit` no longer fails with a Node.js error after listing the log: the chain is checked through the unlocked vault, as `zn vault verify` does, and a locked or missing vault is reported instead.
+- `zn audit` no longer fails with a Node.js error after listing the log: the chain is checked through the unlocked vault, as `zn vault verify` does (exit code 1 when the chain is broken), and a locked or missing vault is reported instead.
 
 ### Security
 - Scrubber: secrets without a known prefix are now caught under a sensitive key name in YAML without quotes, docker-compose `environment:` (map and `- KEY=value` list), dotenv and Dockerfile `ENV` / `ARG` lines, and `docker run -e`, including hex values of 32 digits or more. Commit hashes, colors, UUIDs and digests in other fields, placeholders and references (`${VAR}`, `$VAR`, `${{ … }}`) are left alone.
