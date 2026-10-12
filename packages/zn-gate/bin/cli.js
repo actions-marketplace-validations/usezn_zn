@@ -8,7 +8,7 @@ const { startMcpShield } = require('../lib/shield');
 const { scanEnvironments, configureEnvironments } = require('../lib/init');
 const { logEvidence, verifyEvidenceLedger, getEvidenceStats, exportEvidenceLedger, startEvidenceUi, EVIDENCE_FILE } = require('../lib/evidence');
 const { analyze, analyzeLocal, isCloudEnabled, resolveEndpoint, RULES_VERSION } = require('../lib/client');
-const { evaluate } = require('../lib/rules');
+const { evaluate, redactSecrets } = require('../lib/rules');
 
 const VERSION = require('../package.json').version;
 
@@ -318,7 +318,8 @@ Files   : ${files.length} file(s) queued for audit\n
           line: lineIdx + 1,
           rule: evalRes.rule,
           reason: evalRes.reason,
-          sample: line.slice(0, 100),
+          // Printed to the terminal and CI logs: never show a detected secret.
+          sample: redactSecrets(line).sanitized.slice(0, 100),
         });
       }
     }
