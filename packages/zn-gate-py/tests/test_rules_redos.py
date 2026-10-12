@@ -3,6 +3,7 @@ time. Each measurement is the fastest of a few runs and the bounds are
 generous, so the tests stay stable on small or busy CI hosts while a quadratic
 pattern (seconds at these sizes) still fails."""
 
+import asyncio
 import os
 import time
 import unittest
@@ -11,6 +12,7 @@ from unittest import mock
 from zn_gate import rules as R
 from zn_gate import evaluate, normalize_input, redact_secrets, sanitize_tool_result
 from zn_gate.guard import GuardBlockError, check_tool_result, guard
+from zn_gate.integrations.langchain import ZnGuardCallbackHandler
 
 SIZE = 64 * 1024
 PER_RULE_MS = 500
@@ -197,6 +199,51 @@ class TestToolResultWindows(unittest.TestCase):
             with self.assertRaises(GuardBlockError):
                 read_file()
             self.assertTrue(check_tool_result('short output').allowed)
+
+    def test_guard_block_truncated_option_sync_and_async(self):
+        s = fill('A', R.MAX_TOOL_RESULT_SCAN_CHARS + 1024)
+
+        @guard(check_args=False, check_result=True, block_truncated=True)
+        def read_sync():
+            return s
+
+        @guard(check_args=False, check_result=True, block_truncated=True)
+        async def read_async():
+            return s
+
+        @guard(check_args=False, check_result=True, block_truncated=True)
+        async def read_short():
+            return 'short output'
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('ZN_BLOCK_TRUNCATED', None)
+            with self.assertRaises(GuardBlockError) as ctx:
+                read_sync()
+            self.assertEqual(ctx.exception.assessment.rule, 'size:truncated')
+            with self.assertRaises(GuardBlockError) as ctx:
+                asyncio.run(read_async())
+            self.assertEqual(ctx.exception.assessment.rule, 'size:truncated')
+            self.assertEqual(asyncio.run(read_short()), 'short output')
+
+    def test_async_guard_and_langchain_honor_the_environment_variable(self):
+        s = fill('A', R.MAX_TOOL_RESULT_SCAN_CHARS + 1024)
+
+        @guard(check_args=False, check_result=True)
+        async def read_async():
+            return s
+
+        handler = ZnGuardCallbackHandler(on_block='raise', mask_secrets=False)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('ZN_BLOCK_TRUNCATED', None)
+            self.assertEqual(asyncio.run(read_async()), s)
+            self.assertEqual(handler.on_tool_end(s), s)
+            os.environ['ZN_BLOCK_TRUNCATED'] = '1'
+            with self.assertRaises(GuardBlockError):
+                asyncio.run(read_async())
+            with self.assertRaises(GuardBlockError) as ctx:
+                handler.on_tool_end(s)
+            self.assertEqual(ctx.exception.assessment.rule, 'size:truncated')
+            self.assertEqual(handler.on_tool_end('short output'), 'short output')
 
 
 class TestDetectionAfterRewrite(unittest.TestCase):
