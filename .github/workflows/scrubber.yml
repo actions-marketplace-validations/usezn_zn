@@ -40,6 +40,7 @@ jobs:
         run: |
           node test/contract.test.js
           node test/scrub_patterns.test.js
+          node test/scrub_structured.test.js
           node test/scrub_exact.test.js
           node test/scrub_engine.test.js
       - name: Vault tests (passphrase backend)

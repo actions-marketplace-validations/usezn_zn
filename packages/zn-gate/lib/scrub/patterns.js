@@ -229,7 +229,125 @@ const PEM_LABEL = '((?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?' + KEY_WORD + '(
  *   re       global regex; `group` selects the span (default: whole match)
  *   check    optional (value, text, index) -> boolean
  */
-const { AhoCorasick } = require('./exact');
+const { AhoCorasick, isSensitiveName, looksNonSecret } = require('./exact');
+
+/* ------------------------------------------------------------------ */
+/* Structured config values (YAML, docker-compose, Dockerfile, shell)  */
+/* ------------------------------------------------------------------ */
+
+/* Names that contain a sensitive word but do not hold a secret value:
+ * public keys, references and metadata (*_ARN, *_HEADER, *_VERSION...),
+ * names ending in a fingerprint or hash word (signing_key_fingerprint,
+ * token_hash, password_sha256), timestamps (*_AT), and storage or cache keys
+ * (cache_key, idempotency_key, s3_key, objectKey, partition and sort keys).
+ * A hash word elsewhere in the name does not count: HASH_KEY, hashKey and
+ * HMAC_SHA256_SECRET hold secrets. */
+const STRUCT_NAME_SKIP_EXTRA = /(?:^|_)(?:FINGERPRINT|FINGERPRINTS|HASH|HASHED|SHA1|SHA256|SHA384|SHA512|MD5|DIGEST|CHECKSUM)$|_AT$|(?:^|_)(?:CACHE|IDEMPOTENCY|S3|OBJECT|PARTITION|SORT|ROUTING|DEDUP|DEDUPLICATION)_KEY$/;
+/* GPG / PGP key ids and fingerprints (16 or 40 hex digits), as in
+ * `ENV GPG_KEY <fingerprint>` of official Docker images. */
+const GPG_NAME = /(?:^|_)(?:GPG|PGP)_KEY(?:_ID)?$/;
+const GPG_ID = /^(?:[0-9A-Fa-f]{16}|[0-9A-Fa-f]{40})$/;
+const STRUCT_NAME_SKIP = /(?:^|_)(?:PUBLIC|PUB)(?:_|$)|PUBKEY|_(?:ARN|REF|REFS|HEADER|HEADERS|POLICY|PROVIDER|ALGORITHM|ALG|LENGTH|EXPIRY|EXPIRES|EXPIRES_IN|EXPIRATION|LIFETIME|VERSION|URI|SCOPE|SCOPES|FORMAT|FIELD|PARAM|PARAMS|PREFIX|PATTERN|REGEX|METHOD|COUNT|SIZE|LIMIT|STORE|BACKEND|KIND)$/;
+
+/* Key of a YAML map, a compose environment entry, an ENV line or a
+ * `docker run -e` flag: camelCase, dots and dashes are read as `_`, then the
+ * exact-value layer's list of sensitive names applies (API_KEY,
+ * POSTGRES_PASSWORD, clientSecret, auth-token...). A bare `key` is too
+ * generic in YAML (caches, Kubernetes selectors) to count. */
+function sensitiveKey(name) {
+  if (!name) return false;
+  const n = String(name).replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[-.]+/g, '_').toUpperCase();
+  if (n === 'KEY' || n === 'KEYS') return false;
+  if (STRUCT_NAME_SKIP.test(n) || STRUCT_NAME_SKIP_EXTRA.test(n)) return false;
+  return isSensitiveName(n);
+}
+
+/* Name and value together: a GPG / PGP key id is not a secret. */
+function structuredPair(name, value) {
+  if (!sensitiveKey(name) || !structuredValue(value)) return false;
+  const n = String(name).replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[-.]+/g, '_').toUpperCase();
+  return !(GPG_NAME.test(n) && GPG_ID.test(value));
+}
+
+/* Hex-only value: at least 32 digits (128 bits), with letters and digits.
+ * Shorter hex (abbreviated commit hashes, colors) never qualifies. */
+function hexSecret(v) {
+  return /^[0-9a-fA-F]{32,}$/.test(v) && /[0-9]/.test(v) && /[a-fA-F]/.test(v) && shannon(v) >= 3.0 && !isPlaceholder(v);
+}
+
+/* Identifiers, slugs, versions and dotted references: every segment is a
+ * word (camelCase humps of two or more letters), a short number, or a word
+ * with a short numeric suffix. */
+const WORD_SEGMENT = /^(?:[A-Za-z]?[a-z]+(?:[A-Z][a-z]{2,})*|[A-Z]+)\d{0,2}$|^v?\d{1,4}$/;
+function wordy(v) {
+  return v.split(/[-_./:@+]+/).every((s) => s === '' || WORD_SEGMENT.test(s));
+}
+
+/* Unquoted or quoted value under a sensitive key: machine-generated, not a
+ * reference, a placeholder, a URL, a path, a number or an identifier. */
+function structuredValue(v) {
+  if (v.length < 12 || v.length > 200) return false;
+  if (/[^\x21-\x7e]/.test(v)) return false;                        // printable ASCII only
+  if (isPlaceholder(v) || looksNonSecret(v)) return false;
+  if (/^[$%<{[(*&!|>@~=-]/.test(v)) return false;                 // ${VAR}, $VAR, templates, YAML tags/anchors
+  if (/[(){}[\];,<>`\\]/.test(v)) return false;                    // code, lists, interpolation
+  if (/__ZN_[A-Z0-9_]+__/.test(v)) return false;
+  if (/^(?:process\.env|os\.environ|env\.|secrets\.|vars\.|arn:)/i.test(v)) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) return false;           // URLs: passwords inside are DB_PASSWORD's job
+  if (/^[0-9a-fA-F]+$/.test(v)) return hexSecret(v);
+  if (/^\d+(?:[.:]\d+)*$/.test(v)) return false;
+  if (wordy(v)) return false;
+  const upper = /[A-Z]/.test(v);
+  const kinds = (/[a-z]/.test(v) ? 1 : 0) + (upper ? 1 : 0) + (/[0-9]/.test(v) ? 1 : 0);
+  if (kinds < 2) return false;
+  if (!upper && !/[^A-Za-z0-9]/.test(v) && v.length < 16) return false;
+  return shannon(v) >= 3.3;
+}
+
+/* Line tail: optional trailing comma or semicolon, optional comment. */
+const S_TAIL = '(?:[ \\t]*[,;])?(?:[ \\t]+(?:#|//)[^\\r\\n]*)?$';
+const S_PREFILTER = /(?:pass|pwd|secret|token|key|credential|auth|dsn)/i;
+const structuredCheck = (nameGroup) => (v, text, index, m) => structuredPair(m[nameGroup], v);
+
+/* Whole-line forms, matched one line at a time and only on lines that
+ * contain a sensitive word. Each entry: [regex, name group, value group]. */
+const S_LINES = [
+  /* YAML / docker-compose map entry: `key: value`, `- key: value`, quoted or
+   * not, with an optional trailing comment (also JSON `"key": "value"`). */
+  [new RegExp('^[ \\t]*(?:-[ \\t]+)?(["\']?)([A-Za-z_][A-Za-z0-9_.-]{0,127})\\1[ \\t]*:[ \\t]+(["\']?)([^\\s"\'`]{1,512})\\3' + S_TAIL, 'd'), 2, 4],
+  /* docker-compose environment list: `- KEY=value` or `- "KEY=value"`. */
+  [new RegExp('^[ \\t]*-[ \\t]+(["\']?)([A-Za-z_][A-Za-z0-9_.-]{0,127})=([^\\s"\'`]{1,512})\\1' + S_TAIL, 'd'), 2, 3],
+  /* KEY=value lines: dotenv, `export`, Dockerfile `ENV` / `ARG`, `set`. */
+  [new RegExp('^[ \\t]*(?:(?:export|ENV|ARG|set)[ \\t]+)?([A-Za-z_][A-Za-z0-9_]{0,127})[ \\t]*=[ \\t]*(["\']?)([^\\s"\'`]{1,512})\\2' + S_TAIL, 'd'), 1, 3],
+  /* Dockerfile `ENV KEY value` (legacy form, one pair per line). */
+  [new RegExp('^[ \\t]*ENV[ \\t]+([A-Za-z_][A-Za-z0-9_]{0,127})[ \\t]+(["\']?)([^\\s"\'`=]{1,512})\\2' + S_TAIL, 'd'), 1, 3],
+];
+const S_LINE_HINT = /pass|pwd|secret|token|key|credential|auth|dsn/gi;
+
+/* One pass of the hint regex over the text; each line that holds a hint is
+ * tried once. Every line regex is anchored at the line start and its
+ * quantifiers are bounded, so the work stays linear in the text length. */
+function findStructured(text, out) {
+  S_LINE_HINT.lastIndex = 0;
+  let h;
+  while ((h = S_LINE_HINT.exec(text)) !== null) {
+    const ls = text.lastIndexOf('\n', h.index) + 1;
+    let le = text.indexOf('\n', h.index);
+    if (le < 0) le = text.length;
+    S_LINE_HINT.lastIndex = le + 1;
+    if (le - ls < 12) continue;  // too short to hold a 12-character value
+    let e2 = le; while (e2 > ls && (text[e2 - 1] === ' ' || text[e2 - 1] === '\t' || text[e2 - 1] === '\r')) e2--;
+    const line = text.slice(ls, e2);
+    for (const [r, nameGroup, valueGroup] of S_LINES) {
+      const m = r.exec(line);
+      if (!m || !m.indices[valueGroup]) continue;
+      if (!structuredPair(m[nameGroup], m[valueGroup])) continue;
+      out.push({ start: ls + m.indices[valueGroup][0], end: ls + m.indices[valueGroup][1] });
+      break;
+    }
+    if (le >= text.length) break;
+  }
+}
 
 const PATTERNS = [
   { type: 'ANTHROPIC_KEY', hints: ['sk-ant-'], re: re(NB + 'sk-ant-[a-z]{3,8}\\d{2}-[A-Za-z0-9_-]{32,200}' + NA) },
@@ -299,15 +417,22 @@ const PATTERNS = [
     typeOf: (m) => (/^(?:https?|ftps?|wss?|sftp|ssh|git)$/i.test(m[1]) ? 'URL_PASSWORD' : 'DB_PASSWORD') },
   /* Generic assignment: sensitive key = quoted high-entropy value. */
   { type: 'SECRET', hints: null, prefilter: /(?:pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|auth)/i,
-    re: re('(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|credentials?)[A-Za-z0-9_]*["\']?\\s*(?:=|:|=>|:=)\\s*["\'`]([^"\'`\\s\\\\]{12,200})["\'`]', 'i'),
+    re: re('(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|credentials?)[A-Za-z0-9_]{0,64}["\']?\\s*(?:=|:|=>|:=)\\s*["\'`]([^"\'`\\s\\\\]{12,200})["\'`]', 'i'),
     group: 1,
     check: (v) => !isPlaceholder(v) && looksRandom(v, 3, 3.7) && !/^[a-z]+(?:[_.-][a-z]+)+$/i.test(v) &&
       !/^(?:process\.env|os\.environ|\$|\{|%|<|https?:)/.test(v) && !/[()\[\]{};,]/.test(v) },
   /* Generic dotenv line: SENSITIVE_NAME=unquoted high-entropy value. */
   { type: 'SECRET', hints: null, prefilter: /(?:PASS|SECRET|TOKEN|KEY|CREDENTIAL|AUTH)/,
-    re: re('^[ \\t]*(?:export[ \\t]+)?[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?|AUTH)[A-Z0-9_]*[ \\t]*=[ \\t]*([^\\s"\'`#]{16,200})[ \\t]*$', 'm'),
+    re: re('^[ \\t]*(?:export[ \\t]+)?[A-Z][A-Z0-9_]{0,64}(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?|AUTH)[A-Z0-9_]{0,64}[ \\t]*=[ \\t]*([^\\s"\'`#]{16,200})[ \\t]*$', 'm'),
     group: 1,
     check: (v) => !isPlaceholder(v) && looksRandom(v, 3, 3.7) && !/^(?:\$|\{|%|<|https?:)/.test(v) },
+  /* Sensitive key in structured config: YAML, docker-compose (map and
+   * list), dotenv, Dockerfile ENV / ARG (see S_LINES). */
+  { type: 'SECRET', hints: null, prefilter: S_PREFILTER, find: findStructured },
+  /* `docker run -e KEY=value` / `--env KEY=value` / `--env=KEY=value`. */
+  { type: 'SECRET', hints: ['-e', '--env'],
+    re: re('(?<![^\\s])(?:-e|--env)(?:[ \\t]+|=)(["\']?)([A-Za-z_][A-Za-z0-9_]{0,127})=([^\\s"\'`;&|]{1,512})\\1(?![^\\s;&|)])'),
+    group: 3, check: structuredCheck(2) },
 ];
 
 const SECRET_TYPES = Array.from(new Set(PATTERNS.map((p) => p.type).concat(['URL_PASSWORD'])));
@@ -336,6 +461,12 @@ function findPatterns(text, opts) {
   const present = (opts && opts._hints) || hintsIn(text);
   for (const p of PATTERNS) {
     if (!hasHint(text, p, present)) continue;
+    if (p.find) {
+      const found = [];
+      p.find(text, found);
+      for (const f of found) spans.push({ start: f.start, end: f.end, type: p.type, source: 'pattern' });
+      continue;
+    }
     p.re.lastIndex = 0;
     let m;
     while ((m = p.re.exec(text)) !== null) {
@@ -479,4 +610,7 @@ module.exports = {
   shannon,
   looksRandom,
   isPlaceholder,
+  sensitiveKey,
+  structuredValue,
+  hexSecret,
 };

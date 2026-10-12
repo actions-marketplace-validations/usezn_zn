@@ -46,7 +46,7 @@ const FIXTURES_DIR = path.join(ROOT, 'packages', 'zn-gate', 'test', 'fixtures');
 const DEFAULT_CORPUS = path.join(FIXTURES_DIR, 'benign');
 const DEFAULT_JSON = path.join(ROOT, 'bench', 'leak_bench_results.json');
 
-const { generateAll, SEED_DEFAULT } = require(path.join(FIXTURES_DIR, 'fake_secrets.js'));
+const { generateAll, mulberry32, SEED_DEFAULT } = require(path.join(FIXTURES_DIR, 'fake_secrets.js'));
 
 /* Default thresholds:
  * - leaks: 0 — a single value surviving tokenization fails the run.
@@ -355,6 +355,64 @@ function buildLeakCases(generated) {
   return cases;
 }
 
+/* Values with no known prefix, found only through a sensitive key in
+ * structured config: YAML without quotes, docker-compose environment (map
+ * and list), Dockerfile ENV, `docker run -e`, and hex values. They come from
+ * their own PRNG stream, so the prefixed fixtures above keep their values. */
+const S_CHARS = {
+  alnum: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+  hex: '0123456789abcdef',
+};
+
+function structuredValues(seed, perType) {
+  const rnd = mulberry32((seed ^ 0x5c0b5) >>> 0);
+  const pick = (chars, n) => { let s = ''; for (let i = 0; i < n; i++) s += chars[Math.floor(rnd() * chars.length)]; return s; };
+  const shaped = (chars, n, ok) => { for (;;) { const v = pick(chars, n); if (ok(v)) return v; } };
+  const mixed = (v) => /[a-z]/.test(v) && /[A-Z]/.test(v) && /\d/.test(v);
+  const hexOk = (v) => /\d/.test(v) && /[a-f]/.test(v) && !/^abcdef/.test(v);
+  const out = [];
+  for (let i = 0; i < perType; i++) {
+    out.push({ type: 'generic_password', value: shaped(S_CHARS.alnum, 20, mixed) });
+    out.push({ type: 'hex_secret_32', value: shaped(S_CHARS.hex, 32, hexOk) });
+    out.push({ type: 'hex_secret_64', value: shaped(S_CHARS.hex, 64, hexOk) });
+  }
+  return out;
+}
+
+const STRUCTURED_CONTEXTS = [
+  { label: 'yaml_unquoted', tool: 'read', mk: (v) => 'app:\n  database:\n    host: db.internal\n    password: ' + v + '\n' },
+  { label: 'yaml_comment', tool: 'read', mk: (v) => 'integrations:\n  api_token: ' + v + '  # rotated monthly\n' },
+  { label: 'compose_map', tool: 'read', mk: (v) => 'services:\n  db:\n    image: postgres:16\n    environment:\n      POSTGRES_PASSWORD: ' + v + '\n    ports:\n      - "5432:5432"\n' },
+  { label: 'compose_list', tool: 'read', mk: (v) => 'services:\n  api:\n    environment:\n      - NODE_ENV=production\n      - API_SECRET=' + v + '\n' },
+  { label: 'compose_list_quoted', tool: 'read', mk: (v) => 'services:\n  api:\n    environment:\n      - "SESSION_SECRET=' + v + '"\n' },
+  { label: 'dockerfile_env', tool: 'read', mk: (v) => 'FROM node:20-alpine\nENV APP_SECRET=' + v + '\nCMD ["node", "server.js"]\n' },
+  { label: 'docker_run', tool: 'bash', mk: (v) => cmdOut('history | tail -1', 'docker run -e API_KEY=' + v + ' -p 8080:8080 app:latest') },
+  { label: 'dotenv', tool: 'read', mk: (v) => dotenv('ENCRYPTION_KEY', v) },
+];
+
+function buildStructuredCases(seed, perType) {
+  const cases = [];
+  const perTypeIndex = new Map();
+  for (const entry of structuredValues(seed, perType)) {
+    const idx = perTypeIndex.get(entry.type) || 0;
+    perTypeIndex.set(entry.type, idx + 1);
+    for (const spec of STRUCTURED_CONTEXTS) {
+      cases.push({
+        id: entry.type + '[' + idx + ']:' + spec.label,
+        type: entry.type,
+        context: spec.label,
+        tool: spec.tool,
+        text: spec.mk(entry.value),
+        sensitive: entry.value,
+      });
+    }
+  }
+  return cases;
+}
+
+const COMMIT_SHA = '3f786850e387550fdab836ed7e6dc881de23001b';
+const EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
 /* Fixed must-not-touch cases: high-entropy-but-benign strings that the
  * pattern layer is not allowed to rewrite. */
 const KNOWN_OK = [
@@ -371,6 +429,24 @@ const KNOWN_OK = [
   { id: 'semver', text: 'lodash version 4.17.21, node >=18.0.0\n' },
   { id: 'base64_image', text: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\n' },
   { id: 'lockfile_resolved', text: 'resolved "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"\n' },
+  /* Structured config without secrets. */
+  { id: 'compose_no_secrets', text: 'services:\n  db:\n    image: postgres:16\n    ports:\n      - "5432:5432"\n    environment:\n      POSTGRES_USER: app\n      POSTGRES_DB: appdb\n      POSTGRES_PASSWORD_FILE: /run/secrets/db_password\n      TZ: Europe/Madrid\n' },
+  { id: 'compose_env_references', text: 'services:\n  api:\n    environment:\n      - API_KEY=${API_KEY}\n      - DB_PASSWORD=$DB_PASSWORD\n      - NODE_ENV=production\n' },
+  { id: 'workflow_secret_reference', text: 'steps:\n  - uses: actions/checkout@v4\n    with:\n      token: ${{ secrets.GITHUB_TOKEN }}\n' },
+  { id: 'yaml_placeholders', text: 'api_key: your-api-key-here\npassword: changeme\n' },
+  { id: 'yaml_commit_sha', text: 'revision: ' + COMMIT_SHA + '\n' },
+  { id: 'yaml_digest', text: 'image: nginx@sha256:' + EMPTY_SHA256 + '\nchecksum: ' + EMPTY_SHA256 + '\n' },
+  { id: 'yaml_colors', text: 'theme:\n  primary: "#1f6feb"\n  accent: ff00aa\n' },
+  { id: 'yaml_uuid', text: 'request_id: 550e8400-e29b-41d4-a716-446655440000\n' },
+  { id: 'yaml_public_key_hex', text: 'signing:\n  public_key: ' + EMPTY_SHA256 + '\n' },
+  { id: 'dockerfile_no_secrets', text: 'FROM node:20-alpine\nENV NODE_ENV=production\nARG APP_VERSION=1.4.1\n' },
+  /* Sensitive-looking names that hold fingerprints, hashes, timestamps or storage keys. */
+  { id: 'dockerfile_gpg_key', text: 'ENV GPG_KEY ' + COMMIT_SHA.toUpperCase() + '\n' },
+  { id: 'yaml_key_fingerprint', text: 'signing_key_fingerprint: ' + COMMIT_SHA + '\n' },
+  { id: 'yaml_cache_key', text: 'cache:\n  cache_key: ' + EMPTY_SHA256 + '\n' },
+  { id: 'yaml_idempotency_key', text: 'idempotency_key: 550e8400-e29b-41d4-a716-446655440000\n' },
+  { id: 'json_s3_key', text: '"S3Key": "' + EMPTY_SHA256 + '.zip",\n' },
+  { id: 'yaml_password_sha256', text: 'password_sha256: ' + EMPTY_SHA256 + '\ntoken_hash: ' + EMPTY_SHA256 + '\n' },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -715,7 +791,7 @@ async function main() {
   const engine = loaded.engine || stubEngine();
   const vault = makeVaultStub();
   const generated = generateAll(args.seed, { perType: args.perType, piiPerType: args.perType });
-  const cases = buildLeakCases(generated);
+  const cases = buildLeakCases(generated).concat(buildStructuredCases(args.seed, args.perType));
   report.cases_total = cases.length;
 
   const corpusPresent = fs.existsSync(args.corpus);
