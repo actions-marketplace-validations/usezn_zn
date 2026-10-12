@@ -337,7 +337,16 @@ fn run_ocr(
 ) -> Option<String> {
     use std::io::Write;
 
-    let work_dir = match tempfile::Builder::new().prefix("zn-ocr-").tempdir() {
+    // tempfile creates directories with the default mode (0777 minus the
+    // umask), so ask for owner-only access explicitly.
+    let mut dir_builder = tempfile::Builder::new();
+    dir_builder.prefix("zn-ocr-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        dir_builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let work_dir = match dir_builder.tempdir() {
         Ok(d) => d,
         Err(e) => {
             warn!("VISION OCR: failed to create temp directory: {}", e);

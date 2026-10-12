@@ -1031,10 +1031,21 @@ async fn process_mcp_message(
             // 🎯 OCR GUARD: detect malicious text embedded in images (prompt
             // injection, credentials, destructive commands) on the RAW input,
             // before stripping metadata would remove the text layer.
-            match zn::engine::vision::VisionEngine::detect_malicious_ocr(
-                &arguments,
-                &state.config.managed_rules,
-            ) {
+            // OCR runs an external command and waits for it, so it runs on
+            // the blocking thread pool instead of stalling this async task.
+            // A failed OCR task fails closed.
+            let ocr_check = if state.config.managed_rules.visual_pii_redaction {
+                let ocr_arguments = arguments.clone();
+                let rules = state.config.managed_rules.clone();
+                tokio::task::spawn_blocking(move || {
+                    zn::engine::vision::VisionEngine::detect_malicious_ocr(&ocr_arguments, &rules)
+                })
+                .await
+                .unwrap_or(Err(zn::engine::vision::VisionError::ParseTimeout))
+            } else {
+                Ok(None)
+            };
+            match ocr_check {
                 Ok(Some((ocr_text, rule))) => {
                     use sha2::{Digest, Sha256};
                     let hash = hex::encode(Sha256::digest(ocr_text.as_bytes()));
