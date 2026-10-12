@@ -660,6 +660,13 @@ impl ZnConfig {
         if let Ok(key) = std::env::var("ZN_API_KEY") {
             self.security.api_key = Some(key);
         }
+        // A blank key (for example `ZN_API_KEY=` from an unset compose
+        // variable) counts as not set: it must never match an empty token.
+        self.security.api_key = self
+            .security
+            .api_key
+            .take()
+            .filter(|k| !k.trim().is_empty());
 
         if let Ok(ns) = std::env::var("ZN_NAMESPACE") {
             self.security.namespace = Some(ns);
