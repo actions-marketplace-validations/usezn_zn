@@ -8,9 +8,10 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import os
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from .rules import Assessment, evaluate
+from .rules import Assessment, evaluate, scan_windows
 
 
 class GuardBlockError(PermissionError):
@@ -56,17 +57,26 @@ def check_tool_call(tool_name: str, arguments: Any = None) -> Assessment:
     return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None)
 
 
-def check_tool_result(result: Any) -> Assessment:
+def check_tool_result(result: Any, block_truncated: bool = False) -> Assessment:
     """
     Evaluates data returned by external tools (e.g. web search, file content, DB queries)
     for indirect prompt injections or leaked credentials.
+    Large strings are scanned in overlapping windows (see rules.scan_windows);
+    the result has truncated=True when some string was not fully analysed. Such
+    output is blocked (rule size:truncated) when block_truncated is set or the
+    ZN_BLOCK_TRUNCATED environment variable is "1".
     """
     strings_to_check = _extract_strings(result)
+    truncated = False
     for s in strings_to_check:
-        res = evaluate(s)
+        res = scan_windows(s)
         if not res.allowed:
             return res
-    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None)
+        truncated = truncated or res.truncated
+    if truncated and (block_truncated or os.environ.get('ZN_BLOCK_TRUNCATED') == '1'):
+        return Assessment(verdict='block', confidence=1.0, rule='size:truncated',
+                          reason='Output too large to scan in full', truncated=True)
+    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None, truncated=truncated)
 
 
 def guard(

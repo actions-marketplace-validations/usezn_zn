@@ -18,10 +18,13 @@ const { logEvidence, verifyEvidenceLedger } = require('zn-gate/lib/evidence');
 
 ### `sanitizeToolResult(toolName, content, options)`
 - Deep sanitization of external tool outputs. Blocks indirect prompt injections and redacts sensitive credentials (AWS keys, OpenAI tokens, DB passwords).
+- Output is scanned in overlapping 256 KB windows up to 4 MB (plus the last 256 KB). `truncated` is `true` when the output was not scanned in full; pass `blockTruncated: true` or set `ZN_BLOCK_TRUNCATED=1` to block such output.
+- Returns: `{ tool_name, safe_to_ingest, truncated, assessment, secrets_redacted, sanitized_content }`
 
 ### `checkToolResult(toolName, content, options)`
 - Local only; never touches the network. Inspects tool output before it enters the model context and always redacts secrets.
-- Returns: `Promise<{ tool_name, safe_to_ingest, secrets_redacted, sanitized_content, assessment }>`
+- Same scanning and `blockTruncated` option as `sanitizeToolResult`.
+- Returns: `Promise<{ tool_name, safe_to_ingest, truncated, secrets_redacted, sanitized_content, assessment }>`
 
 ### `verifyEvidenceLedger(filePath)`
 - Verifies the SHA-256 hash chain in `~/.zn/evidence.jsonl`. It detects accidental or partial edits; it is not tamper-proof against someone with write access to the file.
@@ -38,6 +41,7 @@ from zn_gate.evidence import verify_evidence_ledger
 
 ### `evaluate(text: str) -> Assessment`
 - Pure Python in-memory deterministic evaluation. Never touches the network.
+- Inputs over 256 KB are analysed as their first 192 KB and last 64 KB, with `truncated=True`.
 - Returns: `Assessment(verdict='allow'|'block', confidence=1.0, rule='...', reason='...')`
 
 ### `@guard(on_block='raise'|'return', check_args=True, check_result=False, mask_secrets=False)`
@@ -46,5 +50,5 @@ from zn_gate.evidence import verify_evidence_ledger
 ### `check_tool_call(tool_name: str, arguments: Any) -> Assessment`
 - Recursively extracts and inspects all strings in arguments for malicious commands or credentials.
 
-### `check_tool_result(result: Any) -> Assessment`
-- Inspects external tool return values for indirect injection payloads.
+### `check_tool_result(result: Any, block_truncated: bool = False) -> Assessment`
+- Inspects external tool return values for indirect injection payloads. Long strings are scanned in overlapping windows up to 4 MB; `Assessment.truncated` is `True` when a string was not scanned in full. Pass `block_truncated=True` or set `ZN_BLOCK_TRUNCATED=1` to block such output (rule `size:truncated`); `@guard(check_result=True)` uses this check.
