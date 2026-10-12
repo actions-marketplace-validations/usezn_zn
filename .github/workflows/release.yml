@@ -100,6 +100,15 @@ jobs:
           if [ "$py_init_version" != "$expected_py" ]; then
             echo "::error::zn_gate/__init__.py has $py_init_version, tag expects $expected_py"; fail=1
           fi
+          # MCP Registry metadata: both versions in server.json must match the npm version.
+          if [ -f packages/zn-gate/server.json ]; then
+            sj_versions="$(node -p "const d=require('./packages/zn-gate/server.json'); [d.version, ...(d.packages||[]).filter(p=>p.identifier==='zn-gate').map(p=>p.version)].join(' ')")"
+            for v in $sj_versions; do
+              if [ "$v" != "$tag_version" ]; then
+                echo "::error::packages/zn-gate/server.json has version $v, tag expects $tag_version"; fail=1
+              fi
+            done
+          fi
 
           sha="$(git rev-list -n 1 "refs/tags/$TAG")"
           if git for-each-ref --contains "$sha" --format='%(refname:short)' refs/remotes/origin \
