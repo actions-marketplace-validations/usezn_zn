@@ -132,6 +132,16 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.sha }}
           persist-credentials: false
+      # Release tooling (tarball check, hash-pinned build tools) comes from the
+      # commit that defines this workflow run. For a tag push it is the tagged
+      # commit; for a dry run it is the dispatched branch.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+          sparse-checkout: .github
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.x
@@ -148,16 +158,20 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release"
           npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/release" > "$RUNNER_TEMP/pack.json"
       - name: Check tarball contents
+        run: node .release-tools/.github/scripts/check-npm-pack.js "$RUNNER_TEMP/pack.json" packages/zn-gate
+      - name: Install hash-pinned Python build tools
         run: |
-          if [ -f .github/scripts/check-npm-pack.js ]; then
-            node .github/scripts/check-npm-pack.js "$RUNNER_TEMP/pack.json" packages/zn-gate
-          fi
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/build-venv"
+          "$RUNNER_TEMP/build-venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir \
+            --require-hashes -r .release-tools/.github/release-requirements.txt
       - name: Build the sdist and wheel
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check build==1.6.1 twine==7.0.0
-          python -m build packages/zn-gate-py --outdir "$RUNNER_TEMP/release"
-          python -m twine check --strict "$RUNNER_TEMP"/release/*.whl "$RUNNER_TEMP"/release/*.tar.gz
+          # --no-isolation: build with the hash-pinned setuptools from the
+          # venv instead of resolving the build backend again from PyPI.
+          "$RUNNER_TEMP/build-venv/bin/python" -m build --no-isolation packages/zn-gate-py --outdir "$RUNNER_TEMP/release"
+          "$RUNNER_TEMP/build-venv/bin/python" -m twine check --strict "$RUNNER_TEMP"/release/*.whl "$RUNNER_TEMP"/release/*.tar.gz
       - name: Check file names and write SHA256SUMS
         working-directory: ${{ runner.temp }}/release
         env:
@@ -294,21 +308,47 @@ jobs:
         id: disttag
         env:
           NPM_VERSION: ${{ needs.verify.outputs.npm_version }}
-          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        # Fails closed: if the current dist-tags cannot be read, or "latest"
+        # points to a prerelease, nothing is published.
+        #   final       -> latest (only if newer than the current latest,
+        #                  otherwise release-X.Y so latest never moves back)
+        #   X.Y.Z-beta.N -> beta, X.Y.Z-rc.N -> next, X.Y.Z-alpha.N -> alpha
+        #                  (only if newer than what that tag points to)
+        # Versions are compared with the semver module bundled in the npm CLI.
         run: |
           set -euo pipefail
-          if [ "$PRERELEASE" = "true" ]; then
-            tag=beta
-          else
-            current="$(npm view zn-gate dist-tags.latest 2>/dev/null || true)"
-            highest="$(printf '%s\n%s\n' "${current:-0.0.0}" "$NPM_VERSION" | sort -V | tail -n 1)"
-            if [ "$highest" = "$NPM_VERSION" ]; then
-              tag=latest
-            else
-              # A patch for an older line must not move "latest" backwards.
-              tag="release-${NPM_VERSION%.*}"
-            fi
+          if ! dist_tags="$(npm view zn-gate dist-tags --json)"; then
+            echo "::error::Could not read the current dist-tags of zn-gate"
+            exit 1
           fi
+          cat > "$RUNNER_TEMP/dist-tag.js" <<'JS'
+          const path = require('path');
+          const semver = require(path.join(process.env.NPM_ROOT, 'npm', 'node_modules', 'semver'));
+          const fail = (msg) => { console.error(`::error::${msg}`); process.exit(1); };
+          const version = process.env.NPM_VERSION;
+          let tags;
+          try { tags = JSON.parse(process.env.DIST_TAGS); } catch { fail('dist-tags output is not JSON'); }
+          if (!tags || typeof tags !== 'object' || Array.isArray(tags)) fail('unexpected dist-tags output');
+          if (!semver.valid(version)) fail(`${version} is not a valid semver version`);
+          const pre = semver.prerelease(version);
+          let tag;
+          if (pre) {
+            tag = { alpha: 'alpha', beta: 'beta', rc: 'next' }[pre[0]];
+            if (!tag) fail(`no dist-tag for prerelease type ${pre[0]}`);
+            const current = tags[tag];
+            if (current !== undefined) {
+              if (!semver.valid(current)) fail(`dist-tag ${tag} points to an invalid version (${current})`);
+              if (!semver.gt(version, current)) fail(`${version} is not newer than ${tag} (${current})`);
+            }
+          } else {
+            const current = tags.latest;
+            if (!current || !semver.valid(current)) fail(`latest is missing or invalid (${current})`);
+            if (semver.prerelease(current)) fail(`latest points to a prerelease (${current})`);
+            tag = semver.gt(version, current) ? 'latest' : `release-${semver.major(version)}.${semver.minor(version)}`;
+          }
+          process.stdout.write(tag);
+          JS
+          tag="$(NPM_ROOT="$(npm root -g)" DIST_TAGS="$dist_tags" node "$RUNNER_TEMP/dist-tag.js")"
           echo "dist-tag: $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Publish the tarball with npm trusted publishing
@@ -362,6 +402,22 @@ jobs:
             echo
             echo "How to verify these files: [docs/verify-release.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/verify-release.md)"
           } >> "$RUNNER_TEMP/notes.md"
+      - name: Check that the tag still points to the verified commit
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERIFIED_SHA: ${{ needs.verify.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Annotated tags list the commit as "<tag>^{}"; lightweight tags list it directly.
+          remote_sha="$(git ls-remote origin "refs/tags/${TAG}^{}" | cut -f1)"
+          if [ -z "$remote_sha" ]; then
+            remote_sha="$(git ls-remote origin "refs/tags/${TAG}" | cut -f1)"
+          fi
+          if [ "$remote_sha" != "$VERIFIED_SHA" ]; then
+            echo "::error::Tag $TAG points to '${remote_sha}', but this run verified and built $VERIFIED_SHA"
+            exit 1
+          fi
+          echo "Tag $TAG still points to $VERIFIED_SHA"
       - name: Create the release (draft for final versions)
         env:
           GH_TOKEN: ${{ github.token }}

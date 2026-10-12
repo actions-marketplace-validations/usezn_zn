@@ -250,7 +250,7 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 Report vulnerabilities to [security@usezn.com](mailto:security@usezn.com). Policy, scope and safe harbor: [SECURITY.md](SECURITY.md). Hall of Fame: [usezn.com/security](https://usezn.com/security/).
 
-From 1.5.0 on, releases are signed and carry build provenance. To check a download: [docs/verify-release.md](docs/verify-release.md).
+Releases published by the release workflow, starting with the first one after 1.5.0-beta.1, are signed and carry build provenance. 1.5.0-beta.1 and earlier versions were published by hand and have no signatures or provenance. To check a download: [docs/verify-release.md](docs/verify-release.md).
 
 ## Contributing
 

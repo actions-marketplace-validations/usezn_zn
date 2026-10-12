@@ -1,8 +1,10 @@
 # Verifying a zn-gate release
 
-Starting with 1.5.0, every zn-gate release is built once by the
-[`Release` workflow](../.github/workflows/release.yml) from a tag in this
-repository. The same files are then published to npm, to PyPI and to the
+Every zn-gate release published by the
+[`Release` workflow](../.github/workflows/release.yml) is built once from a
+tag in this repository. The first such release is the first one published
+after 1.5.0-beta.1 (1.5.0-beta.2 or 1.5.0, whichever comes first).
+The same files are then published to npm, to PyPI and to the
 GitHub Release, with no long-lived publish tokens: npm and PyPI accept them
 through trusted publishing (OpenID Connect from GitHub Actions).
 
@@ -23,7 +25,25 @@ attestation for each Python file.
 Python versions use the PEP 440 spelling of the npm version: `1.5.0` is
 `1.5.0` on both, and `1.5.0-beta.2` on npm is `1.5.0b2` on PyPI.
 
-Releases older than 1.5.0 were published by hand and have none of this.
+**1.5.0-beta.1 and every earlier version were published by hand and have no
+signatures, no attestations and no provenance.** The checks below fail for
+them; that is expected and does not mean the files were tampered with. To
+check one of those versions, compare it with the tagged source in this
+repository.
+
+## npm dist-tags
+
+| Version | npm dist-tag |
+| --- | --- |
+| `X.Y.Z` (final, newer than the current `latest`) | `latest` |
+| `X.Y.Z` (patch for an older line) | `release-X.Y` |
+| `X.Y.Z-beta.N` | `beta` |
+| `X.Y.Z-rc.N` | `next` |
+| `X.Y.Z-alpha.N` | `alpha` |
+
+A prerelease never moves `latest`. `npm install zn-gate` installs the latest
+final release; use `npm install zn-gate@beta` (or `@next`, `@alpha`) to opt in
+to a prerelease.
 
 In the examples below, replace `v1.5.0` / `1.5.0` with the version you are
 checking.
