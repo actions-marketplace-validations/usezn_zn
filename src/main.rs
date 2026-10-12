@@ -463,7 +463,13 @@ async fn start_proxy(args: Args) -> Result<()> {
     )?);
 
     // Initialize Tenant Store
-    let tenants = Arc::new(TenantStore::new(vault.get_connection())?);
+    // A generated SuperAdmin key is written next to the audit database,
+    // never printed.
+    let seed_key_file = zn::tenants::seed_key_file_for(&zn_config.audit.db_path);
+    let tenants = Arc::new(TenantStore::open(
+        vault.get_connection(),
+        Some(&seed_key_file),
+    )?);
 
     // Initialize Broadcast Channel
     let (tx, _) = broadcast::channel(zn_config.server.channel_capacity);
