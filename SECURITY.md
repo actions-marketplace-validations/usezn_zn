@@ -15,10 +15,11 @@ Security updates are provided for the following versions:
 
 ## Reporting a Vulnerability
 
-We take the security of zn, the MCP Gateway, and our client SDKs seriously. If you have discovered a security vulnerability, please report it to us responsibly.
+We take the security of zn, the MCP Gateway, and our client SDKs seriously. If you have discovered a security vulnerability, please report it to us privately. Do not open a public issue or pull request.
 
-* **Email:** [security@usezn.com](mailto:security@usezn.com)
-* **Response Time:**
+* **Preferred: GitHub private vulnerability reporting.** Open the [Security tab](https://github.com/usezn/zn/security) of this repository and click **Report a vulnerability** ([direct link](https://github.com/usezn/zn/security/advisories/new)). The report stays private between you and the maintainers, and we can work on the fix and the advisory with you there.
+* **Alternative: email** [security@usezn.com](mailto:security@usezn.com), for example if you do not have a GitHub account or the issue affects the usezn.com platform rather than this repository.
+* **Response Time** (both channels):
   * Initial acknowledgment: **within 24 hours**
   * Triage & severity assessment: **within 48 hours**
   * Remediation & patch release: typically within 7–14 days depending on complexity
