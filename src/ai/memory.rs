@@ -46,6 +46,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+/// Errors of the vector memory that callers may want to tell apart.
+#[derive(Debug, thiserror::Error)]
+pub enum MemoryError {
+    /// A search gave up after its deadline (it runs on the request path).
+    #[error("search did not finish within {0} ms")]
+    SearchDeadline(u128),
+}
+
+impl MemoryError {
+    /// True when `err` is a search that gave up on purpose: past its
+    /// deadline, or on a database that stayed busy for its short timeout.
+    pub fn is_search_give_up(err: &anyhow::Error) -> bool {
+        matches!(
+            err.downcast_ref::<MemoryError>(),
+            Some(MemoryError::SearchDeadline(_))
+        ) || VectorMemory::is_busy(err)
+    }
+}
+
 /// Rows kept per agent unless `with_max_rows` says otherwise.
 pub const DEFAULT_MAX_ROWS_PER_AGENT: usize = 10_000;
 
@@ -125,7 +144,9 @@ impl VectorMemory {
 
     /// Keep at most `max_total_rows` rows in the file (at least 1). Going
     /// over it deletes the oldest rows of the namespace furthest above its
-    /// fair share.
+    /// fair share. Each namespace keeps at least one row, so with more
+    /// namespaces than `max_total_rows` the file can hold slightly more rows
+    /// than the limit (at most one per namespace).
     pub fn with_max_total_rows(mut self, max_total_rows: usize) -> Self {
         self.max_total_rows = max_total_rows.max(1);
         self
@@ -429,7 +450,8 @@ impl VectorMemory {
                 // The file limit prunes the namespace furthest above its fair
                 // share, so a namespace at or under it never loses rows to
                 // another one and a new namespace can always store. Each round
-                // deletes at least one row, so the loop ends.
+                // deletes at least one row, and the loop also stops (break)
+                // when no namespace is above its share, so it always ends.
                 let mut excess: i64 = tx.query_row(
                     "SELECT COALESCE(SUM(row_count), 0) - ?1 FROM memory_counts",
                     params![max_total],
@@ -532,10 +554,7 @@ impl VectorMemory {
         // goes on without it and the task finishes on its own.
         let result = match tokio::time::timeout(SEARCH_DEADLINE, job).await {
             Ok(joined) => joined.map_err(anyhow::Error::from).and_then(|r| r),
-            Err(_) => Err(anyhow!(
-                "search did not finish within {} ms",
-                SEARCH_DEADLINE.as_millis()
-            )),
+            Err(_) => Err(MemoryError::SearchDeadline(SEARCH_DEADLINE.as_millis()).into()),
         };
         if let Err(e) = &result {
             self.failures.report("search", e);
@@ -652,7 +671,7 @@ mod tests {
 
     /// A search that gave up on purpose: past its deadline or on a busy database.
     fn gave_up(e: &anyhow::Error) -> bool {
-        e.to_string().contains("did not finish within") || VectorMemory::is_busy(e)
+        MemoryError::is_search_give_up(e)
     }
 
     /// Rows per namespace, read with a separate connection, after checking
@@ -885,6 +904,13 @@ mod tests {
         assert_eq!(m.max_rows, DEFAULT_MAX_ROWS_PER_AGENT);
         assert_eq!(m.max_namespace_rows, DEFAULT_MAX_ROWS_PER_NAMESPACE);
         assert_eq!(m.max_total_rows, DEFAULT_MAX_TOTAL_ROWS);
+
+        // The upper bound itself is accepted.
+        let edge = VectorMemory::new("/tmp/v", 1, "m").with_limits(|name| {
+            (name == "ZN_MEMORY_MAX_TOTAL_ROWS").then(|| MAX_LIMIT_FROM_ENV.to_string())
+        });
+        assert_eq!(edge.max_total_rows, MAX_LIMIT_FROM_ENV);
+        assert_eq!(edge.max_rows, DEFAULT_MAX_ROWS_PER_AGENT);
     }
 
     #[tokio::test]
@@ -1067,8 +1093,13 @@ mod tests {
         });
         locked_rx.recv().unwrap();
         let start = Instant::now();
-        assert!(m.search(NS, "a", &[0.0], 1).await.is_err());
+        let err = m.search(NS, "a", &[0.0], 1).await.unwrap_err();
         assert!(start.elapsed() < SEARCH_DEADLINE + Duration::from_millis(500));
+        assert!(matches!(
+            err.downcast_ref::<MemoryError>(),
+            Some(MemoryError::SearchDeadline(_))
+        ));
+        assert!(MemoryError::is_search_give_up(&err));
         holder.join().unwrap();
         assert_eq!(texts(&m, "a", 1).await, vec!["x"]);
         let _ = std::fs::remove_dir_all(&dir);
