@@ -138,10 +138,14 @@ runs:
         ZN_VERSION: ${{ inputs.version }}
         ZN_SHA256: ${{ inputs.package-sha256 }}
         ZN_VENV: ${{ runner.temp }}/zn-gate-venv
+        ZN_TEMP: ${{ runner.temp }}
       run: |
         set -euo pipefail
+        # Run outside the scanned workspace; every Python call below also uses -I,
+        # so no module from the workspace (venv, pip, zn_gate) can be imported.
+        cd "$ZN_TEMP"
         # A fresh virtualenv on every run, so the version and hash are always checked.
-        python -m venv --clear "$ZN_VENV"
+        python -I -m venv --clear "$ZN_VENV"
         if [ -x "$ZN_VENV/bin/python" ]; then
           py="$ZN_VENV/bin/python"
         else
@@ -221,6 +225,8 @@ runs:
         ZN_WORK: ${{ runner.temp }}/zn-gate-run
         ZN_WORK_ROOT: ${{ runner.temp }}
       run: |
+        # The runner starts bash with -e; collect every exit code instead.
+        set +e
         set -uo pipefail
         rm -rf "$ZN_WORK"
         mkdir -p "$ZN_WORK"

@@ -248,6 +248,7 @@ jobs:
           persist-credentials: false
       - name: Scan AI agent prompts and tools
         # Pin the action to a full commit SHA; the comment names the release.
+        # v1.4.1 does not have the package-sha256 input (v1.5.0 and later).
         uses: usezn/zn@d9da1b1a87e12c4da468cb9beec425dc3f972c5f # v1.4.1
         with:
           version: '1.4.1'
@@ -313,7 +314,7 @@ jobs:
 | `agents` | empty | Audit only: comma-separated agents to audit (`zn audit --agents`). Empty audits all supported agents. |
 | `format` | `github` | `github` (inline annotations), `text`, `json` or `sarif`. |
 | `sarif-file` | empty | With `format: sarif`, where to write the file. Empty writes `zn-gate.sarif` in a new directory under the runner temp directory. |
-| `package-sha256` | empty | SHA-256 of the PyPI wheel for `version`. When set, the install fails if the file has a different hash. |
+| `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the PyPI wheel for `version`. When set, the install fails if the file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
 | `npm-integrity` | empty | Integrity string (`sha512-...`) of the npm tarball for `version`. When set, the audit fails if the tarball has a different hash. |
 
 | Output | Description |
@@ -326,7 +327,7 @@ Which audit findings fail the step: `fail-on` if it is set; otherwise none when 
 
 With `mode: both` and `format: sarif`, the file holds one SARIF run per check (`zn-gate scan` and the audit's own run), each with its own category, so code scanning tracks their alerts separately. The step fails with the worse of the two results: an error beats findings.
 
-Permissions: the action itself needs only `contents: read`; add `security-events: write` to the job only when you upload SARIF. Packages are installed without running install scripts or build steps (`--only-binary=:all: --no-deps` for the wheel, `--ignore-scripts` for the npm tarball, whose dependencies are bundled) into private directories under the runner temp directory. Run it on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow. With `mode: audit` or `both` the action also sets up Node.js 22 for the rest of the job.
+Permissions: the action itself needs only `contents: read`; add `security-events: write` to the job only when you upload SARIF. Packages are installed without running install scripts or build steps (`--only-binary=:all: --no-deps` for the wheel, `--ignore-scripts` for the npm tarball, whose dependencies are bundled) into private directories under the runner temp directory. pip still reads the runner's own pip settings (`PIP_*` environment variables and `pip.conf`), so a mirror or proxy you configure there is used; set `package-sha256` so that the wheel is checked whatever index it comes from (and `npm-integrity` for the npm tarball). Run it on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow. With `mode: audit` or `both` the action also sets up Node.js 22 for the rest of the job.
 
 ### Repository layout
 
