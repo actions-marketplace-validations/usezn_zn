@@ -33,6 +33,8 @@ function checkNul(v) {
 // PowerShell treats the typographic single quotes as ' too, inside and at
 // the end of a single-quoted string.
 const PS_SINGLE_QUOTES = /['‘’‚‛]/g;
+// What shQuote() moves out of the single quotes: the quotes above and the backslash.
+const SH_SPECIAL = /['‘’‚‛\\]/g;
 
 /**
  * POSIX sh single quotes: nothing inside is interpreted ($, backticks, \, ",
@@ -40,13 +42,15 @@ const PS_SINGLE_QUOTES = /['‘’‚‛]/g;
  * as '"'"' rather than the usual '\'': sh reads both the same, and if
  * PowerShell reads the command instead (see the list above), the quote stays
  * inside a "..." string there too, so no part of the path becomes code.
+ * A backslash is written as '"\\"' too: fish (a possible $SHELL for Codex
+ * hooks) reads \\ and \' as escapes even inside single quotes.
  */
 function shQuote(s) {
-  return "'" + checkNul(String(s)).replace(PS_SINGLE_QUOTES, "'\"$&\"'") + "'";
+  return "'" + checkNul(String(s)).replace(SH_SPECIAL, (c) => (c === '\\' ? "'\"\\\\\"'" : "'\"" + c + "\"'")) + "'";
 }
 
 /** The escapes shQuote() writes for a quote inside a single-quoted word. */
-const SH_QUOTE_ESCAPE = /'"['‘’‚‛]"'/g;
+const SH_QUOTE_ESCAPE = /'"(?:['‘’‚‛]|\\\\)"'/g;
 
 /** PowerShell single-quoted string: no variables, subexpressions or escapes inside. */
 function powershellQuote(s) {

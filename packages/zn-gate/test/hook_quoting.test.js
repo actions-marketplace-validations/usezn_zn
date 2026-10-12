@@ -35,6 +35,8 @@ const NAMES = [
   "x'; touch " + CANARY + "; echo '",
   'back\\slash',
   'trailing\\',
+  '/opt/a\\\'b"; touch canary; #',
+  '/opt/back\\\\slash',
   'new\nline',
   'é 中文 😀',
   '%PATH% !x! ^&|<>',
