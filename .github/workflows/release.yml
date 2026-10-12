@@ -4,10 +4,12 @@ name: Release
 # publishes those exact files to PyPI and npm (OIDC trusted publishing, no
 # stored tokens) and to a GitHub Release.
 #
-# - Tag push (vX.Y.Z or vX.Y.Z-beta.N): verify, build, sign, then wait for
-#   approval on the "release" environment before anything is published.
-# - workflow_dispatch: dry run for an existing tag. It verifies, builds and
-#   signs, uploads the workflow artifact and stops. It never publishes.
+# - Tag push (vX.Y.Z or vX.Y.Z-beta.N): verify and build, then wait for
+#   approval on the "release" environment before anything is signed, attested
+#   or published (signing, the two publish jobs and the GitHub Release each ask
+#   for that approval).
+# - workflow_dispatch: dry run for an existing tag. It verifies and builds,
+#   uploads the unsigned workflow artifact and stops. It never signs or publishes.
 #
 # How to verify a release: docs/verify-release.md
 
@@ -19,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and sign (dry run, nothing is published), e.g. v1.5.0"
+        description: "Existing tag to build (dry run, nothing is signed or published), e.g. v1.5.0"
         required: true
         type: string
 
@@ -208,8 +210,13 @@ jobs:
   sign:
     name: Attest and sign
     needs: [verify, build]
+    # Nothing is signed or attested before the maintainer approves the release
+    # environment, and never in a dry run.
+    if: needs.verify.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment:
+      name: release
     permissions:
       contents: read
       id-token: write
