@@ -10,6 +10,7 @@
 //!
 //! An invalid token gets 401; a valid JWT that grants no usable role gets 403.
 
+use crate::config::normalize_credential;
 use crate::tenants::{
     valid_tenant_namespace, TenantContext, TenantRole, TenantStore, GLOBAL_NAMESPACE,
 };
@@ -126,12 +127,13 @@ fn check_jwt(token: &str, secret: &str) -> JwtCheck {
 }
 
 impl AuthConfig {
-    /// A blank API key or JWT secret counts as not configured.
+    /// A blank API key or JWT secret counts as not configured. The API key is
+    /// trimmed, as tokens from headers are; the JWT secret is used as given,
+    /// since trimming it would change the signatures it verifies.
     pub fn new(api_key: Option<String>, jwt_secret: Option<String>) -> Self {
-        let non_blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
         Self {
-            api_key: non_blank(api_key),
-            jwt_secret: non_blank(jwt_secret),
+            api_key: normalize_credential(api_key),
+            jwt_secret: jwt_secret.filter(|s| !s.trim().is_empty()),
             tenant_store: None,
         }
     }
@@ -188,13 +190,13 @@ pub async fn api_key_auth(mut request: Request, next: Next) -> Result<Response, 
         // Fallback: query parameters (for SSE/WebSocket)
         None => request.uri().query().and_then(query_token),
     };
-    // An empty token never authenticates.
-    let token = token.filter(|t| !t.is_empty());
+    // An empty or blank token never authenticates.
+    let token = token.filter(|t| !t.trim().is_empty());
 
     match token {
         Some(token) => {
             // 1. Check against Legacy Super-Admin API Key
-            if let Some(expected_key) = config.api_key.as_deref().filter(|k| !k.is_empty()) {
+            if let Some(expected_key) = config.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
                 if constant_time_compare(&token, expected_key) {
                     // Inject super-admin context
                     request.extensions_mut().insert(super_admin_context());
@@ -284,8 +286,29 @@ fn percent_decode(value: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Checks the optional MCP WebSocket token (`ZN_MCP_WS_TOKEN`), sent in the
+/// `token` query parameter or the `X-MCP-Token` header. `None` means no token
+/// is configured. Otherwise the provided token must match it exactly,
+/// compared in constant time; a blank token, configured or provided, never
+/// matches.
+///
+/// Known limit: the `token` query parameter is also read by the
+/// authentication middleware as a credential, which takes the first of
+/// `api_key` and `token`. A WebSocket client that sends both should put
+/// `api_key` first, or send the MCP token in the `X-MCP-Token` header.
+pub fn mcp_ws_token_matches(required: Option<&str>, provided: Option<&str>) -> bool {
+    match required {
+        None => true,
+        Some(required) => provided.is_some_and(|provided| {
+            !required.trim().is_empty()
+                && !provided.trim().is_empty()
+                && constant_time_compare(provided, required)
+        }),
+    }
+}
+
 /// Constant-time string comparison to prevent timing attacks
-fn constant_time_compare(a: &str, b: &str) -> bool {
+pub fn constant_time_compare(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -506,6 +529,34 @@ mod tests {
         let c = AuthConfig::new(Some("   ".to_string()), Some(String::new()));
         assert!(c.api_key.is_none());
         assert!(c.jwt_secret.is_none());
+        let c = AuthConfig::new(Some("\t\n ".to_string()), Some("  ".to_string()));
+        assert!(c.api_key.is_none());
+        assert!(c.jwt_secret.is_none());
+    }
+
+    #[test]
+    fn api_key_is_trimmed_and_jwt_secret_is_kept() {
+        let c = AuthConfig::new(Some("  key \n".to_string()), Some(" secret ".to_string()));
+        assert_eq!(c.api_key.as_deref(), Some("key"));
+        assert_eq!(c.jwt_secret.as_deref(), Some(" secret "));
+    }
+
+    #[test]
+    fn mcp_ws_token_check() {
+        // No token configured: no check.
+        assert!(mcp_ws_token_matches(None, None));
+        assert!(mcp_ws_token_matches(None, Some("anything")));
+        // A configured token must be matched exactly.
+        assert!(mcp_ws_token_matches(Some("ws-token"), Some("ws-token")));
+        assert!(!mcp_ws_token_matches(Some("ws-token"), Some("ws-tokeN")));
+        assert!(!mcp_ws_token_matches(Some("ws-token"), Some("ws-token ")));
+        assert!(!mcp_ws_token_matches(Some("ws-token"), None));
+        // Blank tokens never match, even each other.
+        for blank in ["", " ", "\t"] {
+            assert!(!mcp_ws_token_matches(Some(blank), Some(blank)), "{blank:?}");
+            assert!(!mcp_ws_token_matches(Some("ws-token"), Some(blank)));
+        }
+        assert!(!mcp_ws_token_matches(Some(""), None));
     }
 
     #[test]
@@ -684,6 +735,18 @@ mod tests {
         assert_eq!(call(&url, bearer("")).await.0, 401);
         assert_eq!(call(&format!("{url}?api_key="), None).await.0, 401);
         assert_eq!(call(&format!("{url}?token="), None).await.0, 401);
+
+        // The same with a blank legacy key and blank tokens: a query value can
+        // carry spaces once percent-decoded.
+        let config = AuthConfig {
+            api_key: Some("   ".to_string()),
+            jwt_secret: None,
+            tenant_store: None,
+        };
+        let url = serve_config(Some(config)).await;
+        assert_eq!(call(&format!("{url}?api_key=%20%20%20"), None).await.0, 401);
+        assert_eq!(call(&format!("{url}?token=%09"), None).await.0, 401);
+        assert_eq!(call(&url, bearer("   ")).await.0, 401);
     }
 
     #[tokio::test]

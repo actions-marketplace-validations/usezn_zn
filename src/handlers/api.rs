@@ -2,11 +2,7 @@
 //!
 //! Contains all REST API endpoints for the zn Management API.
 
-use axum::{
-    extract::{Multipart, State},
-    response::Json,
-    Extension,
-};
+use axum::{extract::State, http::StatusCode, response::Json, Extension};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -125,95 +121,6 @@ pub async fn policies_list(
     }))
 }
 
-/// Upload new policy endpoint (SuperAdmin only)
-pub async fn policies_upload(
-    State(state): State<ApiState>,
-    Extension(tenant): Extension<TenantContext>,
-    mut multipart: Multipart,
-) -> Json<Value> {
-    if tenant.role != TenantRole::SuperAdmin {
-        return Json(json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
-    }
-
-    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
-        let name = field.name().unwrap_or("").to_string();
-        if name == "policy" {
-            let filename = field
-                .file_name()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("policy_{}.wasm", chrono::Utc::now().timestamp()));
-
-            if let Ok(bytes) = field.bytes().await {
-                // Save to policies directory
-                let path = std::path::Path::new("policies").join(&filename);
-                if let Err(e) = std::fs::write(&path, &bytes) {
-                    return Json(json!({
-                        "status": "error",
-                        "error": format!("Failed to save policy: {}", e)
-                    }));
-                }
-
-                // Register with engine
-                if let Err(e) = state.engine.register_policy_from_file(&path) {
-                    return Json(json!({
-                        "status": "error",
-                        "error": format!("Failed to load policy: {}", e)
-                    }));
-                }
-
-                return Json(json!({
-                    "status": "ok",
-                    "message": format!("Policy '{}' uploaded and registered", filename)
-                }));
-            }
-        }
-    }
-
-    Json(json!({
-        "status": "error",
-        "error": "No file uploaded"
-    }))
-}
-
-#[derive(serde::Deserialize)]
-pub struct DeletePolicyRequest {
-    pub name: String,
-}
-
-/// Delete policy endpoint (SuperAdmin only)
-pub async fn policies_delete(
-    State(state): State<ApiState>,
-    Extension(tenant): Extension<TenantContext>,
-    axum::Json(payload): axum::Json<DeletePolicyRequest>,
-) -> Json<Value> {
-    if tenant.role != TenantRole::SuperAdmin {
-        return Json(json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
-    }
-
-    state.engine.unregister_policy(&payload.name);
-
-    let path = std::path::Path::new("policies").join(format!("{}.wasm", payload.name));
-    if path.exists() {
-        if let Err(e) = std::fs::remove_file(path) {
-            return Json(json!({
-                "status": "error",
-                "error": format!("Failed to delete policy file: {}", e)
-            }));
-        }
-    }
-
-    Json(json!({
-        "status": "ok",
-        "message": format!("Policy '{}' deleted", payload.name)
-    }))
-}
-
 // ============================================
 // Tenant Management
 // ============================================
@@ -225,31 +132,42 @@ pub struct CreateTenantRequest {
     pub api_key: String,
 }
 
-/// Create a new tenant (SuperAdmin only)
+/// Create a new tenant (SuperAdmin only). Answers 403 to other roles and
+/// 400 when the tenant cannot be created (for example an invalid namespace,
+/// a blank key, or a name, namespace or key already in use).
 pub async fn tenants_create(
     State(state): State<ApiState>,
     Extension(tenant): Extension<TenantContext>,
     axum::Json(payload): axum::Json<CreateTenantRequest>,
-) -> Json<Value> {
+) -> (StatusCode, Json<Value>) {
     if tenant.role != TenantRole::SuperAdmin {
-        return Json(json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "status": "error",
+                "error": "Forbidden: SuperAdmin role required"
+            })),
+        );
     }
 
     match state
         .tenants
         .create_tenant(&payload.name, &payload.namespace, &payload.api_key)
     {
-        Ok(_) => Json(json!({
-            "status": "ok",
-            "message": "Tenant created successfully"
-        })),
-        Err(e) => Json(json!({
-            "status": "error",
-            "error": e.to_string()
-        })),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "ok",
+                "message": "Tenant created successfully"
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "error",
+                "error": e.to_string()
+            })),
+        ),
     }
 }
 
@@ -435,18 +353,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_policies_delete_authorization() {
-        let state = setup_test_state();
-        let payload = axum::Json(DeletePolicyRequest {
-            name: "critical_policy".to_string(),
-        });
-        // Regular non-admin tenant MUST be forbidden
-        let res = policies_delete(State(state), Extension(user_tenant()), payload).await;
-        assert_eq!(res.0["status"], "error");
-        assert_eq!(res.0["error"], "Forbidden: SuperAdmin role required");
-    }
-
-    #[tokio::test]
     async fn test_consensus_list_authorization() {
         let state = setup_test_state();
         // Regular non-admin tenant MUST be forbidden
@@ -470,6 +376,47 @@ mod tests {
         let res = consensus_sign(State(state), Extension(user_tenant()), payload).await;
         assert_eq!(res.0["status"], "error");
         assert_eq!(res.0["error"], "Forbidden: SuperAdmin role required");
+    }
+
+    #[tokio::test]
+    async fn tenants_create_answers_with_http_status_codes() {
+        let state = setup_test_state();
+        let request = |namespace: &str, api_key: &str| {
+            axum::Json(CreateTenantRequest {
+                name: format!("org-{namespace}"),
+                namespace: namespace.to_string(),
+                api_key: api_key.to_string(),
+            })
+        };
+
+        let (status, body) = tenants_create(
+            State(state.clone()),
+            Extension(user_tenant()),
+            request("acme", "acme-key-for-tests"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body.0["error"], "Forbidden: SuperAdmin role required");
+
+        let (status, body) = tenants_create(
+            State(state.clone()),
+            Extension(super_admin_tenant()),
+            request("acme", "acme-key-for-tests"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.0["status"], "ok");
+
+        for (namespace, api_key) in [("global", "other-key"), ("other", "   "), ("acme", "k2")] {
+            let (status, body) = tenants_create(
+                State(state.clone()),
+                Extension(super_admin_tenant()),
+                request(namespace, api_key),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{namespace:?}");
+            assert_eq!(body.0["status"], "error");
+        }
     }
 
     #[tokio::test]
