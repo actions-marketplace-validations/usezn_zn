@@ -41,10 +41,7 @@ impl LoopBreaker {
         let now = Instant::now();
         let window = Duration::from_secs(self.config.window_seconds);
 
-        let mut agent_history = self
-            .history
-            .entry(agent_id.to_string())
-            .or_insert_with(VecDeque::new);
+        let mut agent_history = self.history.entry(agent_id.to_string()).or_default();
 
         // Cleanup old entries
         while agent_history

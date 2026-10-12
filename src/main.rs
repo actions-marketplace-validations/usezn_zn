@@ -303,7 +303,7 @@ async fn main() -> Result<()> {
     intro("🛡️ zn | usezn.com")?;
 
     // 2. Initialize Tracing & OTLP
-    init_tracing()?;
+    let _tracing = init_tracing()?;
 
     // 3. Handle Commands
     match &args.command {
@@ -539,7 +539,7 @@ async fn start_proxy(args: Args) -> Result<()> {
     ))?;
     let canary = Arc::new(zn::ai::CanaryDeployer::new(backend));
 
-    // Initialize Neural Memory (LanceDB)
+    // Initialize Neural Memory (SQLite)
     let vector_db_path = "data/vectors";
     std::fs::create_dir_all(vector_db_path).ok();
     let memory = Arc::new(zn::ai::VectorMemory::new(
@@ -1749,8 +1749,18 @@ fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
         .allow_credentials(true)
 }
 
+/// Flushes and shuts down the OTLP tracer provider when dropped, so the last
+/// batch of spans is exported before the process exits.
+struct TracingGuard(SdkTracerProvider);
+
+impl Drop for TracingGuard {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown();
+    }
+}
+
 /// Initialize OTLP Tracing and Registry
-fn init_tracing() -> Result<()> {
+fn init_tracing() -> Result<TracingGuard> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -1758,13 +1768,14 @@ fn init_tracing() -> Result<()> {
         .with_thread_ids(true)
         .with_target(false);
 
-    // OTLP Exporter (can be disabled via env)
-    let otlp_endpoint =
-        std::env::var("ZN_OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4318".to_string());
-
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .with_endpoint(format!("{}/v1/traces", otlp_endpoint))
+    // OTLP exporter. ZN_OTLP_ENDPOINT (base URL) wins when set; otherwise the
+    // standard OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT
+    // variables apply, falling back to http://localhost:4318/v1/traces.
+    let mut exporter = opentelemetry_otlp::SpanExporter::builder().with_http();
+    if let Ok(base) = std::env::var("ZN_OTLP_ENDPOINT") {
+        exporter = exporter.with_endpoint(format!("{}/v1/traces", base.trim_end_matches('/')));
+    }
+    let exporter = exporter
         .build()
         .map_err(|e| anyhow!("Failed to initialize OTLP exporter: {}", e))?;
     let provider = SdkTracerProvider::builder()
@@ -1777,7 +1788,7 @@ fn init_tracing() -> Result<()> {
         )
         .build();
     let tracer = provider.tracer("zn-proxy");
-    opentelemetry::global::set_tracer_provider(provider);
+    opentelemetry::global::set_tracer_provider(provider.clone());
 
     let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
@@ -1787,7 +1798,7 @@ fn init_tracing() -> Result<()> {
         .with(otlp_layer)
         .init();
 
-    Ok(())
+    Ok(TracingGuard(provider))
 }
 
 /// List pending authorizations for consensus (SuperAdmin only)

@@ -28,7 +28,10 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
-          toolchain: stable
+          # Pinned so a new stable release cannot fail CI through new lints.
+          # Bump deliberately; the minimum supported version is rust-version
+          # in Cargo.toml.
+          toolchain: 1.99.0
           components: clippy, rustfmt
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:

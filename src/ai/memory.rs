@@ -1,12 +1,14 @@
-use anyhow::Result;
-use futures::TryStreamExt;
-use lance::dataset::{Dataset, WriteMode, WriteParams};
-use lance::deps::arrow_array::{
-    Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
-    StringArray,
-};
-use lance::deps::arrow_schema::{DataType, Field, Schema};
-use std::sync::Arc;
+//! Per-agent vector memory stored in SQLite.
+//!
+//! Each (model, dimension) pair gets its own database file under `base_path`,
+//! and each agent its own rows. Search is an exact scan that returns the
+//! squared Euclidean (L2) distance, so existing anomaly thresholds keep their
+//! meaning. Agent memories are small (one row per checked input), so an exact
+//! scan is fast enough and needs no index.
+
+use anyhow::{anyhow, Result};
+use rusqlite::{params, Connection};
+use std::path::{Path, PathBuf};
 
 pub struct VectorMemory {
     base_path: String,
@@ -23,128 +25,128 @@ impl VectorMemory {
         }
     }
 
-    pub fn table_namespace(&self, agent_id: &str) -> String {
-        let safe_model: String = self
-            .model_id
+    fn safe_model(&self) -> String {
+        self.model_id
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        format!("{}/{safe_model}_d{}/{}", self.base_path, self.dim, agent_id)
+            .collect()
     }
 
-    /// Store a vector embedding for a specific agent
-    pub async fn store(&self, agent_id: &str, text: &str, vector: &[f32]) -> Result<()> {
-        let uri = self.table_namespace(agent_id);
+    /// Logical name of an agent's memory: base path, model, dimension, agent.
+    pub fn table_namespace(&self, agent_id: &str) -> String {
+        format!(
+            "{}/{}_d{}/{}",
+            self.base_path,
+            self.safe_model(),
+            self.dim,
+            agent_id
+        )
+    }
 
-        // Define Schema: text (Utf8), vector (FixedSizeList<dim>)
-        let dim = self.dim;
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("text", DataType::Utf8, false),
-            Field::new(
-                "vector",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
-                false,
-            ),
-        ]));
+    fn db_path(&self) -> PathBuf {
+        Path::new(&self.base_path).join(format!("{}_d{}.sqlite3", self.safe_model(), self.dim))
+    }
 
-        // Build Arrow Arrays
-        let text_array = Arc::new(StringArray::from(vec![text])) as Arc<dyn Array>;
+    fn open(path: &Path) -> Result<Connection> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE IF NOT EXISTS memory (
+                 id INTEGER PRIMARY KEY,
+                 agent_id TEXT NOT NULL,
+                 text TEXT NOT NULL,
+                 vector BLOB NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS memory_agent ON memory(agent_id);",
+        )?;
+        Ok(conn)
+    }
 
-        // Build FixedSizeListArray manually
-        let values = Arc::new(Float32Array::from(vector.to_vec())) as Arc<dyn Array>;
-        let vector_array = Arc::new(
-            FixedSizeListArray::try_new(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                dim,
-                values,
-                None,
-            )
-            .map_err(|e| anyhow::anyhow!("Arrow error: {}", e))?,
-        ) as Arc<dyn Array>;
-
-        let batch = RecordBatch::try_new(schema.clone(), vec![text_array, vector_array])
-            .map_err(|e| anyhow::anyhow!("Arrow error: {}", e))?;
-
-        // Write to Lance (Append mode)
-        // Correcting bounds for Dataset::write
-        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            as Box<dyn RecordBatchReader + Send + 'static>;
-
-        let params = WriteParams {
-            mode: if std::path::Path::new(&uri).exists() {
-                WriteMode::Append
-            } else {
-                WriteMode::Create
-            },
-            ..Default::default()
-        };
-
-        Dataset::write(reader, &uri, Some(params))
-            .await
-            .map_err(|e| anyhow::anyhow!("Lance error: {}", e))?;
-
+    fn check_vector(&self, vector: &[f32]) -> Result<()> {
+        if vector.len() != self.dim as usize {
+            return Err(anyhow!(
+                "vector has {} dimensions, memory expects {}",
+                vector.len(),
+                self.dim
+            ));
+        }
+        if !vector.iter().all(|v| v.is_finite()) {
+            return Err(anyhow!("vector contains NaN or infinite values"));
+        }
         Ok(())
     }
 
-    /// Find nearest neighbors (Semantic Search)
+    /// Store a vector embedding for a specific agent.
+    pub async fn store(&self, agent_id: &str, text: &str, vector: &[f32]) -> Result<()> {
+        self.check_vector(vector)?;
+        let path = self.db_path();
+        let agent = agent_id.to_string();
+        let text = text.to_string();
+        let blob: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = Self::open(&path)?;
+            conn.execute(
+                "INSERT INTO memory (agent_id, text, vector) VALUES (?1, ?2, ?3)",
+                params![agent, text, blob],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Nearest stored texts for an agent, closest first, as (text, squared L2 distance).
     pub async fn search(
         &self,
         agent_id: &str,
         vector: &[f32],
         limit: usize,
     ) -> Result<Vec<(String, f32)>> {
-        let uri = self.table_namespace(agent_id);
-        if !std::path::Path::new(&uri).exists() {
+        self.check_vector(vector)?;
+        let path = self.db_path();
+        if limit == 0 || !path.exists() {
             return Ok(vec![]);
         }
-
-        let dataset = Dataset::open(&uri)
-            .await
-            .map_err(|e| anyhow::anyhow!("Lance error: {}", e))?;
-        // Scan with vector search
-        let mut scanner = dataset.scan();
-
-        // Perform ANN search
-        let query_vector = Float32Array::from(vector.to_vec());
-        scanner
-            .nearest("vector", &query_vector, limit)
-            .map_err(|e| anyhow::anyhow!("Lance search error: {}", e))?;
-
-        scanner
-            .project(&["text"])
-            .map_err(|e| anyhow::anyhow!("Lance project error: {}", e))?;
-
-        let mut results = vec![];
-        let mut stream = scanner
-            .try_into_stream()
-            .await
-            .map_err(|e| anyhow::anyhow!("Lance stream error: {}", e))?;
-
-        while let Some(batch) = stream
-            .try_next()
-            .await
-            .map_err(|e| anyhow::anyhow!("Lance next error: {}", e))?
-        {
-            let text_col = batch
-                .column_by_name("text")
-                .ok_or_else(|| anyhow::anyhow!("Column 'text' not found"))?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| anyhow::anyhow!("Column 'text' is not a StringArray"))?;
-
-            let dist_col = batch
-                .column_by_name("_distance")
-                .ok_or_else(|| anyhow::anyhow!("Column '_distance' not found"))?
-                .as_any()
-                .downcast_ref::<Float32Array>()
-                .ok_or_else(|| anyhow::anyhow!("Column '_distance' is not a Float32Array"))?;
-
-            for i in 0..batch.num_rows() {
-                results.push((text_col.value(i).to_string(), dist_col.value(i)));
+        let agent = agent_id.to_string();
+        let query = vector.to_vec();
+        tokio::task::spawn_blocking(move || -> Result<Vec<(String, f32)>> {
+            let conn = Self::open(&path)?;
+            let mut stmt = conn.prepare("SELECT text, vector FROM memory WHERE agent_id = ?1")?;
+            let mut rows = stmt.query(params![agent])?;
+            let mut best: Vec<(String, f32)> = Vec::new();
+            while let Some(row) = rows.next()? {
+                let blob: Vec<u8> = row.get(1)?;
+                if blob.len() != query.len() * 4 {
+                    continue;
+                }
+                let d: f32 = blob
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(&query)
+                    .map(|(b, q)| {
+                        let v = f32::from_le_bytes(*b);
+                        (v - q) * (v - q)
+                    })
+                    .sum();
+                // Rows written before non-finite input was rejected, or values
+                // that overflow, must not break the ordering of the top-k list.
+                if !d.is_finite() {
+                    continue;
+                }
+                if best.len() < limit || d < best[best.len() - 1].1 {
+                    let text: String = row.get(0)?;
+                    let pos = best.partition_point(|(_, bd)| *bd <= d);
+                    best.insert(pos, (text, d));
+                    best.truncate(limit);
+                }
             }
-        }
-
-        Ok(results)
+            Ok(best)
+        })
+        .await?
     }
 }
 
@@ -160,5 +162,71 @@ mod tests {
         assert_ne!(a.table_namespace("agent"), b.table_namespace("agent"));
         assert_ne!(a.table_namespace("agent"), c.table_namespace("agent"));
         assert!(a.table_namespace("agent").contains("minilm_v2_d384"));
+        assert_ne!(a.db_path(), b.db_path());
+        assert_ne!(a.db_path(), c.db_path());
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("zn-mem-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[tokio::test]
+    async fn search_returns_nearest_first_with_squared_l2() {
+        let dir = temp_dir("nearest");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 3, "m");
+        assert!(m.search("a", &[0.0, 0.0, 0.0], 5).await.unwrap().is_empty());
+        m.store("a", "far", &[3.0, 0.0, 0.0]).await.unwrap();
+        m.store("a", "near", &[1.0, 0.0, 0.0]).await.unwrap();
+        m.store("a", "mid", &[0.0, 2.0, 0.0]).await.unwrap();
+        m.store("b", "other agent", &[0.0, 0.0, 0.0]).await.unwrap();
+        let r = m.search("a", &[0.0, 0.0, 0.0], 2).await.unwrap();
+        assert_eq!(r, vec![("near".to_string(), 1.0), ("mid".to_string(), 4.0)]);
+        let r = m.search("a", &[0.0, 0.0, 0.0], 10).await.unwrap();
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[2], ("far".to_string(), 9.0));
+        assert!(m
+            .search("nobody", &[0.0, 0.0, 0.0], 1)
+            .await
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn wrong_dimension_is_rejected() {
+        let dir = temp_dir("dim");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 3, "m");
+        assert!(m.store("a", "x", &[1.0, 2.0]).await.is_err());
+        assert!(m.search("a", &[1.0], 1).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn non_finite_vectors_are_rejected_and_skipped() {
+        let dir = temp_dir("finite");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 2, "m");
+        assert!(m.store("a", "nan", &[f32::NAN, 0.0]).await.is_err());
+        assert!(m.store("a", "inf", &[f32::INFINITY, 0.0]).await.is_err());
+        assert!(m.search("a", &[0.0, f32::NAN], 1).await.is_err());
+
+        // A row that bypassed validation must not displace valid results.
+        m.store("a", "near", &[1.0, 0.0]).await.unwrap();
+        let blob: Vec<u8> = [f32::NAN, 0.0f32]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        VectorMemory::open(&m.db_path())
+            .unwrap()
+            .execute(
+                "INSERT INTO memory (agent_id, text, vector) VALUES (?1, ?2, ?3)",
+                params!["a", "bad", blob],
+            )
+            .unwrap();
+        m.store("a", "far", &[2.0, 0.0]).await.unwrap();
+        let r = m.search("a", &[0.0, 0.0], 5).await.unwrap();
+        assert_eq!(r, vec![("near".to_string(), 1.0), ("far".to_string(), 4.0)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
