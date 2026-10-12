@@ -117,10 +117,19 @@ jobs:
           version: '1.4.1'
           path: .github/action-selftest/agent-config
 
+      - name: Invalid severity-threshold is refused
+        id: badthreshold
+        continue-on-error: true
+        uses: ./
+        with:
+          severity-threshold: 'critical'
+          path: .github/action-selftest/clean
+
       - name: Check results
         shell: bash
         env:
           FINDINGS: ${{ steps.findings.outcome }}
+          BADTHRESHOLD: ${{ steps.badthreshold.outcome }}
           BADHASH: ${{ steps.badhash.outcome }}
           BADVERSION: ${{ steps.badversion.outcome }}
           AUDITOLD: ${{ steps.auditold.outcome }}
@@ -135,6 +144,7 @@ jobs:
           test "$BADHASH" = failure
           test "$BADVERSION" = failure
           test "$AUDITOLD" = failure
+          test "$BADTHRESHOLD" = failure
           test "$SARIF_SCAN_RC" = 0
           test "$BOTHOLD_SCAN_RC" = 0
           test -z "$BOTHOLD_AUDIT_RC"
@@ -170,6 +180,26 @@ jobs:
           path: .github/action-selftest/agent-config
           fail-on: none
           format: sarif
+
+      - name: fail-on overrides severity-threshold
+        uses: ./
+        with:
+          version: ${{ inputs.audit-version }}
+          mode: audit
+          path: .github/action-selftest/agent-config
+          severity-threshold: 'low'
+          fail-on: none
+          format: text
+
+      - name: fail-on-threat false overrides severity-threshold
+        uses: ./
+        with:
+          version: ${{ inputs.audit-version }}
+          mode: audit
+          path: .github/action-selftest/agent-config
+          severity-threshold: 'low'
+          fail-on-threat: 'false'
+          format: json
 
       - name: Check results
         shell: bash
