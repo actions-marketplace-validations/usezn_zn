@@ -110,6 +110,15 @@
     { "prefix": "sk-proj-", "repeat": "Qw3e", "times": 12, "suffix": "_backup" },
     { "prefix": "MY_AWS_SECRET=", "repeat": "u", "times": 40 },
     { "prefix": "-----BEGIN PRIVATE KEY-----\nMIIE", "repeat": "Ab", "times": 30, "suffix": "\n-----END PRIVATE KEY-----" },
-    { "prefix": "-----BEGIN PRIVATE KEY-----\n-----BEGIN RSA PRIVATE KEY-----\nMII", "repeat": "Cd", "times": 30, "suffix": "\n-----END RSA PRIVATE KEY-----" }
+    { "prefix": "-----BEGIN PRIVATE KEY-----\n-----BEGIN RSA PRIVATE KEY-----\nMII", "repeat": "Cd", "times": 30, "suffix": "\n-----END RSA PRIVATE KEY-----" },
+    "DATABASE_URL=po\u017ftgres://app:hunter2pass@db.internal:5432/app",
+    "DATABASE_URL=postgres://app:hunter2pass@db.internal:5432/app",
+    "MYSQL://root:s3cretpw@127.0.0.1:3306/shop",
+    "cache: Redis://default:r3dispw@cache:6379/0",
+    "mongodb+srv://svc:m0ngopw@cluster0.example.net/prod",
+    "MONGODB+SRV://svc:m0ngopw@cluster0.example.net/prod",
+    "my\u017fql://root:s3cretpw@127.0.0.1/shop",
+    "redi\u017f://default:r3dispw@cache:6379",
+    "mongodb+\u017frv://svc:m0ngopw@cluster0.example.net/prod"
   ]
 }

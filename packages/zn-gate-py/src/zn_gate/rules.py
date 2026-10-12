@@ -1,6 +1,6 @@
 """
 zn deterministic rules engine - Python stdlib implementation.
-RULES_VERSION: 2026-10-12.3
+RULES_VERSION: 2026-10-12.4
 Zero external dependencies. Pure Python stdlib.
 """
 
@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-10-12.3"
+RULES_VERSION = "2026-10-12.4"
 
 # Cyrillic homoglyphs mapping to Latin
 HOMOGLYPH_MAP = {
@@ -395,7 +395,7 @@ SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
     ("secret:aws_access_key", re.compile(r'(?<![A-Za-z0-9_])(AKIA[0-9A-Z]{16})(?![A-Za-z0-9_])'), "[REDACTED_AWS_KEY]"),
     ("secret:aws_secret_key", re.compile(r"""((?:[Aa][Ww][Ss]_[Ss][Ee][Cc][Rr][Ee][Tt]_[Aa][Cc][Cc][Ee][Ss][Ss]_[Kk][Ee][Yy]|[Aa][Ww][Ss]_[Ss][Ee][Cc][Rr][Ee][Tt]|[Aa][Ww][Ss]_[Kk][Ee][Yy])\s*[:=]\s*['"]?)([A-Za-z0-9/+=]{40})(['"]?)"""), r'\1[REDACTED_AWS_SECRET]\3'),
     ("secret:github_token", re.compile(r'(?<![A-Za-z0-9_])((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,40}|github_pat_[A-Za-z0-9_]{82})(?![A-Za-z0-9_])'), "[REDACTED_GITHUB_TOKEN]"),
-    ("secret:db_url_password", re.compile(r'((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:)([^@\s\/]+)(@)', re.IGNORECASE), r'\1[REDACTED_DB_PASSWORD]\3'),
+    ("secret:db_url_password", re.compile(r'((?:[Pp][Oo][Ss][Tt][Gg][Rr][Ee][Ss](?:[Qq][Ll])?|[Mm][Yy][Ss][Qq][Ll]|[Mm][Oo][Nn][Gg][Oo][Dd][Bb](?:\+[Ss][Rr][Vv])?|[Rr][Ee][Dd][Ii][Ss]|[Aa][Mm][Qq][Pp]):\/\/[^:\s\/]+:)([^@\s\/]+)(@)'), r'\1[REDACTED_DB_PASSWORD]\3'),
     # The lookahead + backreference pairs act as atomic groups, so a long run of
     # "-eyJ" cannot make the engine retry every split point, and the lookbehind
     # allows a single start per token. Only used when the
