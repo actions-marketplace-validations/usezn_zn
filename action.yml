@@ -92,5 +92,7 @@ runs:
         if [ "$ZN_FAIL_ON_THREAT" = "false" ]; then
           args+=(--no-fail)
         fi
-        # -I keeps files in the scanned workspace off the import path.
-        "$ZN_PYTHON" -I -m zn_gate.cli "${args[@]}" -- "$ZN_PATH"
+        # -I keeps files in the scanned workspace off the import path; -X utf8
+        # lets the text report print on runners whose console code page is not
+        # UTF-8 (Windows).
+        "$ZN_PYTHON" -I -X utf8 -m zn_gate.cli "${args[@]}" -- "$ZN_PATH"
