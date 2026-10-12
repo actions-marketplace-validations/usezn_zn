@@ -134,6 +134,23 @@ test('secret redaction finishes quickly on 64 KB worst-case inputs', () => {
   }
 });
 
+// A crafted tool result can repeat key prefixes: redaction must stay fast at 256 KB.
+test('secret redaction of 256 KB worst-case inputs finishes in under a second', () => {
+  const big = 256 * 1024;
+  const marker = 'T3Blbk' + 'FJ';
+  const inputs = [
+    fill('sk-', big),
+    'sk-'.repeat(66) + marker + 'a' + '-'.repeat(big - 207),
+    fill('sk-helicone-', big),
+    fill('sk-a1b2c3d-', big),
+    fill('sk-' + marker, big),
+  ];
+  for (const input of inputs) {
+    const ms = timeMs(() => redactSecrets(input));
+    assert.ok(ms < EVALUATE_256K_MS, `redactSecrets took ${ms.toFixed(1)} ms on ${label(input)}... x 256 KB`);
+  }
+});
+
 test('normalization finishes quickly on 64 KB worst-case inputs', () => {
   for (const input of WORST_CASES) {
     const ms = timeMs(() => normalizeInput(input));

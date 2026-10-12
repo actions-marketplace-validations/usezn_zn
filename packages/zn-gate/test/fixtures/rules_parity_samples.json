@@ -136,6 +136,11 @@
     "MONGODB+SRV://svc:m0ngopw@cluster0.example.net/prod",
     "my\u017fql://root:s3cretpw@127.0.0.1/shop",
     "redi\u017f://default:r3dispw@cache:6379",
-    "mongodb+\u017frv://svc:m0ngopw@cluster0.example.net/prod"
+    "mongodb+\u017frv://svc:m0ngopw@cluster0.example.net/prod",
+    { "prefix": "sk-helicone-", "repeat": "a1b2c3d-", "times": 3, "suffix": "a1b2c3d-old" },
+    { "prefix": "sk-helicone-eu-", "repeat": "a1b2c3d-", "times": 3, "suffix": "a1b2c3dX" },
+    { "prefix": "sk-", "repeat": "a1b2c3d-", "times": 3, "suffix": "a1b2c3dX" },
+    { "prefix": "OPENAI_KEY=sk-", "repeat": "Qw3e", "times": 5, "suffix": "T3BlbkFJQw3eQw3eQw3eQw3eQw3e_backup" },
+    { "prefix": "sk-sk-sk-", "repeat": "-", "times": 300, "suffix": "T3BlbkFJ" }
   ]
 }
