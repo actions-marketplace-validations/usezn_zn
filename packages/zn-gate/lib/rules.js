@@ -488,7 +488,12 @@ const CREDENTIAL_URL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^\/@:\s]*:([^\/@\s]*
 const CREDENTIAL_STORE_RE = /^(?:arn:|vault:|secretref:|@Microsoft\.KeyVault\(|projects\/[^\/]+\/secrets\/)/;
 const CREDENTIAL_CODE_ROOT_RE = /^(?:process\.env[.\[]|import\.meta\.env[.\[]|os\.environ|os\.getenv\(|getenv\(|settings\.|config\.|secrets\.|std::env::|env::var|ENV(?:\[|\.fetch\()|\$ENV\{|System\.getenv\(|Deno\.env\.|Bun\.env\.|\[Environment\]::|\([A-Z][a-z]+-[A-Z])/;
 // A placeholder or reference that is the whole value (always left alone).
-const CREDENTIAL_PLACEHOLDER_RE = /^(?:\$\$?[A-Za-z_][A-Za-z0-9_]*|![A-Za-z][A-Za-z0-9]*|@[A-Za-z0-9_.-]+@|\$env:[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%|%\([A-Za-z_]*\)s|<[^<>]*>|\{\{[^{}]*\}\}|\$\{[^{}]*\}|#\{[^{}]*\}|\[[^\[\]]*\]|\*+|([A-Za-z0-9])(?:\1|[-_.:])*)$/;
+const CREDENTIAL_PLACEHOLDER_RE = /^(?:%\([A-Za-z_]*\)s|<[^<>]*>|\{\{[^{}]*\}\}|\$\{[^{}]*\}|#\{[^{}]*\}|\*+|!(?:Ref|Sub|GetAtt|ImportValue|Join|Select|Split|FindInMap|If|Base64|Cidr|GetAZs|Equals|And|Or|Not|Condition|Transform)|([A-Za-z0-9])(?:\1|[-_.:])*)$/;
+// A variable or template reference that is the whole value ($VAR, $$VAR,
+// $env:VAR, %VAR%, @name@, [name]): left alone unless the part inside looks random.
+// The part inside must read as a name: UPPER_CASE, lower.case or camelCase words.
+const CREDENTIAL_REFERENCE_NAME_RE = /^(?:[A-Z][A-Z0-9_]*|[a-z][a-z0-9_.-]*|[A-Za-z][a-z]+(?:[A-Z][a-z]+)*[0-9]*)$/;
+const CREDENTIAL_REFERENCE_RE = /^(?:\$\$?([A-Za-z_][A-Za-z0-9_]*)|\$env:([A-Za-z_][A-Za-z0-9_]*)|%([A-Za-z_][A-Za-z0-9_]*)%|@([A-Za-z0-9_.-]+)@|\[([^\[\]]*)\])$/;
 // Placeholder marks inside a value: left alone unless the value looks
 // machine-generated (a password manager may produce `<`, `{{` or `***`).
 const CREDENTIAL_PLACEHOLDER_MARK_RE = /<[^<>]*>|^[<{\[]|^\$\(|^(?:0123456789|1234567890|[Aa][Bb][Cc][Dd][Ee][Ff]|[Qq][Ww][Ee][Rr][Tt][Yy])|([A-Za-z0-9])\1{7,}/;
@@ -596,8 +601,16 @@ function placeholderMark(v, lv) {
   return CREDENTIAL_PLACEHOLDER_MARK_RE.test(v) || CREDENTIAL_PLACEHOLDER_MARKS.some((m) => lv.includes(m));
 }
 
+function isReference(v) {
+  const m = CREDENTIAL_REFERENCE_RE.exec(v);
+  if (!m) return false;
+  const inner = m.slice(1).find((g) => g !== undefined);
+  if (!CREDENTIAL_REFERENCE_NAME_RE.test(inner)) return false;
+  return !(looksMachineGenerated(inner) || inner.split(/[-_.]/).some(machineLikePart));
+}
+
 function isPlaceholderValue(v) {
-  return CREDENTIAL_PLACEHOLDER_RE.test(v) || placeholderMark(v, asciiLower(v)) || CREDENTIAL_PLACEHOLDER_WORDS.test(v);
+  return CREDENTIAL_PLACEHOLDER_RE.test(v) || isReference(v) || placeholderMark(v, asciiLower(v)) || CREDENTIAL_PLACEHOLDER_WORDS.test(v);
 }
 
 // A file name with a known extension, or a host name.
@@ -638,10 +651,11 @@ function credentialValueKind(value, prefix) {
     const pwd = url[1];
     return pwd === undefined || pwd === '' || /^[$%<{]/.test(pwd) || isPlaceholderValue(pwd) ? NOT_SECRET : GENERATED_SECRET;
   }
-  if (CREDENTIAL_STORE_RE.test(v) || CREDENTIAL_CODE_ROOT_RE.test(v) || CREDENTIAL_PLACEHOLDER_RE.test(v)) return NOT_SECRET;
+  if (CREDENTIAL_STORE_RE.test(v) || CREDENTIAL_CODE_ROOT_RE.test(v) || CREDENTIAL_PLACEHOLDER_RE.test(v) || isReference(v)) return NOT_SECRET;
   if (looksLikeName(v) || looksLikeCode(v) || looksLikePath(v)) return NOT_SECRET;
   const generated = looksMachineGenerated(v);
-  if (placeholderMark(v, asciiLower(v))) return generated ? GENERATED_SECRET : NOT_SECRET;
+  // A whole-value reference shape with a random inside ([...], $..., @...@) is not a placeholder.
+  if (!CREDENTIAL_REFERENCE_RE.test(v) && placeholderMark(v, asciiLower(v))) return generated ? GENERATED_SECRET : NOT_SECRET;
   if (CREDENTIAL_PLACEHOLDER_WORDS.test(v)) return generated && v.length >= 24 && machineLikePart(v) ? GENERATED_SECRET : NOT_SECRET;
   if (generated) return GENERATED_SECRET;
   if (describesItself(v) || looksLikeSlug(v, prefix)) return NOT_SECRET;
@@ -828,7 +842,7 @@ module.exports = {
   HELPER_PATTERNS: { ZERO_WIDTH_RE, ANSI_ESCAPE_RE, B64_EXEC_RE, WHITESPACE_RUN_RE, OPEN_TAG_RE, HIDDEN_ATTR_RE, HIDDEN_PAYLOAD_RE, MD_IMAGE_RE, MD_URL_SCHEME_RE, MD_URL_SECRET_PARAM_RE,
     RU_FORGET_RE, RU_FORGET_OBJECT_RE, RU_IGNORE_RE, RU_IGNORE_OBJECT_RE, RU_PHRASE_RE,
     ZH_IGNORE_RE, ZH_IGNORE_OBJECT_RE, ZH_FORGET_RE, ZH_FORGET_OBJECT_RE, ZH_PHRASE_RE,
-    CREDENTIAL_URL_RE, CREDENTIAL_STORE_RE, CREDENTIAL_CODE_ROOT_RE, CREDENTIAL_PLACEHOLDER_RE, CREDENTIAL_PLACEHOLDER_MARK_RE,
+    CREDENTIAL_URL_RE, CREDENTIAL_STORE_RE, CREDENTIAL_CODE_ROOT_RE, CREDENTIAL_PLACEHOLDER_RE, CREDENTIAL_REFERENCE_RE, CREDENTIAL_REFERENCE_NAME_RE, CREDENTIAL_PLACEHOLDER_MARK_RE,
     CREDENTIAL_PLACEHOLDER_WORDS, CREDENTIAL_CODE_RE, CREDENTIAL_IDENTIFIER_RE, CREDENTIAL_PATH_RE,
     CREDENTIAL_FILE_NAME_RE, CREDENTIAL_HOST_NAME_RE, CREDENTIAL_SLUG_RE, CREDENTIAL_SLUG_SHORT_WORD_RE, CREDENTIAL_OBJECT_NAME_RE,
     CREDENTIAL_DOTTED_WORDS_RE, CREDENTIAL_FILE_EXT_RE, CREDENTIAL_LETTERS_RE, CREDENTIAL_DESCRIPTIVE_WORDS, CREDENTIAL_HEX_RE, WORD_TOKEN_RE,

@@ -211,6 +211,13 @@
     "APP_TOKEN=xx-aaaaaaaaaaaa",
     "$API_KEY = $this->config->get('api_key');",
     "my $API_TOKEN = $config->{api_token};",
-    "$env:GITHUB_TOKEN = $env:GITHUB_TOKEN_PROD"
+    "$env:GITHUB_TOKEN = $env:GITHUB_TOKEN_PROD",
+    { "prefix": "API_KEY=!", "repeat": "aB3dE", "times": 3 },
+    { "prefix": "API_KEY=@", "repeat": "aB3dE", "times": 3, "suffix": "@" },
+    { "prefix": "API_KEY=[", "repeat": "aB3dE", "times": 3, "suffix": "]" },
+    { "prefix": "API_KEY=$", "repeat": "aB3dE", "times": 3 },
+    "X_SECRET: !ImportValue",
+    "X_PASSWORD=@app.x_password@",
+    "API_KEY=[YOUR_API_KEY_HERE]"
   ]
 }

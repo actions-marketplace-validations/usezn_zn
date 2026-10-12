@@ -103,6 +103,12 @@ test('object names, file names and host names are left alone', () => {
   redacted('DB_PASSWORD=orbit-maple-harbor', 'orbit-maple-harbor');
 });
 
+test('reference shapes with random content are redacted; real references are not', () => {
+  const inner = RANDOM_24.slice(0, 15);
+  for (const value of ['!' + inner, '@' + inner + '@', '[' + inner + ']', '$' + inner, '%' + inner + '%']) redacted('API_KEY=' + value, value);
+  for (const text of ['X_SECRET: !ImportValue', 'X_TOKEN: $$X_TOKEN_VAR', 'X_PASSWORD=@app.x_password@', 'DEPLOY_TOKEN=$DEPLOY_TOKEN_FROM_CI', 'API_KEY=[YOUR_API_KEY_HERE]']) kept(text);
+});
+
 test('PHP, Perl and PowerShell references are left alone', () => {
   for (const text of ["$API_KEY = $this->config->get('api_key');", 'my $API_TOKEN = $config->{api_token};', '$env:GITHUB_TOKEN = $env:GITHUB_TOKEN_PROD']) kept(text);
 });

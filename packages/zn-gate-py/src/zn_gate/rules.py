@@ -442,7 +442,9 @@ MAX_FILTERED_CHARS = 32 * 1024
 CREDENTIAL_URL_RE = re.compile(r"""^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^\/@:\s]*:([^\/@\s]*)@)?""")
 CREDENTIAL_STORE_RE = re.compile(r"""^(?:arn:|vault:|secretref:|@Microsoft\.KeyVault\(|projects\/[^\/]+\/secrets\/)""")
 CREDENTIAL_CODE_ROOT_RE = re.compile(r"""^(?:process\.env[.\[]|import\.meta\.env[.\[]|os\.environ|os\.getenv\(|getenv\(|settings\.|config\.|secrets\.|std::env::|env::var|ENV(?:\[|\.fetch\()|\$ENV\{|System\.getenv\(|Deno\.env\.|Bun\.env\.|\[Environment\]::|\([A-Z][a-z]+-[A-Z])""")
-CREDENTIAL_PLACEHOLDER_RE = re.compile(r"""^(?:\$\$?[A-Za-z_][A-Za-z0-9_]*|![A-Za-z][A-Za-z0-9]*|@[A-Za-z0-9_.-]+@|\$env:[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%|%\([A-Za-z_]*\)s|<[^<>]*>|\{\{[^{}]*\}\}|\$\{[^{}]*\}|#\{[^{}]*\}|\[[^\[\]]*\]|\*+|([A-Za-z0-9])(?:\1|[-_.:])*)$""")
+CREDENTIAL_PLACEHOLDER_RE = re.compile(r"""^(?:%\([A-Za-z_]*\)s|<[^<>]*>|\{\{[^{}]*\}\}|\$\{[^{}]*\}|#\{[^{}]*\}|\*+|!(?:Ref|Sub|GetAtt|ImportValue|Join|Select|Split|FindInMap|If|Base64|Cidr|GetAZs|Equals|And|Or|Not|Condition|Transform)|([A-Za-z0-9])(?:\1|[-_.:])*)$""")
+CREDENTIAL_REFERENCE_NAME_RE = re.compile(r"""^(?:[A-Z][A-Z0-9_]*|[a-z][a-z0-9_.-]*|[A-Za-z][a-z]+(?:[A-Z][a-z]+)*[0-9]*)$""")
+CREDENTIAL_REFERENCE_RE = re.compile(r"""^(?:\$\$?([A-Za-z_][A-Za-z0-9_]*)|\$env:([A-Za-z_][A-Za-z0-9_]*)|%([A-Za-z_][A-Za-z0-9_]*)%|@([A-Za-z0-9_.-]+)@|\[([^\[\]]*)\])$""")
 CREDENTIAL_PLACEHOLDER_MARK_RE = re.compile(r"""<[^<>]*>|^[<{\[]|^\$\(|^(?:0123456789|1234567890|[Aa][Bb][Cc][Dd][Ee][Ff]|[Qq][Ww][Ee][Rr][Tt][Yy])|([A-Za-z0-9])\1{7,}""")
 CREDENTIAL_PLACEHOLDER_MARKS = ('xxxx', '***', '...', '${', '#{', '{{', 'deadbeef')
 # re.ASCII keeps case folding to ASCII letters, as in JavaScript.
@@ -476,6 +478,7 @@ _PATH_ROOT_RE = re.compile(r'^[~.\/\\]|^[A-Za-z]:')
 _URL_PASSWORD_REF_RE = re.compile(r'^[$%<{]')
 _HEX_LETTER_RE = re.compile(r'[A-Fa-f]')
 _SLUG_SPLIT_RE = re.compile(r'[-.]')
+_REF_SPLIT_RE = re.compile(r'[-_.]')
 _DESCRIPTIVE_HINTS = ('key', 'token', 'secret', 'pass', 'pwd', 'api', 'auth', 'credential', 'access', 'private',
                       'here', 'value', 'string', 'my', 'your', 'default', 'dev', 'local', 'prod', 'staging', 'none',
                       'null', 'empty', 'required', 'some', 'generated', 'random', 'change', 'replace', 'set', 'use',
@@ -547,9 +550,20 @@ def _placeholder_mark(v: str, lv: str) -> bool:
     return any(m in lv for m in CREDENTIAL_PLACEHOLDER_MARKS)
 
 
+def _is_reference(v: str) -> bool:
+    """A whole-value reference whose inner part does not look random (see isReference)."""
+    m = CREDENTIAL_REFERENCE_RE.search(v)
+    if not m:
+        return False
+    inner = next(g for g in m.groups() if g is not None)
+    if not CREDENTIAL_REFERENCE_NAME_RE.search(inner):
+        return False
+    return not (_looks_machine_generated(inner, _utf16_len(inner)) or any(_machine_like_part(p) for p in _REF_SPLIT_RE.split(inner)))
+
+
 def _is_placeholder_value(v: str) -> bool:
     lv = v.translate(_ASCII_LOWER)
-    if CREDENTIAL_PLACEHOLDER_RE.search(v) or _placeholder_mark(v, lv):
+    if CREDENTIAL_PLACEHOLDER_RE.search(v) or _is_reference(v) or _placeholder_mark(v, lv):
         return True
     return _PLACEHOLDER_WORDS_LOWER.search(lv) is not None
 
@@ -597,14 +611,14 @@ def _credential_value_kind(value: str, prefix: str = '') -> int:
         if not pwd or _URL_PASSWORD_REF_RE.search(pwd) or _is_placeholder_value(pwd):
             return _NOT_SECRET
         return _GENERATED_SECRET
-    if CREDENTIAL_STORE_RE.search(v) or CREDENTIAL_CODE_ROOT_RE.search(v) or CREDENTIAL_PLACEHOLDER_RE.search(v):
+    if CREDENTIAL_STORE_RE.search(v) or CREDENTIAL_CODE_ROOT_RE.search(v) or CREDENTIAL_PLACEHOLDER_RE.search(v) or _is_reference(v):
         return _NOT_SECRET
     if _looks_like_name(v) or _looks_like_code(v) or _looks_like_path(v):
         return _NOT_SECRET
     n = _utf16_len(v)
     generated = _looks_machine_generated(v, n)
     lv = v.translate(_ASCII_LOWER)
-    if _placeholder_mark(v, lv):
+    if not CREDENTIAL_REFERENCE_RE.search(v) and _placeholder_mark(v, lv):
         return _GENERATED_SECRET if generated else _NOT_SECRET
     if _PLACEHOLDER_WORDS_LOWER.search(lv):
         return _GENERATED_SECRET if generated and n >= 24 and _machine_like_part(v) else _NOT_SECRET

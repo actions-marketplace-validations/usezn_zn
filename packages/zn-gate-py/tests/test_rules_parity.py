@@ -415,6 +415,16 @@ class TestPrefixedCredentialNames(unittest.TestCase):
             with self.subTest(text=text[:24]):
                 self.assertKept(text)
 
+    def test_reference_shapes_with_random_content_are_redacted(self):
+        inner = RANDOM_24[:15]
+        for value in ("!" + inner, "@" + inner + "@", "[" + inner + "]", "$" + inner, "%" + inner + "%", "$env:" + inner):
+            with self.subTest(value=value[:3]):
+                self.assertRedacted("API_KEY=" + value, value)
+        for text in ("X_SECRET: !ImportValue", "X_SECRET: !Ref", "X_TOKEN: $$X_TOKEN_VAR", "X_PASSWORD=@app.x_password@",
+                     "DEPLOY_TOKEN=$DEPLOY_TOKEN_FROM_CI", "API_KEY=[YOUR_API_KEY_HERE]", "WIN_SECRET=%WINDOWS_SECRET_VAR%"):
+            with self.subTest(text=text):
+                self.assertKept(text)
+
     def test_lone_surrogates_do_not_raise(self):
         for text in ("API_TOKEN=" + "abc123XYZ09" + "\ud800", "API_KEY=" + RANDOM_24 + "\udfff",
                      "${API_TOKEN:-" + RANDOM_24 + "\ud800}", "X_SECRET=\ud800" + "Kp4r" * 4):
