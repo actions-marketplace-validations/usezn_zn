@@ -91,6 +91,9 @@ WORST_CASES = [
     fill('A_TOKEN=/' + 'aB3dE5fG7h/' * 46 + ' '),
     fill('${A_TOKEN:-' + 'Ab' * 255 + '} '),
     fill('API_KEY: ' + 'abc.' * 127 + 'abc\n'),
+    fill('A_TOKEN=$a' + '->a' * 160 + '( '),
+    fill('X_SECRET=' + 'ab-' * 160 + 'c '),
+    fill('API_KEY="<' + 'aB3#' * 120 + '" '),
 ]
 
 

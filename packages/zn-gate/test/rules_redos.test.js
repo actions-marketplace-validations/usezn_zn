@@ -100,6 +100,9 @@ const WORST_CASES = [
   fill('A_TOKEN=/' + 'aB3dE5fG7h/'.repeat(46) + ' '),
   fill('${A_TOKEN:-' + 'Ab'.repeat(255) + '} '),
   fill('API_KEY: ' + 'abc.'.repeat(127) + 'abc\n'),
+  fill('A_TOKEN=$a' + '->a'.repeat(160) + '( '),
+  fill('X_SECRET=' + 'ab-'.repeat(160) + 'c '),
+  fill('API_KEY="<' + 'aB3#'.repeat(120) + '" '),
 ];
 
 function label(input) {

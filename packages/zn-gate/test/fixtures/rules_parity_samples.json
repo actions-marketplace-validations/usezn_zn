@@ -192,6 +192,25 @@
     "POSTGRES_PASSWORD: ${DB_PASSWORD:-difyai123456}",
     { "prefix": "JWT_SECRET: ${JWT_SECRET:-", "repeat": "aB3dE5fG7h", "times": 3, "suffix": "}" },
     { "prefix": "API_KEY=", "repeat": ",", "times": 300 },
-    { "prefix": "A_TOKEN=a", "repeat": ";", "times": 300 }
+    { "prefix": "A_TOKEN=a", "repeat": ";", "times": 300 },
+    { "prefix": "API_TOKEN=abc123XYZ09", "repeat": "\ud800", "times": 1 },
+    { "prefix": "API_KEY=", "repeat": "aB3dE5fG7h", "times": 2, "suffix": "\udfff" },
+    { "prefix": "${API_TOKEN:-", "repeat": "aB3dE5fG7h", "times": 2, "suffix": "\ud800}" },
+    { "prefix": "API_KEY=\"<", "repeat": "aB3#kQ9!", "times": 3, "suffix": "\"" },
+    { "prefix": "API_KEY=\"[", "repeat": "aB3#kQ9!", "times": 3, "suffix": "\"" },
+    { "prefix": "STRIPE_SECRET_KEY=\"aB3#kQ9{{", "repeat": "zX7@", "times": 4, "suffix": "\"" },
+    "API_KEY=sk-proj-****",
+    "API_KEY=<your-key-here>",
+    "API_KEY=${VAR_NAME_HERE}",
+    "IMAGE_PULL_SECRET=regcred-ghcr",
+    "TLS_SECRET: ingress-nginx-tls",
+    "GOOGLE_APPLICATION_CREDENTIALS=service-account.json",
+    "SMTP_PASSWORD=smtp.sendgrid.net",
+    "X_PASSWORD=ask-the-ops-team",
+    "JWT_SECRET=orbit-maple-harbor-cinder",
+    "APP_TOKEN=xx-aaaaaaaaaaaa",
+    "$API_KEY = $this->config->get('api_key');",
+    "my $API_TOKEN = $config->{api_token};",
+    "$env:GITHUB_TOKEN = $env:GITHUB_TOKEN_PROD"
   ]
 }

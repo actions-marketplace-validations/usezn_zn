@@ -88,6 +88,25 @@ test('code, references and placeholders are left alone', () => {
   ]) kept(text);
 });
 
+test('generated values with placeholder marks are redacted; whole placeholders are not', () => {
+  for (const value of ['<' + RANDOM_24 + '!#', '[' + RANDOM_24 + '%&', RANDOM_24 + '${' + 'Q9!', RANDOM_24.slice(0, 8) + '{{' + RANDOM_24.slice(8) + '^', RANDOM_24 + '***' + '7!']) {
+    redacted(`API_KEY="${value}"`, value);
+    redacted(`STRIPE_SECRET_KEY="${value}"`, value);
+  }
+  for (const text of ['API_KEY=sk-proj-****', 'API_KEY=<your-key-here>', 'API_KEY=${VAR_NAME_HERE}', 'API_KEY=' + '*'.repeat(16)]) kept(text);
+});
+
+test('object names, file names and host names are left alone', () => {
+  for (const text of ['IMAGE_PULL_SECRET=regcred-ghcr', 'TLS_SECRET: ingress-nginx-tls', 'GOOGLE_APPLICATION_CREDENTIALS=service-account.json',
+    'KEYSTORE_PASSWORD=android-release.keystore', 'SMTP_PASSWORD=smtp.sendgrid.net', 'X_PASSWORD=ask-the-ops-team', 'APP_TOKEN=xx-aaaaaaaaaaaa']) kept(text);
+  redacted('JWT_SECRET=orbit-maple-harbor-cinder', 'orbit-maple-harbor-cinder');
+  redacted('DB_PASSWORD=orbit-maple-harbor', 'orbit-maple-harbor');
+});
+
+test('PHP, Perl and PowerShell references are left alone', () => {
+  for (const text of ["$API_KEY = $this->config->get('api_key');", 'my $API_TOKEN = $config->{api_token};', '$env:GITHUB_TOKEN = $env:GITHUB_TOKEN_PROD']) kept(text);
+});
+
 test('a compose default is redacted only when it looks generated', () => {
   const { sanitized, detections } = redactSecrets('JWT_SECRET: ${JWT_SECRET:-' + RANDOM_24 + '}');
   assert.equal(sanitized, 'JWT_SECRET: ${JWT_SECRET:-[REDACTED_SECRET]}');

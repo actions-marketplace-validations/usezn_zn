@@ -384,6 +384,44 @@ class TestPrefixedCredentialNames(unittest.TestCase):
         self.assertEqual(redacted, "JWT_SECRET: ${JWT_SECRET:-[REDACTED_SECRET]}")
         self.assertEqual([d["rule"] for d in found], ["secret:credential_default"])
 
+    def test_generated_values_with_placeholder_marks_are_redacted(self):
+        # A password manager may produce "<", "{{", "${", "***" or a leading "[".
+        for value in ("<" + RANDOM_24 + "!#", "[" + RANDOM_24 + "%&", "{" + RANDOM_24 + "@=",
+                      RANDOM_24[:10] + "<a>" + RANDOM_24[10:] + "#", RANDOM_24 + "${" + "Q9!",
+                      RANDOM_24[:8] + "{{" + RANDOM_24[8:] + "^", RANDOM_24 + "***" + "7!", RANDOM_24 + "..." + "7!"):
+            for name in ("API_KEY", "STRIPE_SECRET_KEY"):
+                with self.subTest(name=name, value=value[:6]):
+                    self.assertRedacted(name + '="' + value + '"', value)
+        for text in ("API_KEY=sk-proj-****", "API_KEY=<your-key-here>", "API_KEY=${VAR_NAME_HERE}",
+                     "API_KEY={{ .Values.apiKey }}", "API_KEY=[REDACTED_BY_CI]", "API_KEY=" + "*" * 16):
+            with self.subTest(text=text):
+                self.assertKept(text)
+
+    def test_object_names_files_and_hosts_are_left_alone(self):
+        for text in ("IMAGE_PULL_SECRET=regcred-ghcr", "TLS_SECRET: ingress-nginx-tls",
+                     "GOOGLE_APPLICATION_CREDENTIALS=service-account.json", "FIREBASE_CREDENTIALS=firebase-adminsdk.json",
+                     "KEYSTORE_PASSWORD=android-release.keystore", "SMTP_PASSWORD=smtp.sendgrid.net",
+                     "HELM_REPO_PASSWORD=bitnami-charts", "GH_TOKEN=github-actions-bot", "X_PASSWORD=ask-the-ops-team",
+                     "X_PASSWORD=get-from-bitwarden", "api_key: preview-does-not-require-setup", "APP_TOKEN=xx-aaaaaaaaaaaa"):
+            with self.subTest(text=text):
+                self.assertKept(text)
+        for text in ("DB_PASSWORD=orbit-maple-harbor", "JWT_SECRET=orbit-maple-harbor-cinder", "SMTP_PASSWORD=wxyz-wxyz-wxyz-abcd"):
+            with self.subTest(text=text):
+                self.assertRedacted(text, text.split("=", 1)[1])
+
+    def test_php_perl_and_powershell_references(self):
+        for text in ("$API_KEY = $this->config->get('api_key');", "$DB_PASSWORD = $container->getParameter('db');",
+                     "my $API_TOKEN = $config->{api_token};", "$env:GITHUB_TOKEN = $env:GITHUB_TOKEN_PROD"):
+            with self.subTest(text=text[:24]):
+                self.assertKept(text)
+
+    def test_lone_surrogates_do_not_raise(self):
+        for text in ("API_TOKEN=" + "abc123XYZ09" + "\ud800", "API_KEY=" + RANDOM_24 + "\udfff",
+                     "${API_TOKEN:-" + RANDOM_24 + "\ud800}", "X_SECRET=\ud800" + "Kp4r" * 4):
+            with self.subTest(text=ascii(text)[:24]):
+                R.redact_secrets(text)
+                R.sanitize_tool_result(text)
+
     def test_documented_limits(self):
         # Lower-case words joined by "_" read as an identifier, and values under 12 characters are not checked.
         for text in ("DB_PASSWORD=" + "orbit_maple_" + "harbor_cinder", "DB_PASSWORD=hunter2xyz", "db_password: " + RANDOM_24):
