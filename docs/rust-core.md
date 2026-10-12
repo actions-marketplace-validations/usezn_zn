@@ -60,6 +60,8 @@ Uploads are written to a temporary file and renamed into place, so the watcher n
 
 The vector memory keeps at most 10,000 rows per agent, 25,000 per namespace and 100,000 per file. Set `ZN_MEMORY_MAX_AGENT_ROWS`, `ZN_MEMORY_MAX_NAMESPACE_ROWS` and `ZN_MEMORY_MAX_TOTAL_ROWS` to change them. When the file is full, the oldest rows of the namespace furthest above its fair share (the file limit divided by the namespaces that have rows) are deleted, so a namespace within its share keeps its rows and a new one can always store.
 
+Each variable takes an integer from 1 to 100,000,000; other values are ignored with a warning and the default applies. A lowered limit is applied on the next write to each agent or namespace, so that first write can delete many old rows at once. The fair share is recalculated as namespaces appear, so a namespace that was within its share can later be above it and give up rows.
+
 ## Upgrading the vector memory
 
 The per-agent vector memory is now stored in SQLite (`data/vectors/<model>_d<dim>.sqlite3`). The older Lance directories (`data/vectors/<model>_d<dim>/`) are not migrated or read and can be deleted.

@@ -52,6 +52,9 @@ pub const DEFAULT_MAX_ROWS_PER_AGENT: usize = 10_000;
 /// Rows kept per namespace unless `with_max_namespace_rows` says otherwise.
 pub const DEFAULT_MAX_ROWS_PER_NAMESPACE: usize = 25_000;
 
+/// Largest value accepted for a limit from the environment.
+pub const MAX_LIMIT_FROM_ENV: usize = 100_000_000;
+
 /// Rows kept in the whole file unless `with_max_total_rows` says otherwise.
 pub const DEFAULT_MAX_TOTAL_ROWS: usize = 100_000;
 
@@ -129,8 +132,8 @@ impl VectorMemory {
     }
 
     /// Applies `ZN_MEMORY_MAX_AGENT_ROWS`, `ZN_MEMORY_MAX_NAMESPACE_ROWS` and
-    /// `ZN_MEMORY_MAX_TOTAL_ROWS` when they are set to a positive integer;
-    /// other values are ignored with a warning.
+    /// `ZN_MEMORY_MAX_TOTAL_ROWS` when they are set to an integer from 1 to
+    /// `MAX_LIMIT_FROM_ENV`; other values are ignored with a warning.
     pub fn with_limits_from_env(self) -> Self {
         self.with_limits(|name| std::env::var(name).ok())
     }
@@ -139,9 +142,13 @@ impl VectorMemory {
         let read = |name: &str| -> Option<usize> {
             let raw = get(name)?;
             match raw.trim().parse::<usize>() {
-                Ok(n) if n > 0 => Some(n),
+                Ok(n) if (1..=MAX_LIMIT_FROM_ENV).contains(&n) => Some(n),
                 _ => {
-                    tracing::warn!("Ignoring {}: expected a positive integer", name);
+                    tracing::warn!(
+                        "Ignoring {}: expected an integer from 1 to {}",
+                        name,
+                        MAX_LIMIT_FROM_ENV
+                    );
                     None
                 }
             }
@@ -383,9 +390,11 @@ impl VectorMemory {
         self.check_vector(vector)?;
         let path = self.db_path();
         let slot = Arc::clone(&self.conn);
-        let max_rows = self.max_rows as i64;
-        let max_namespace = self.max_namespace_rows as i64;
-        let max_total = self.max_total_rows as i64;
+        // Limits set through the API can be any usize: never let one wrap
+        // to a negative number, which would delete everything.
+        let max_rows = i64::try_from(self.max_rows).unwrap_or(i64::MAX);
+        let max_namespace = i64::try_from(self.max_namespace_rows).unwrap_or(i64::MAX);
+        let max_total = i64::try_from(self.max_total_rows).unwrap_or(i64::MAX);
         let busy_timeout = self.busy_timeout;
         let ns = namespace.to_string();
         let agent = agent_id.to_string();
@@ -429,7 +438,9 @@ impl VectorMemory {
                 while excess > 0 {
                     let namespaces: i64 =
                         tx.query_row("SELECT COUNT(*) FROM memory_counts", [], |r| r.get(0))?;
-                    let fair = max_total / namespaces.max(1);
+                    // At least one row each, so the writer keeps its new row
+                    // even with more namespaces than the file limit.
+                    let fair = (max_total / namespaces.max(1)).max(1);
                     let over: Option<(String, i64)> = tx
                         .query_row(
                             "SELECT namespace, row_count FROM memory_counts
@@ -860,6 +871,49 @@ mod tests {
         assert_eq!(m.max_total_rows, DEFAULT_MAX_TOTAL_ROWS);
         let none = VectorMemory::new("/tmp/v", 1, "m").with_limits(|_| None);
         assert_eq!(none.max_rows, DEFAULT_MAX_ROWS_PER_AGENT);
+
+        // Out of range or negative values are ignored: the defaults stay.
+        let bad = |name: &str| -> Option<String> {
+            match name {
+                "ZN_MEMORY_MAX_AGENT_ROWS" => Some("18446744073709551615".to_string()),
+                "ZN_MEMORY_MAX_NAMESPACE_ROWS" => Some("-5".to_string()),
+                "ZN_MEMORY_MAX_TOTAL_ROWS" => Some((MAX_LIMIT_FROM_ENV + 1).to_string()),
+                _ => None,
+            }
+        };
+        let m = VectorMemory::new("/tmp/v", 1, "m").with_limits(bad);
+        assert_eq!(m.max_rows, DEFAULT_MAX_ROWS_PER_AGENT);
+        assert_eq!(m.max_namespace_rows, DEFAULT_MAX_ROWS_PER_NAMESPACE);
+        assert_eq!(m.max_total_rows, DEFAULT_MAX_TOTAL_ROWS);
+    }
+
+    #[tokio::test]
+    async fn huge_limits_from_the_api_keep_every_row() {
+        let dir = temp_dir("huge-limits");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 1, "m")
+            .with_max_rows(usize::MAX)
+            .with_max_namespace_rows(usize::MAX)
+            .with_max_total_rows(usize::MAX);
+        for i in 0..3 {
+            m.store(NS, "a", &format!("t{i}"), &[0.0]).await.unwrap();
+        }
+        assert_eq!(texts(&m, "a", 1).await, vec!["t0", "t1", "t2"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn more_namespaces_than_the_file_limit_still_store() {
+        let dir = temp_dir("tiny-total");
+        let m = VectorMemory::new(dir.to_str().unwrap(), 1, "m").with_max_total_rows(3);
+        for ns in ["b", "c", "d"] {
+            m.store(ns, "a", ns, &[0.0]).await.unwrap();
+        }
+        // A fourth namespace in a full file keeps its new row.
+        m.store("a", "a", "a", &[0.0]).await.unwrap();
+        assert_eq!(texts_in(&m, "a", "a", 1).await, vec!["a"]);
+        let total: i64 = rows_per_namespace(&m).iter().map(|(_, n)| n).sum();
+        assert!(total <= 4, "{total} rows");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1122,6 +1176,42 @@ mod tests {
         assert_eq!(
             rows_per_namespace(&a),
             vec![("flood".to_string(), 5), ("victim".to_string(), 3)]
+        );
+        assert_eq!(texts_in(&b, "victim", "v", 1).await, vec!["v0", "v1", "v2"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_floods_are_held_to_their_fair_share_of_the_file() {
+        let dir = temp_dir("concurrent-fair");
+        let base = dir.to_str().unwrap().to_string();
+        // The file limit binds here: fair share 6 / 2 = 3.
+        let limits = |m: VectorMemory| m.with_max_namespace_rows(5).with_max_total_rows(6);
+        let a = Arc::new(limits(VectorMemory::new(&base, 1, "m")));
+        let b = Arc::new(limits(VectorMemory::new(&base, 1, "m")));
+        for i in 0..3 {
+            a.store("victim", "v", &format!("v{i}"), &[0.0])
+                .await
+                .unwrap();
+        }
+        let mut tasks = Vec::new();
+        for i in 0..64 {
+            let m = if i % 2 == 0 {
+                Arc::clone(&a)
+            } else {
+                Arc::clone(&b)
+            };
+            tasks.push(tokio::spawn(async move {
+                m.store("flood", &format!("agent{i}"), &format!("f{i}"), &[0.0])
+                    .await
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            rows_per_namespace(&a),
+            vec![("flood".to_string(), 3), ("victim".to_string(), 3)]
         );
         assert_eq!(texts_in(&b, "victim", "v", 1).await, vec!["v0", "v1", "v2"]);
         let _ = std::fs::remove_dir_all(&dir);
