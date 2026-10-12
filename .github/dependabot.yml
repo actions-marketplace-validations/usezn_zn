@@ -22,6 +22,7 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: pip
     directory: "/packages/zn-gate-py"
@@ -32,6 +33,7 @@ updates:
     groups:
       pip:
         patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: "/"
