@@ -227,6 +227,19 @@ class TestValidatedSecretPatterns(unittest.TestCase):
         self.assertEqual(R.redact_secrets("ſECRET_KEY=" + value)[1], [])
         self.assertEqual(R.redact_secrets("awſ_secret=" + "u" * 40)[1], [])
 
+    def test_connection_string_schemes_use_ascii_letters(self):
+        # Like Node.js, only ASCII letters spell a scheme name: a long s is not an s.
+        for url in ("MYSQL://root:s3cretpw@127.0.0.1/shop", "Redis://default:r3dispw@cache:6379",
+                    "mongodb+srv://svc:m0ngopw@cluster0.example.net/prod", "PostgreSQL://app:hunter2pass@db/app"):
+            with self.subTest(url=url):
+                redacted, found = R.redact_secrets(url)
+                self.assertIn("[REDACTED_DB_PASSWORD]", redacted)
+                self.assertIn("secret:db_url_password", [d["rule"] for d in found])
+        for url in ("po\u017ftgres://app:hunter2pass@db/app", "my\u017fql://root:s3cretpw@127.0.0.1/shop",
+                    "mongodb+\u017frv://svc:m0ngopw@cluster0.example.net/prod"):
+            with self.subTest(url=ascii(url)):
+                self.assertEqual(R.redact_secrets(url), (url, []))
+
     def test_aws_secret_keeps_quotes_in_both_engines(self):
         secret = "A" * 20 + "/" + "b" * 19
         out = R.redact_secrets('aws_secret_access_key = "' + secret + '"')[0]

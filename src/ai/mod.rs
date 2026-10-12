@@ -8,7 +8,7 @@ pub mod registry;
 pub use backend::{CandleBert, FastBootBackend, Head, OnnxModel};
 pub use canary::{CanaryDeployer, CanaryStats};
 pub use embedder::{Embedder, Embedding};
-pub use memory::VectorMemory;
+pub use memory::{MemoryError, VectorMemory};
 pub use registry::{ModelEntry, ModelRegistry};
 
 /// Pluggable inference backend for the neural core.

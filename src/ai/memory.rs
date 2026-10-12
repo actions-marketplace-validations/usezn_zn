@@ -11,7 +11,8 @@
 //! cannot be the isolation boundary. The caller passes the namespace of the
 //! authenticated tenant (or of the local process), and every read and write is
 //! scoped to that namespace: an agent only ever sees rows of its own
-//! namespace, and a namespace never deletes rows of another one.
+//! namespace. Only the file limit (see below) can delete rows of another
+//! namespace, and only of one above its fair share of the file.
 //!
 //! # Size limits
 //!
@@ -23,7 +24,10 @@
 //!   use. When a store goes over it, the oldest rows of the namespace furthest
 //!   above its fair share (`max_total_rows` divided by the namespaces that
 //!   have rows) are deleted. A namespace at or under its fair share never
-//!   loses rows to another one, and a new namespace can always store.
+//!   loses rows to another one, and a new namespace can always store. Each
+//!   namespace keeps at least one row, so with more namespaces than
+//!   `max_total_rows` the file can hold slightly more rows than the limit
+//!   (at most one per namespace).
 //!
 //! The three limits can be set with `ZN_MEMORY_MAX_AGENT_ROWS`,
 //! `ZN_MEMORY_MAX_NAMESPACE_ROWS` and `ZN_MEMORY_MAX_TOTAL_ROWS` (see
@@ -397,7 +401,8 @@ impl VectorMemory {
     /// Store a vector embedding for an agent of `namespace`, keeping only the
     /// agent's most recent `max_rows` rows, the namespace's most recent
     /// `max_namespace_rows` rows, and at most `max_total_rows` rows in the
-    /// file (by deleting the oldest rows of this namespace).
+    /// file (by deleting the oldest rows of the namespace furthest above its
+    /// fair share).
     ///
     /// `namespace` must come from the authenticated caller, never from the
     /// message itself.

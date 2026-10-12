@@ -3,7 +3,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawnSync, spawn } = require('child_process');
@@ -12,6 +11,7 @@ const { createSecretsServer, TOOLS } = require('../lib/broker/mcp');
 const { createFakeVault } = require('./helpers/fake_vault');
 const fakeEngine = require('./helpers/fake_engine');
 const { generateAll } = require('./fixtures/fake_secrets');
+const { tempDir } = require('./helpers/tmp');
 
 const FAKE = generateAll(9001, { perType: 1, piiPerType: 1 });
 const GHP = FAKE.secrets.find((s) => s.type === 'github_pat_classic').value;
@@ -160,8 +160,8 @@ test('secrets_http_request input checks', async () => {
   assert.equal(nf.data.error, 'ZN_NOT_FOUND');
 });
 
-test('secrets_render_file writes only to git-ignored paths and only file-mode secrets', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render-'));
+test('secrets_render_file writes only to git-ignored paths and only file-mode secrets', async (t) => {
+  const dir = tempDir(t, 'zn-render-');
   spawnSync('git', ['init', '-q'], { cwd: dir });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.npmrc\n');
   fs.writeFileSync(path.join(dir, 'npmrc.tpl'), '//registry.npmjs.org/:_authToken=__ZN_NPM_TOKEN__\n');
@@ -181,8 +181,8 @@ test('secrets_render_file writes only to git-ignored paths and only file-mode se
   assert.match(proxy.data.message, /only "file" mode/);
 });
 
-test('secrets_render_file: only new files inside the project are written without asking', async () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render2-'));
+test('secrets_render_file: only new files inside the project are written without asking', async (t) => {
+  const base = tempDir(t, 'zn-render2-');
   const dir = path.join(base, 'proj');
   const elsewhere = path.join(base, 'elsewhere');
   fs.mkdirSync(dir);
@@ -240,8 +240,8 @@ test('secrets_render_file: only new files inside the project are written without
   assert.ok(!fs.existsSync(path.join(elsewhere, 'z.rc')));
 });
 
-test('secrets_render_file: a directory swapped for a link before the file is opened writes nothing outside', { skip: process.platform === 'win32' }, async () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render-race-'));
+test('secrets_render_file: a directory swapped for a link before the file is opened writes nothing outside', { skip: process.platform === 'win32' }, async (t) => {
+  const base = tempDir(t, 'zn-render-race-');
   const dir = path.join(base, 'proj');
   const elsewhere = path.join(base, 'elsewhere');
   fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
@@ -270,8 +270,8 @@ test('secrets_render_file: a directory swapped for a link before the file is ope
   assert.ok(!fs.existsSync(path.join(dir, 'sub-moved', 'a.rc')));
 });
 
-test('secrets_render_file: the approved location is checked again after the user answers', { skip: process.platform === 'win32' }, async () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render-confirm-'));
+test('secrets_render_file: the approved location is checked again after the user answers', { skip: process.platform === 'win32' }, async (t) => {
+  const base = tempDir(t, 'zn-render-confirm-');
   const dir = path.join(base, 'proj');
   const first = path.join(base, 'first');
   const second = path.join(base, 'second');
@@ -301,8 +301,8 @@ test('secrets_render_file: the approved location is checked again after the user
   assert.equal(vault.fileConfirmations[0].file, path.join(fs.realpathSync(first), 'x.rc'));
 });
 
-test('secrets_render_file: an approved overwrite replaces the file in place with mode 0600', { skip: process.platform === 'win32' }, async () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-render-over-'));
+test('secrets_render_file: an approved overwrite replaces the file in place with mode 0600', { skip: process.platform === 'win32' }, async (t) => {
+  const base = tempDir(t, 'zn-render-over-');
   const dir = path.join(base, 'proj');
   const elsewhere = path.join(base, 'elsewhere');
   fs.mkdirSync(dir);
@@ -321,8 +321,8 @@ test('secrets_render_file: an approved overwrite replaces the file in place with
   assert.equal(fs.statSync(target).mode & 0o777, 0o600);
 });
 
-test('secrets_request records the ask and refuses values', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-req-'));
+test('secrets_request records the ask and refuses values', async (t) => {
+  const home = tempDir(t, 'zn-req-');
   const lines = [];
   const srv = createSecretsServer({ vault: await vaultWith(), engine: fakeEngine, home, notify: (l) => lines.push(l) });
   const r = await call(srv, 'secrets_request', { name: 'STRIPE_API_KEY', reason: 'create a test charge' });

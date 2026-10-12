@@ -223,12 +223,12 @@ test('daemon: first-use approvals are per (project, secret, real executable)', a
   await assert.rejects(c.recordApproval('/work/app', 'GITHUB_TOKEN', 'gh; rm -rf /'), (e) => e.code === 'ZN_POLICY_DENIED' || e.code === 'ZN_NOT_FOUND');
   // A binary with the same name earlier on PATH: the approval no longer applies.
   const shadow = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-shadow-'));
-  const fake = path.join(shadow, POSIX ? 'node' : 'node.cmd');
-  fs.writeFileSync(fake, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
-  if (POSIX) fs.chmodSync(fake, 0o755);
   const savedPath = process.env.PATH;
-  process.env.PATH = shadow + path.delimiter + savedPath;
   try {
+    const fake = path.join(shadow, POSIX ? 'node' : 'node.cmd');
+    fs.writeFileSync(fake, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
+    if (POSIX) fs.chmodSync(fake, 0o755);
+    process.env.PATH = shadow + path.delimiter + savedPath;
     assert.strictEqual(await c.isApproved('/work/app', 'GITHUB_TOKEN', 'node'), false);
   } finally {
     process.env.PATH = savedPath;
@@ -281,13 +281,14 @@ test('daemon: approvals and policy widening are confirmed out of band', async ()
 
 test('daemon: an approved executable rewritten in place loses its approval', async () => {
   const dir = fs.mkdtempSync(path.join(os.homedir(), '.zn-test-bin-'));
-  const bin = path.join(dir, POSIX ? 'zn-fp-tool' : 'zn-fp-tool.cmd');
-  fs.writeFileSync(bin, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
-  if (POSIX) fs.chmodSync(bin, 0o755);
   const saved = process.env.PATH;
-  process.env.PATH = dir + path.delimiter + saved;
-  const c = clientMod.createClient({});
+  let c = null;
   try {
+    const bin = path.join(dir, POSIX ? 'zn-fp-tool' : 'zn-fp-tool.cmd');
+    fs.writeFileSync(bin, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
+    if (POSIX) fs.chmodSync(bin, 0o755);
+    process.env.PATH = dir + path.delimiter + saved;
+    c = clientMod.createClient({});
     await c.recordApproval('/work/fp', 'GITHUB_TOKEN', 'zn-fp-tool');
     assert.strictEqual(await c.isApproved('/work/fp', 'GITHUB_TOKEN', 'zn-fp-tool'), true);
     await sleep(20);
@@ -295,7 +296,7 @@ test('daemon: an approved executable rewritten in place loses its approval', asy
     assert.strictEqual(await c.isApproved('/work/fp', 'GITHUB_TOKEN', 'zn-fp-tool'), false, 'content change must void the approval');
   } finally {
     process.env.PATH = saved;
-    c.close();
+    if (c) c.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -303,12 +304,13 @@ test('daemon: an approved executable rewritten in place loses its approval', asy
 test('daemon: re-approval says the program changed; the opened file must match', async () => {
   const exe = require('../lib/exe');
   const dir = fs.mkdtempSync(path.join(os.homedir(), '.zn-test-bin2-'));
-  const bin = path.join(dir, POSIX ? 'zn-chg-tool' : 'zn-chg-tool.cmd');
-  fs.writeFileSync(bin, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
-  if (POSIX) fs.chmodSync(bin, 0o755);
-  const real = fs.realpathSync(bin);
-  const c = clientMod.createClient({});
+  let c = null;
   try {
+    const bin = path.join(dir, POSIX ? 'zn-chg-tool' : 'zn-chg-tool.cmd');
+    fs.writeFileSync(bin, POSIX ? '#!/bin/sh\nexit 0\n' : '@exit /b 0\r\n');
+    if (POSIX) fs.chmodSync(bin, 0o755);
+    const real = fs.realpathSync(bin);
+    c = clientMod.createClient({});
     confirmAnswer = true;
     const fp1 = exe.fingerprint(real);
     await c.recordApproval('/work/chg', 'GITHUB_TOKEN', 'zn-chg-tool', { real, fp: fp1 });
@@ -343,7 +345,7 @@ test('daemon: re-approval says the program changed; the opened file must match',
     assert.strictEqual(text.split('\n').length, 3);
     assert.ok(!text.includes('‮'));
   } finally {
-    c.close();
+    if (c) c.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -518,9 +520,13 @@ test('nothing in the vault directory holds a value in clear', () => {
   }
 });
 
-run('vault').then(async () => {
-  await stopDaemon().catch(() => {});
-  clientMod.close();
-  try { await daemon.lock({}); } catch (err) { /* ignore */ }
-  fs.rmSync(HOME, { recursive: true, force: true });
+run('vault').finally(async () => {
+  // Stop every daemon before the temporary ZN_HOME is removed, whatever happened above.
+  try {
+    await stopDaemon().catch(() => {});
+    clientMod.close();
+    try { await daemon.lock({}); } catch (err) { /* ignore */ }
+  } finally {
+    fs.rmSync(HOME, { recursive: true, force: true });
+  }
 });

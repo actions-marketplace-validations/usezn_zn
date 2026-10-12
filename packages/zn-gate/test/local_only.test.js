@@ -15,7 +15,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const https = require('https');
 const http = require('http');
-const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -89,6 +88,7 @@ function withEnv(vars, fn) {
 }
 
 const { analyze, checkToolResult, isCloudEnabled } = require('../lib/client');
+const { tempDir } = require('./helpers/tmp');
 
 test('(a) tool result with secrets comes back redacted and makes no HTTP request, even with ZN_API_KEY + ZN_CLOUD=1', async () => {
   installMock();
@@ -217,8 +217,8 @@ function rpcSession(child) {
     });
 }
 
-function childEnv(extra) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-home-'));
+function childEnv(t, extra) {
+  const home = tempDir(t, 'zn-home-');
   const env = { ...process.env, HOME: home, USERPROFILE: home, ...extra };
   delete env.ZN_LOCAL_ONLY;
   return { env, home };
@@ -226,9 +226,17 @@ function childEnv(extra) {
 
 const CLI = path.join(__dirname, '..', 'bin', 'cli.js');
 
-test('(e2e) MCP server with ZN_API_KEY + ZN_CLOUD=1: check_tool_result / check_tool_call send nothing; analyze_prompt sends redacted text', async () => {
+function stop(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    child.once('exit', resolve);
+    child.kill();
+  });
+}
+
+test('(e2e) MCP server with ZN_API_KEY + ZN_CLOUD=1: check_tool_result / check_tool_call send nothing; analyze_prompt sends redacted text', async (t) => {
   const { srv, hits, url } = await startCountingServer();
-  const { env, home } = childEnv({ ZN_API_KEY: FAKE.apiKey, ZN_CLOUD: '1', ZN_API_URL: url });
+  const { env, home } = childEnv(t, { ZN_API_KEY: FAKE.apiKey, ZN_CLOUD: '1', ZN_API_URL: url });
   const child = spawn(process.execPath, [CLI, 'mcp'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const call = rpcSession(child);
   try {
@@ -255,15 +263,15 @@ test('(e2e) MCP server with ZN_API_KEY + ZN_CLOUD=1: check_tool_result / check_t
     const st = JSON.parse(r4.result.content[0].text);
     assert.equal(st.cloud_enabled, true);
   } finally {
-    child.kill();
+    // The child is stopped before t.after() removes its home directory.
+    await stop(child);
     srv.close();
-    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
-test('(e2e) MCP server with ZN_API_KEY but no ZN_CLOUD: analyze_prompt sends nothing', async () => {
+test('(e2e) MCP server with ZN_API_KEY but no ZN_CLOUD: analyze_prompt sends nothing', async (t) => {
   const { srv, hits, url } = await startCountingServer();
-  const { env, home } = childEnv({ ZN_API_KEY: FAKE.apiKey, ZN_API_URL: url });
+  const { env, home } = childEnv(t, { ZN_API_KEY: FAKE.apiKey, ZN_API_URL: url });
   delete env.ZN_CLOUD;
   const child = spawn(process.execPath, [CLI, 'mcp'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const call = rpcSession(child);
@@ -275,15 +283,15 @@ test('(e2e) MCP server with ZN_API_KEY but no ZN_CLOUD: analyze_prompt sends not
     assert.equal(st.leaves_machine, 'nothing');
     assert.equal(hits.length, 0);
   } finally {
-    child.kill();
+    // The child is stopped before t.after() removes its home directory.
+    await stop(child);
     srv.close();
-    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
-test('(e2e) shield proxy with ZN_API_KEY + ZN_CLOUD=1: wrapped tool output is forwarded redacted, nothing sent to the network', async () => {
+test('(e2e) shield proxy with ZN_API_KEY + ZN_CLOUD=1: wrapped tool output is forwarded redacted, nothing sent to the network', async (t) => {
   const { srv, hits, url } = await startCountingServer();
-  const { env, home } = childEnv({ ZN_API_KEY: FAKE.apiKey, ZN_CLOUD: '1', ZN_API_URL: url });
+  const { env, home } = childEnv(t, { ZN_API_KEY: FAKE.apiKey, ZN_CLOUD: '1', ZN_API_URL: url });
   const dummy = path.join(home, 'dummy_server.js');
   fs.writeFileSync(
     dummy,
@@ -306,8 +314,8 @@ test('(e2e) shield proxy with ZN_API_KEY + ZN_CLOUD=1: wrapped tool output is fo
       assertNoRawSecrets(fs.readFileSync(ledger, 'utf8'), 'local evidence ledger');
     }
   } finally {
-    child.kill();
+    // The child is stopped before t.after() removes its home directory.
+    await stop(child);
     srv.close();
-    fs.rmSync(home, { recursive: true, force: true });
   }
 });
