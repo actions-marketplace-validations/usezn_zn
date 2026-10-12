@@ -1661,31 +1661,19 @@ async fn policies_delete_handler(
             "error": "Forbidden: SuperAdmin role required"
         }));
     }
-    // The name comes from the client: it must be a plain policy name that
-    // stays inside the policy directory.
-    let path = match zn::engine::policy_file_path(&state.config.engine.policy_dir, &payload.name) {
-        Ok(p) => p,
-        Err(e) => {
-            return axum::response::Json(serde_json::json!({
-                "status": "error",
-                "error": e.to_string()
-            }))
-        }
-    };
+    // The name comes from the client: it must be a plain policy name. The
+    // file to delete is the matching entry of a listing of the policy
+    // directory, never a path built from the name. A missing file is not an
+    // error, so deleting twice succeeds.
+    if let Err(e) = zn::engine::remove_policy_file(&state.config.engine.policy_dir, &payload.name) {
+        return axum::response::Json(serde_json::json!({
+            "status": "error",
+            "error": e.to_string()
+        }));
+    }
 
     // Unregister from engine
     state.engine.unregister_policy(&payload.name);
-
-    // Delete the file. symlink_metadata also sees a dangling symlink, and
-    // remove_file deletes a symlink itself, never what it points to.
-    if std::fs::symlink_metadata(&path).is_ok() {
-        if let Err(e) = std::fs::remove_file(&path) {
-            return axum::response::Json(serde_json::json!({
-                "status": "error",
-                "error": format!("Failed to delete policy file: {}", e)
-            }));
-        }
-    }
 
     axum::response::Json(serde_json::json!({
         "status": "ok",
