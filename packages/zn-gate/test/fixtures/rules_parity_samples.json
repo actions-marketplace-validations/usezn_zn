@@ -91,6 +91,21 @@
     { "prefix": "xAKIA", "repeat": "Z", "times": 16 },
     { "prefix": "AKIA", "repeat": "Z", "times": 16, "suffix": "_x" },
     { "prefix": "MY_API_KEY=", "repeat": "d", "times": 16 },
-    { "prefix": "token sk-ant-", "repeat": "b", "times": 32, "suffix": "--." }
+    { "prefix": "token sk-ant-", "repeat": "b", "times": 32, "suffix": "--." },
+    { "prefix": "Zaws_secret=", "repeat": "u", "times": 40 },
+    { "prefix": "aws_key='", "repeat": "w", "times": 40, "suffix": "'" },
+    { "prefix": "AWS_SECRET_ACCESS_KEY: \"", "repeat": "v", "times": 40, "suffix": "\"" },
+    { "prefix": "awſ_secret=", "repeat": "u", "times": 40 },
+    { "prefix": "KAPI_KEY=", "repeat": "y5", "times": 8 },
+    { "prefix": "ſECRET_KEY=", "repeat": "y5", "times": 8 },
+    { "prefix": "/gdańsk-to-warsaw-", "repeat": "train-", "times": 6 },
+    { "prefix": "sk-", "repeat": "Ab3", "times": 16 },
+    { "prefix": "sk-proj-", "repeat": "a_b-", "times": 10 },
+    { "prefix": "Authorization: Bearer sk-or-v1-", "repeat": "a1b2", "times": 16 },
+    { "prefix": "key=\"sk-lf-", "repeat": "c3d4-", "times": 8, "suffix": "\"" },
+    { "prefix": "sk-", "repeat": "Ab3x", "times": 7 },
+    { "prefix": "sk-admin-", "repeat": "Zy9", "times": 10 },
+    { "prefix": "-----BEGIN PRIVATE KEY-----\nMIIE", "repeat": "Ab", "times": 30, "suffix": "\n-----END PRIVATE KEY-----" },
+    { "prefix": "-----BEGIN PRIVATE KEY-----\n-----BEGIN RSA PRIVATE KEY-----\nMII", "repeat": "Cd", "times": 30, "suffix": "\n-----END RSA PRIVATE KEY-----" }
   ]
 }

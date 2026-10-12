@@ -60,6 +60,7 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - The evidence dashboard (`zn-gate evidence --ui`) listens on 127.0.0.1 only, answers only requests whose `Host` header is `127.0.0.1:<port>` or `localhost:<port>` (other hosts get 403, which blocks DNS rebinding), and escapes every ledger field shown in the dashboard.
 - `zn-gate scan` no longer prints detected secrets: the line shown for each finding is redacted first (Node.js and Python, including `--format github` annotations and JSON output in Python).
 - Secret detection in Python no longer misses a key written right next to a non-ASCII letter (for example `cléAKIA…`): secret patterns use explicit ASCII token boundaries, as the Node.js rules already did. `RULES_VERSION` is now `2026-10-12.1`.
+- The OpenAI key pattern covers OpenRouter (`sk-or-v1-`), Langfuse (`sk-lf-`) and admin keys, and no longer matches hyphenated text such as URL slugs (a key without a known prefix must be at least 28 letters and digits). Private-key redaction no longer slows down on text with many `BEGIN ... PRIVATE KEY` headers and no end marker. Node.js and Python now redact `aws_secret` values the same way, keeping the original quotes, and Python matches credential names with ASCII letters only, as Node.js does (the Kelvin sign or a long s no longer count as `K` or `s`). `RULES_VERSION` is now `2026-10-12.2`.
 
 ### Known limitations
 - Cursor cannot rewrite the output of shell commands or file reads. Codex can only replace output through "block", and keeps the original in its own session log.
