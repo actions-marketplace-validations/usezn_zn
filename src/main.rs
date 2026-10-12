@@ -41,7 +41,7 @@ use zn::metrics;
 use zn::proxy::McpPool;
 use zn::scrubber::Scrubber;
 use zn::shield;
-use zn::tenants::{TenantContext, TenantRole, TenantStore};
+use zn::tenants::{TenantContext, TenantRole, TenantStore, GLOBAL_NAMESPACE};
 use zn::tui;
 use zn::webhooks::{self, WebhookManager};
 
@@ -374,7 +374,7 @@ async fn start_proxy(args: Args) -> Result<()> {
         zn_config.server.port = port;
     }
     if let Some(api_key) = args.api_key {
-        zn_config.security.api_key = Some(api_key);
+        zn_config.security.api_key = zn::config::normalize_credential(Some(api_key));
     }
     if let Some(db_path) = args.db_path {
         zn_config.audit.db_path = db_path;
@@ -833,9 +833,15 @@ impl AnalyzerPipeline {
                 let prob = model.classify(&vec).ok().flatten();
 
                 // Search nearest neighbor - use ambient tokio runtime
+                let namespace = self
+                    .config
+                    .security
+                    .namespace
+                    .as_deref()
+                    .unwrap_or(GLOBAL_NAMESPACE);
                 let nearest = self
                     .memory
-                    .search("analyze", &vec, 1)
+                    .search(namespace, "analyze", &vec, 1)
                     .await
                     .ok()
                     .and_then(|r| r.first().map(|(t, d)| (t.clone(), *d)));
@@ -990,8 +996,14 @@ async fn run_mcp() -> Result<()> {
 async fn process_mcp_message(
     line: &str,
     state: &AppState,
-    _namespace: Option<String>,
+    namespace: Option<String>,
 ) -> Result<Option<String>> {
+    // The vector memory is scoped to the authenticated namespace (WebSocket
+    // tenants) or, for the local stdio proxy, to the configured one. The
+    // agent id comes from the message and is not trusted for isolation.
+    let memory_namespace = namespace
+        .or_else(|| state.config.security.namespace.clone())
+        .unwrap_or_else(|| GLOBAL_NAMESPACE.to_string());
     let scrubbed_line = Scrubber::scrub(line);
 
     // Shodan Canary: Detect potential reconnaissance scans
@@ -1164,7 +1176,11 @@ async fn process_mcp_message(
                         let prob = model.classify(&vec).ok().flatten();
 
                         // Search nearest synchronously for the decision logic
-                        if let Ok(results) = state.memory.search(&agent_id_str, &vec, 1).await {
+                        if let Ok(results) = state
+                            .memory
+                            .search(&memory_namespace, &agent_id_str, &vec, 1)
+                            .await
+                        {
                             if let Some((t, d)) = results.first() {
                                 nearest = Some((t.clone(), *d));
                                 anomaly_score = Some(*d);
@@ -1208,9 +1224,10 @@ async fn process_mcp_message(
 
                         // Async Store the new observation
                         let mem = state.memory.clone();
+                        let ns = memory_namespace.clone();
                         let agent = agent_id_str.clone();
                         tokio::spawn(async move {
-                            let _ = mem.store(&agent, &neural_input, &vec).await;
+                            let _ = mem.store(&ns, &agent, &neural_input, &vec).await;
                         });
 
                         log::info(format!(
@@ -1388,16 +1405,16 @@ async fn mcp_ws_handler(
     });
 
     // If we have a master token configured, we still check it as a base layer
-    if let Some(required_token) = &state.config.security.mcp_ws_token {
-        if provided_token.as_ref() != Some(required_token) {
-            log::warning("Blocked Unauthorized WebSocket Connection: Invalid or missing token")
-                .ok();
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                "Invalid security token",
-            )
-                .into_response();
-        }
+    if !zn::auth::mcp_ws_token_matches(
+        state.config.security.mcp_ws_token.as_deref(),
+        provided_token.as_deref(),
+    ) {
+        log::warning("Blocked Unauthorized WebSocket Connection: Invalid or missing token").ok();
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Invalid security token",
+        )
+            .into_response();
     }
 
     let namespace = tenant.namespace.clone();
@@ -1682,26 +1699,38 @@ async fn tenants_create_handler(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     axum::Json(payload): axum::Json<CreateTenantRequest>,
-) -> axum::response::Json<serde_json::Value> {
+) -> (
+    axum::http::StatusCode,
+    axum::response::Json<serde_json::Value>,
+) {
     if tenant.role != TenantRole::SuperAdmin {
-        return axum::response::Json(serde_json::json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::response::Json(serde_json::json!({
+                "status": "error",
+                "error": "Forbidden: SuperAdmin role required"
+            })),
+        );
     }
 
     match state
         .tenants
         .create_tenant(&payload.name, &payload.namespace, &payload.api_key)
     {
-        Ok(_) => axum::response::Json(serde_json::json!({
-            "status": "ok",
-            "message": "Tenant created successfully"
-        })),
-        Err(e) => axum::response::Json(serde_json::json!({
-            "status": "error",
-            "error": e.to_string()
-        })),
+        Ok(_) => (
+            axum::http::StatusCode::OK,
+            axum::response::Json(serde_json::json!({
+                "status": "ok",
+                "message": "Tenant created successfully"
+            })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Json(serde_json::json!({
+                "status": "error",
+                "error": e.to_string()
+            })),
+        ),
     }
 }
 

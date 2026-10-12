@@ -14,7 +14,7 @@ On first start, with an empty database, the gateway seeds a default organisation
 
 Send a key or token in `X-API-Key`, in `Authorization: Bearer <value>` (`Bearer` in any letter case), or (for SSE and WebSocket clients) in the `api_key` or `token` query parameter, percent-encoded. Prefer the headers: query strings can end up in proxy logs. The value is checked in this order:
 
-1. `ZN_API_KEY`: full access (super-admin). An empty or blank `ZN_API_KEY` counts as not set, and an empty key or token never authenticates.
+1. `ZN_API_KEY`: full access (super-admin). Surrounding whitespace is ignored, an empty or blank `ZN_API_KEY` counts as not set, and an empty or blank key or token never authenticates.
 2. A tenant API key: the tenant's role, scoped to its namespace. Blocked tenants get 403.
 3. A JWT signed with `ZN_JWT_SECRET` (HS256 only; other algorithms and unsigned tokens are rejected). The secret must be at least 32 bytes, or the gateway refuses to start (for example `openssl rand -hex 32`).
 
@@ -32,6 +32,22 @@ A token with a bad signature, another algorithm, past its expiry or before its `
 
 **Breaking change:** earlier versions of the gateway gave any valid HS256 token full super-admin access. Tokens must now carry `roles`, and `namespace` for tenant roles. Role names are case-sensitive. `ZN_JWT_SECRET` must be at least 32 bytes or the gateway refuses to start, so tokens signed with a shorter secret stop working. Tokens with an `nbf` (not before) time in the future are rejected, with 60 seconds of leeway for clock differences. Tenants can no longer be created in the `global` namespace or with a namespace that has whitespace, and the gateway no longer prints a `ZN_API_KEY` taken from the environment when it seeds the default organisation.
 
+`POST /api/v1/tenants` (super-admin only) answers **403** to other roles and **400** with `{"status":"error","error":...}` when the tenant cannot be created (invalid namespace, blank key, or a name, namespace or key already in use). Earlier versions answered 200 in both cases.
+
+### Tenants with a blank key
+
+Earlier versions could seed the default organisation with the hash of an empty key when `ZN_API_KEY` was set but empty (for example `ZN_API_KEY=` from an unset compose variable). Blank keys are now refused, so that tenant can no longer authenticate, and since the database already has tenants no new one is seeded. The gateway logs a warning at startup naming each such tenant (never a key). To fix it, either set a non-blank `ZN_API_KEY` (it works as the legacy super-admin key), or give the tenant a new key in the audit database (`ZN_DB_PATH`, `zn.db` by default) while the gateway is stopped:
+
+```bash
+NEW_KEY=$(openssl rand -hex 32)
+HASH=$(printf %s "$NEW_KEY" | sha256sum | cut -d' ' -f1)
+sqlite3 zn.db "UPDATE tenants SET api_key_hash = '$HASH' WHERE id = '<tenant id from the warning>';"
+```
+
+### MCP WebSocket token
+
+`ZN_MCP_WS_TOKEN` is an extra check for MCP WebSocket connections, on top of the management API authentication, sent in the `token` query parameter or the `X-MCP-Token` header. Surrounding whitespace is ignored, a blank value counts as not set (the gateway then generates a random token), and the comparison takes constant time. The `token` query parameter is also read as a management API credential, which takes the first `api_key` or `token` parameter: a client that sends both should put `api_key` first, or send the MCP token in the `X-MCP-Token` header.
+
 ## Policy endpoints
 
 `POST /api/v1/policies/upload` and `POST /api/v1/policies/delete` (super-admin only) work on `engine.policy_dir` (default `./policies_bin`), the directory the gateway loads and watches. A policy name, and an uploaded file name without its `.wasm` extension, must be 1-64 ASCII letters, digits, `.`, `-` or `_`, starting with a letter or digit. Other names are refused, and so is a policy file that resolves outside the directory through a symlink. Earlier versions wrote uploads to `./policies` and joined the name from the request to that path as given, so a name such as `../x` could write or delete a `.wasm` file outside it.
@@ -43,6 +59,20 @@ Uploads are written to a temporary file and renamed into place, so the watcher n
 ## Upgrading the vector memory
 
 The per-agent vector memory is now stored in SQLite (`data/vectors/<model>_d<dim>.sqlite3`). The older Lance directories (`data/vectors/<model>_d<dim>/`) are not migrated or read and can be deleted.
+
+Memory is scoped to a namespace: the tenant namespace of an authenticated MCP WebSocket connection, or `ZN_NAMESPACE` (default `global`) for the local stdio proxy and `zn analyze`. The agent id sent in MCP messages is not authenticated, so it only selects a memory inside the namespace. Limits:
+
+| Limit | Default | When it is exceeded |
+|---|---|---|
+| Rows per agent | 10,000 | The agent's oldest rows are deleted. |
+| Rows per namespace | 25,000 | The namespace's oldest rows are deleted. |
+| Rows per file | 100,000 | The oldest rows of the namespace being written to are deleted, never another namespace's. |
+
+A namespace never deletes another namespace's rows. When the file is full, a namespace that has no rows of its own left to delete keeps no new ones until other namespaces shrink, so the file limit should be at least the namespace limit times the number of namespaces in use.
+
+The first time a new version opens a file written by an earlier one, it upgrades it in place (schema version 2): existing rows are assigned to the `global` namespace, since earlier versions did not record who wrote them. The first store in a namespace then trims it to its limit, which for the `global` namespace of an older file can delete many rows at once. SQLite does not shrink the file on its own; run `VACUUM` on it while the gateway is stopped to reclaim the space.
+
+A search runs on the request path, so it is tried once and gives up after one second; the request then goes on without a nearest neighbour. Failures are logged as a warning at most once every ten minutes, and at debug level in between.
 
 ## Building from Source
 

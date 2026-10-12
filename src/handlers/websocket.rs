@@ -58,15 +58,16 @@ pub async fn mcp_handler(
             .map(|s| s.to_string())
     });
 
-    if let Some(required_token) = &state.config.security.mcp_ws_token {
-        if provided_token.as_ref() != Some(required_token) {
-            tracing::warn!("Blocked Unauthorized WebSocket Connection: Invalid or missing token");
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                "Invalid security token",
-            )
-                .into_response();
-        }
+    if !crate::auth::mcp_ws_token_matches(
+        state.config.security.mcp_ws_token.as_deref(),
+        provided_token.as_deref(),
+    ) {
+        tracing::warn!("Blocked Unauthorized WebSocket Connection: Invalid or missing token");
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Invalid security token",
+        )
+            .into_response();
     }
 
     let namespace = tenant.namespace.clone();
