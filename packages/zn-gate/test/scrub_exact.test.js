@@ -44,24 +44,28 @@ test('environment: sensitive names only, URL contributes its password only', () 
 
 test('files: .env*, credential files and .znrules; examples are skipped', () => {
   const home = tmpdir();
-  const cwd = tmpdir();
-  const v = { dot: pick(32), local: pick(30), example: pick(30), aws: pick(40), npm: 'npm_' + pick(36), netrc: pick(24), gh: 'gho_' + pick(36), zn: pick(20), dockerPw: pick(18) };
-  write(path.join(cwd, '.env'), '# comment\nPORT=3000\nNODE_ENV=production\nSTRIPE_SECRET="' + v.dot + '"\n');
-  write(path.join(cwd, '.env.local'), 'export SESSION_SIGNING=' + v.local + '\n');
-  write(path.join(cwd, '.env.example'), 'API_TOKEN=' + v.example + '\n');
-  write(path.join(cwd, '.znrules'), '# rules\nsecret: LEGACY_KEY=' + v.zn + '\npath: /etc\n');
-  write(path.join(home, '.aws', 'credentials'), '[default]\naws_access_key_id = AKIA' + pick(16).toUpperCase() + '\naws_secret_access_key = ' + v.aws + '\n');
-  write(path.join(home, '.npmrc'), '//registry.npmjs.org/:_authToken=' + v.npm + '\n');
-  write(path.join(home, '.netrc'), 'machine example.org login me password ' + v.netrc + '\n');
-  write(path.join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    oauth_token: ' + v.gh + '\n    user: me\n');
-  write(path.join(home, '.docker', 'config.json'), JSON.stringify({ auths: { 'registry.example.org': { auth: Buffer.from('me:' + v.dockerPw).toString('base64') } } }));
-  const got = X.collectSources({ env: {}, cwd, home });
-  const values = new Set(got.map((e) => e.value));
-  for (const k of ['dot', 'local', 'aws', 'npm', 'netrc', 'gh', 'zn', 'dockerPw']) assert.ok(values.has(v[k]), 'missing ' + k);
-  assert.ok(!values.has(v.example), '.env.example must be skipped');
-  assert.ok(!values.has('production') && !values.has('3000'));
-  fs.rmSync(home, { recursive: true, force: true });
-  fs.rmSync(cwd, { recursive: true, force: true });
+  let cwd;
+  try {
+    cwd = tmpdir();
+    const v = { dot: pick(32), local: pick(30), example: pick(30), aws: pick(40), npm: 'npm_' + pick(36), netrc: pick(24), gh: 'gho_' + pick(36), zn: pick(20), dockerPw: pick(18) };
+    write(path.join(cwd, '.env'), '# comment\nPORT=3000\nNODE_ENV=production\nSTRIPE_SECRET="' + v.dot + '"\n');
+    write(path.join(cwd, '.env.local'), 'export SESSION_SIGNING=' + v.local + '\n');
+    write(path.join(cwd, '.env.example'), 'API_TOKEN=' + v.example + '\n');
+    write(path.join(cwd, '.znrules'), '# rules\nsecret: LEGACY_KEY=' + v.zn + '\npath: /etc\n');
+    write(path.join(home, '.aws', 'credentials'), '[default]\naws_access_key_id = AKIA' + pick(16).toUpperCase() + '\naws_secret_access_key = ' + v.aws + '\n');
+    write(path.join(home, '.npmrc'), '//registry.npmjs.org/:_authToken=' + v.npm + '\n');
+    write(path.join(home, '.netrc'), 'machine example.org login me password ' + v.netrc + '\n');
+    write(path.join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    oauth_token: ' + v.gh + '\n    user: me\n');
+    write(path.join(home, '.docker', 'config.json'), JSON.stringify({ auths: { 'registry.example.org': { auth: Buffer.from('me:' + v.dockerPw).toString('base64') } } }));
+    const got = X.collectSources({ env: {}, cwd, home });
+    const values = new Set(got.map((e) => e.value));
+    for (const k of ['dot', 'local', 'aws', 'npm', 'netrc', 'gh', 'zn', 'dockerPw']) assert.ok(values.has(v[k]), 'missing ' + k);
+    assert.ok(!values.has(v.example), '.env.example must be skipped');
+    assert.ok(!values.has('production') && !values.has('3000'));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    if (cwd) fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test('variants: raw, base64 (padded, unpadded, url-safe), hex (both cases), url-encoded', () => {

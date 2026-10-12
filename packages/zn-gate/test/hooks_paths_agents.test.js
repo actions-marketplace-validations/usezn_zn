@@ -7,7 +7,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const policy = require('../lib/hooks/policy');
@@ -17,14 +16,15 @@ const { getAdapter } = require('../lib/agents');
 const { createFakeVault } = require('./helpers/fake_vault');
 const fakeEngine = require('./helpers/fake_engine');
 const { generateAll } = require('./fixtures/fake_secrets');
+const { tempDir } = require('./helpers/tmp');
 
 const FAKE = generateAll(6161, { perType: 1, piiPerType: 1 });
 const AWS = FAKE.secrets.find((s) => s.type === 'aws_access_key_id').value;
 const CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin';
 const WIN = process.platform === 'win32';
 
-function tmpHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-paths-'));
+function tmpHome(t) {
+  const home = tempDir(t, 'zn-paths-');
   const proj = path.join(home, 'proj');
   fs.mkdirSync(proj);
   return { home, proj };
@@ -40,8 +40,8 @@ const opencode = getAdapter('opencode');
 
 /* ---------------------------- path normalisation ---------------------------- */
 
-test('credential paths are found through ~, $HOME, ${HOME}, %USERPROFILE% and $env:USERPROFILE', () => {
-  const { home, proj } = tmpHome();
+test('credential paths are found through ~, $HOME, ${HOME}, %USERPROFILE% and $env:USERPROFILE', (t) => {
+  const { home, proj } = tmpHome(t);
   const opts = { home, cwd: proj, env: {} };
   for (const p of ['~/.aws/credentials', '$HOME/.aws/credentials', '${HOME}/.aws/credentials',
     '%USERPROFILE%/.aws/credentials', '$env:USERPROFILE/.aws/credentials']) {
@@ -49,23 +49,23 @@ test('credential paths are found through ~, $HOME, ${HOME}, %USERPROFILE% and $e
   }
 });
 
-test('a link inside the project to a credential file is the credential file', { skip: WIN }, () => {
-  const { home, proj } = tmpHome();
+test('a link inside the project to a credential file is the credential file', { skip: WIN }, (t) => {
+  const { home, proj } = tmpHome(t);
   fs.mkdirSync(path.join(home, '.aws'));
   fs.writeFileSync(path.join(home, '.aws', 'credentials'), 'x\n');
   fs.symlinkSync(path.join(home, '.aws', 'credentials'), path.join(proj, 'notes.txt'));
   assert.equal(policy.classifyPath('notes.txt', { home, cwd: proj, env: {} }).kind, 'credential');
 });
 
-test('case is ignored on Windows and macOS, and kept on Linux', () => {
-  const { home, proj } = tmpHome();
+test('case is ignored on Windows and macOS, and kept on Linux', (t) => {
+  const { home, proj } = tmpHome(t);
   const upper = path.join(home, '.AWS', 'CREDENTIALS');
   const c = policy.classifyPath(upper, { home, cwd: proj, env: {} });
   assert.equal(c ? c.kind : null, CASE_INSENSITIVE ? 'credential' : null);
 });
 
-test('credential environment variables name credential paths, set or not', () => {
-  const { home, proj } = tmpHome();
+test('credential environment variables name credential paths, set or not', (t) => {
+  const { home, proj } = tmpHome(t);
   const kube = path.join(home, 'kube', 'cluster.yaml');
   const opts = { home, cwd: proj, env: {} };
   // Not set here: the variable itself is enough.
@@ -80,8 +80,8 @@ test('credential environment variables name credential paths, set or not', () =>
 
 /* ------------------------------ globs and braces ------------------------------ */
 
-test('a glob or brace list that could name a credential is treated as naming it', () => {
-  const { home, proj } = tmpHome();
+test('a glob or brace list that could name a credential is treated as naming it', (t) => {
+  const { home, proj } = tmpHome(t);
   const opts = { home, cwd: proj, env: {} };
   assert.equal(policy.classifyWord('~/.aws/cred*', opts).kind, 'credential');
   assert.equal(policy.classifyWord('~/.aws/cred{entials,s}', opts).kind, 'credential');
@@ -95,16 +95,16 @@ test('a glob or brace list that could name a credential is treated as naming it'
   assert.equal(policy.expandBraces('{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}'), null, 'too many alternatives');
 });
 
-test('a shell command with a glob on a credential path is refused', () => {
-  const { home, proj } = tmpHome();
+test('a shell command with a glob on a credential path is refused', (t) => {
+  const { home, proj } = tmpHome(t);
   const opts = { home, cwd: proj, env: {} };
   assert.match(policy.bashDenial('cat ~/.aws/cred*', opts), /credential/);
   assert.match(policy.bashDenial('cat ~/.aws/cred{entials,s}', opts), /credential/);
   assert.equal(policy.bashDenial('ls ~/Documents/*.txt', opts), null);
 });
 
-test('command substitution: the words inside $( ) and backticks are checked too', () => {
-  const { home, proj } = tmpHome();
+test('command substitution: the words inside $( ) and backticks are checked too', (t) => {
+  const { home, proj } = tmpHome(t);
   const opts = { home, cwd: proj, env: {} };
   assert.match(policy.bashDenial('echo $(cat ~/.aws/credentials)', opts), /credential/);
   assert.match(policy.bashDenial('echo `cat ~/.aws/credentials`', opts), /credential/);
@@ -120,15 +120,15 @@ test('a Windows path with backslashes is classified: the separators are not shel
   assert.equal(policy.bashDenial('Get-Content C:\\Users\\me\\proj\\src\\app.js', opts), null);
 });
 
-test('a --option=path carries its path too', () => {
-  const { home, proj } = tmpHome();
+test('a --option=path carries its path too', (t) => {
+  const { home, proj } = tmpHome(t);
   assert.match(policy.bashDenial('kubectl get pods --kubeconfig=~/.kube/config', { home, cwd: proj, env: {} }), /credential/);
 });
 
 /* ------------------------ agent hook configuration ------------------------ */
 
-test('the agents hook and plugin configuration cannot be written, but can be read', () => {
-  const { home, proj } = tmpHome();
+test('the agents hook and plugin configuration cannot be written, but can be read', (t) => {
+  const { home, proj } = tmpHome(t);
   const opts = { home, cwd: proj, env: {} };
   const protectedFiles = [
     path.join(home, '.claude', 'settings.json'),
@@ -146,8 +146,8 @@ test('the agents hook and plugin configuration cannot be written, but can be rea
   assert.equal(policy.writeDenial(path.join(proj, 'src', 'app.js'), opts), null);
 });
 
-test('shell commands cannot write the agents hook configuration', () => {
-  const { home, proj } = tmpHome();
+test('shell commands cannot write the agents hook configuration', (t) => {
+  const { home, proj } = tmpHome(t);
   const opts = { home, cwd: proj, env: {} };
   assert.match(policy.bashDenial('echo {} > ~/.claude/settings.json', opts), /protected/);
   assert.match(policy.bashDenial('sed -i s/a/b/ ~/.cursor/hooks.json', opts), /protected/);
@@ -157,8 +157,8 @@ test('shell commands cannot write the agents hook configuration', () => {
   assert.equal(policy.bashDenial('ls -la', opts), null);
 });
 
-test('a Codex patch is refused when any file in it is protected, and an unreadable patch too', async () => {
-  const { home, proj } = tmpHome();
+test('a Codex patch is refused when any file in it is protected, and an unreadable patch too', async (t) => {
+  const { home, proj } = tmpHome(t);
   const settings = path.join(home, '.claude', 'settings.json');
   const cx = (patch) => ({ session_id: 's', transcript_path: '/t', cwd: proj, hook_event_name: 'PreToolUse', model: 'm', tool_name: 'apply_patch', tool_input: { command: patch } });
   const ok = await run(codex, cx('*** Begin Patch\n*** Update File: src/a.js\n@@\n-a\n+b\n*** End Patch'), { home });
@@ -170,8 +170,8 @@ test('a Codex patch is refused when any file in it is protected, and an unreadab
   assert.equal(unreadable.output.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('Codex tokenizes the output of tools it does not know, like MCP output', async () => {
-  const { home, proj } = tmpHome();
+test('Codex tokenizes the output of tools it does not know, like MCP output', async (t) => {
+  const { home, proj } = tmpHome(t);
   const raw = { session_id: 's', transcript_path: '/t', cwd: proj, hook_event_name: 'PostToolUse', model: 'm',
     tool_name: 'web_search', tool_use_id: 'u1', tool_input: {}, tool_response: 'found key=' + AWS };
   const res = await run(codex, raw, { home });
@@ -179,9 +179,9 @@ test('Codex tokenizes the output of tools it does not know, like MCP output', as
   assert.ok(!res.output.reason.includes(AWS));
 });
 
-test('the hook reads an event that starts with a byte order mark (Windows PowerShell pipes one)', () => {
+test('the hook reads an event that starts with a byte order mark (Windows PowerShell pipes one)', (t) => {
   const { spawnSync } = require('child_process');
-  const { home, proj } = tmpHome();
+  const { home, proj } = tmpHome(t);
   const ev = { session_id: 's', transcript_path: '/t', cwd: proj, hook_event_name: 'PreToolUse', model: 'm', tool_name: 'Bash',
     tool_input: { command: 'cat ' + path.join(home, '.aws', 'credentials') } };
   const res = spawnSync(process.execPath, [path.resolve(__dirname, '..', 'lib', 'hooks', 'runner.js'), 'codex'], {
@@ -192,8 +192,8 @@ test('the hook reads an event that starts with a byte order mark (Windows PowerS
   assert.doesNotMatch(res.stderr, /invalid event JSON/);
 });
 
-test('Cursor preToolUse checks the file a write, delete or grep names, and fails closed without a path', async () => {
-  const { home, proj } = tmpHome();
+test('Cursor preToolUse checks the file a write, delete or grep names, and fails closed without a path', async (t) => {
+  const { home, proj } = tmpHome(t);
   const pre = (tool, input) => ({ hook_event_name: 'preToolUse', tool_name: tool, tool_input: input, cwd: proj, conversation_id: 'c' });
   const denied = await run(cursor, pre('Write', { file_path: path.join(home, '.cursor', 'hooks.json'), content: 'x' }), { home });
   assert.equal(denied.output.permission, 'deny');
@@ -208,8 +208,8 @@ test('Cursor preToolUse checks the file a write, delete or grep names, and fails
   assert.equal(noPath.output.permission, 'deny', 'a write whose path cannot be read is refused');
 });
 
-test('Cursor install: failClosed on beforeReadFile and beforeSubmitPrompt, and a matcher on preToolUse', () => {
-  const { home, proj } = tmpHome();
+test('Cursor install: failClosed on beforeReadFile and beforeSubmitPrompt, and a matcher on preToolUse', (t) => {
+  const { home, proj } = tmpHome(t);
   cursor.install({ home, scope: 'user', nodePath: process.execPath, runnerPath: '/opt/zn/runner.js' });
   const data = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'hooks.json'), 'utf8'));
   assert.equal(data.hooks.beforeReadFile[0].failClosed, true);
@@ -244,8 +244,8 @@ test('OpenCode plugin: only known actions are acted on, and a project plugin nam
 
 /* ------------------------------ install files ------------------------------ */
 
-test('config files: a symlinked file is written through, its mode is kept, and bad content is refused', { skip: WIN }, () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cfg-'));
+test('config files: a symlinked file is written through, its mode is kept, and bad content is refused', { skip: WIN }, (t) => {
+  const dir = tempDir(t, 'zn-cfg-');
   const target = path.join(dir, 'real.json');
   const link = path.join(dir, 'link.json');
   fs.writeFileSync(target, '{}\n', { mode: 0o600 });

@@ -3,7 +3,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { Writable } = require('stream');
 
@@ -12,6 +11,7 @@ const { createMasker, variantsOf } = require('../lib/broker/mask');
 const { runBroker, parseRunArgs } = require('../lib/broker/run');
 const { createFakeVault } = require('./helpers/fake_vault');
 const { generateAll } = require('./fixtures/fake_secrets');
+const { tempDir } = require('./helpers/tmp');
 
 const FAKE = generateAll(777, { perType: 1, piiPerType: 1 });
 const PG = FAKE.secrets.find((s) => s.type === 'postgres_connection_string').sensitive;
@@ -193,7 +193,7 @@ test('zn run refuses a command outside allowCommands and points to secrets_http_
   assert.ok(vault.auditLog.some((e) => e.decision === 'deny'));
 });
 
-test('zn run refuses proxy-mode secrets, unknown secrets and agent-planted binaries', async () => {
+test('zn run refuses proxy-mode secrets, unknown secrets and agent-planted binaries', async (t) => {
   const vault = await setup();
   await vault.setSecret('GITHUB_TOKEN', GHP, { mode: 'proxy', allowHosts: ['api.github.com'], allowCommands: [NODE] });
   const e1 = sink();
@@ -203,7 +203,7 @@ test('zn run refuses proxy-mode secrets, unknown secrets and agent-planted binar
   assert.equal(await runBroker(['--', NODE, '-e', '1', '__ZN_NOPE__'], { vault, env: nodeEnv, stdout: sink(), stderr: e2, stdin: { isTTY: false } }), 127);
   assert.match(e2.text(), /zn secret set NOPE/);
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-plant-'));
+  const dir = tempDir(t, 'zn-plant-');
   const fakeBin = path.join(dir, process.platform === 'win32' ? 'psql.cmd' : 'psql');
   fs.writeFileSync(fakeBin, process.platform === 'win32' ? '@echo %*\r\n' : '#!/bin/sh\necho "$@"\n', { mode: 0o755 });
   await vault.setSecret('DB_PASSWORD', PG, { mode: 'env', allowCommands: ['psql'] });
@@ -234,8 +234,8 @@ test('first use is confirmed by the vault, never on the command terminal, and on
   assert.ok(declined.auditLog.some((e) => e.decision === 'deny' && e.secret === 'DB_PASSWORD'));
 });
 
-test('a vault without approval calls never approves (no file fallback)', async () => {
-  const znHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-appr-'));
+test('a vault without approval calls never approves (no file fallback)', async (t) => {
+  const znHome = tempDir(t, 'zn-appr-');
   const vault = createFakeVault();
   await vault.setSecret('DB_PASSWORD', PG, { mode: 'env', allowCommands: [NODE] });
   const args = ['--', NODE, '-e', '1', '__ZN_DB_PASSWORD__'];

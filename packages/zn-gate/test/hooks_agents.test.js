@@ -17,6 +17,7 @@ const runner = require('../lib/hooks/runner');
 const { createFakeVault } = require('./helpers/fake_vault');
 const fakeEngine = require('./helpers/fake_engine');
 const { generateAll } = require('./fixtures/fake_secrets');
+const { tempDir } = require('./helpers/tmp');
 
 const FAKE = generateAll(5150, { perType: 1, piiPerType: 1 });
 const AWS = FAKE.secrets.find((s) => s.type === 'aws_access_key_id').value;
@@ -26,8 +27,8 @@ const codex = getAdapter('codex');
 const cursor = getAdapter('cursor');
 const opencode = getAdapter('opencode');
 
-function tmpProject() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-agents-'));
+function tmpProject(t) {
+  const dir = tempDir(t, 'zn-agents-');
   spawnSync('git', ['init', '-q'], { cwd: dir });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n');
   fs.writeFileSync(path.join(dir, '.env'), 'API_KEY=' + GHP + '\n');
@@ -46,8 +47,8 @@ test('registry lists the four adapters', () => {
 
 const cx = (event, extra) => ({ session_id: 's', transcript_path: '/t', cwd: extra.cwd || '/', hook_event_name: event, model: 'm', ...extra });
 
-test('codex: credential reads are denied, markers get the zn run command, no auto-approval', async () => {
-  const dir = tmpProject();
+test('codex: credential reads are denied, markers get the zn run command, no auto-approval', async (t) => {
+  const dir = tmpProject(t);
   const d1 = await run(codex, cx('PreToolUse', { cwd: dir, tool_name: 'Bash', tool_input: { command: 'cat .env' } }));
   assert.equal(d1.output.hookSpecificOutput.permissionDecision, 'deny');
   const d2 = await run(codex, cx('PreToolUse', { cwd: dir, tool_name: 'Bash', tool_input: { command: 'psql "postgres://a:__ZN_DB_PASSWORD__@h/d"' } }));
@@ -83,8 +84,8 @@ test('codex: output with secrets is replaced through block; prompts with secrets
   assert.equal((await run(codex, cx('PostToolUse', { tool_name: 'Bash', tool_input: {}, tool_response: { stdout: 'ok' } }))).output, null);
 });
 
-test('codex: install writes hooks.json (user and project) and uninstall removes only ours', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cx-'));
+test('codex: install writes hooks.json (user and project) and uninstall removes only ours', (t) => {
+  const home = tempDir(t, 'zn-cx-');
   const env = { CODEX_HOME: path.join(home, '.codex') };
   const file = codex.hooksFile({ env });
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -100,7 +101,7 @@ test('codex: install writes hooks.json (user and project) and uninstall removes 
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).hooks.PreToolUse.length, 2, 'idempotent');
   codex.uninstall({ env });
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).hooks, { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine.sh' }] }] });
-  const proj = tmpProject();
+  const proj = tmpProject(t);
   codex.install({ scope: 'project', projectDir: proj });
   assert.ok(fs.existsSync(path.join(proj, '.codex', 'hooks.json')));
 });
@@ -109,8 +110,8 @@ test('codex: install writes hooks.json (user and project) and uninstall removes 
 
 const cu = (event, extra) => ({ conversation_id: 'c', generation_id: 'g', hook_event_name: event, workspace_roots: [extra.cwd || '/'], ...extra });
 
-test('cursor: beforeReadFile denies plain .env and credential files, allows others', async () => {
-  const dir = tmpProject();
+test('cursor: beforeReadFile denies plain .env and credential files, allows others', async (t) => {
+  const dir = tmpProject(t);
   const r1 = await run(cursor, cu('beforeReadFile', { cwd: dir, file_path: path.join(dir, '.env'), content: 'API_KEY=x' }));
   assert.deepEqual(Object.keys(r1.output).sort(), ['permission', 'user_message']);
   assert.equal(r1.output.permission, 'deny');
@@ -118,8 +119,8 @@ test('cursor: beforeReadFile denies plain .env and credential files, allows othe
   assert.deepEqual(r2.output, { permission: 'allow' });
 });
 
-test('cursor: shell commands: deny reads, zn run guidance for markers, ask once wrapped, silent otherwise', async () => {
-  const dir = tmpProject();
+test('cursor: shell commands: deny reads, zn run guidance for markers, ask once wrapped, silent otherwise', async (t) => {
+  const dir = tmpProject(t);
   const a = await run(cursor, cu('beforeShellExecution', { cwd: dir, command: 'grep KEY .env', sandbox: false }));
   assert.equal(a.output.permission, 'deny');
   const b = await run(cursor, cu('beforeShellExecution', { cwd: dir, command: 'gh api -H "Authorization: token __ZN_GITHUB_TOKEN__" /user' }));
@@ -142,8 +143,8 @@ test('cursor: MCP output is tokenized, built-in output cannot be, prompts with s
   assert.deepEqual((await run(cursor, cu('beforeSubmitPrompt', { prompt: 'hello' }))).output, { continue: true });
 });
 
-test('cursor: install writes version 1 hooks.json with our four events', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cu-'));
+test('cursor: install writes version 1 hooks.json with our four events', (t) => {
+  const home = tempDir(t, 'zn-cu-');
   cursor.install({ home, nodePath: '/usr/bin/node', runnerPath: '/x/lib/hooks/runner.js' });
   const data = JSON.parse(fs.readFileSync(cursor.hooksFile({ home }), 'utf8'));
   assert.equal(data.version, 1);
@@ -155,8 +156,8 @@ test('cursor: install writes version 1 hooks.json with our four events', () => {
 
 /* ------------------------------ OpenCode ----------------------------- */
 
-test('opencode: before/after/chat events map to runner decisions', async () => {
-  const dir = tmpProject();
+test('opencode: before/after/chat events map to runner decisions', async (t) => {
+  const dir = tmpProject(t);
   const deny = await run(opencode, { hook: 'tool.execute.before', tool: 'read', cwd: dir, args: { filePath: path.join(dir, '.env') } });
   assert.equal(deny.output.action, 'deny');
   const wrap = await run(opencode, { hook: 'tool.execute.before', tool: 'bash', cwd: dir, args: { command: 'psql __ZN_DB_PASSWORD__', description: 'd' } });
@@ -172,10 +173,10 @@ test('opencode: before/after/chat events map to runner decisions', async () => {
   assert.deepEqual((await run(opencode, { hook: 'tool.execute.before', tool: 'bash', cwd: dir, args: { command: 'ls' } })).output, { action: 'none' });
 });
 
-test('opencode: the installed plugin, driven like OpenCode does, blocks, rewrites in place and scrubs', async () => {
-  const dir = tmpProject();
-  const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-oc-'));
-  const znHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-oc-home-'));
+test('opencode: the installed plugin, driven like OpenCode does, blocks, rewrites in place and scrubs', async (t) => {
+  const dir = tmpProject(t);
+  const xdg = tempDir(t, 'zn-oc-');
+  const znHome = tempDir(t, 'zn-oc-home-');
   const env = { XDG_CONFIG_HOME: xdg };
   const rep = opencode.install({ env });
   assert.ok(rep.settings.endsWith(path.join('opencode', 'plugins', 'zn-gate.js')));
@@ -214,8 +215,8 @@ test('opencode: the installed plugin, driven like OpenCode does, blocks, rewrite
   assert.ok(!fs.existsSync(rep.settings));
 });
 
-test('opencode: install refuses to overwrite a plugin it did not write', () => {
-  const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-oc2-'));
+test('opencode: install refuses to overwrite a plugin it did not write', (t) => {
+  const xdg = tempDir(t, 'zn-oc2-');
   const file = opencode.pluginPath({ env: { XDG_CONFIG_HOME: xdg } });
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, 'export const Mine = async () => ({})\n');

@@ -16,7 +16,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { Writable } = require('stream');
 const { spawnSync } = require('child_process');
@@ -30,6 +29,7 @@ const dotenv = require('../lib/broker/dotenv');
 const { createFakeVault } = require('./helpers/fake_vault');
 const fakeEngine = require('./helpers/fake_engine');
 const { generateAll } = require('./fixtures/fake_secrets');
+const { tempDir } = require('./helpers/tmp');
 
 const FAKE = generateAll(20261011, { perType: 1, piiPerType: 1 });
 const val = (t) => FAKE.secrets.find((s) => s.type === t);
@@ -59,8 +59,8 @@ function leaks(text) {
   return found;
 }
 
-function project() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-e2e-'));
+function project(t) {
+  const dir = tempDir(t, 'zn-e2e-');
   spawnSync('git', ['init', '-q'], { cwd: dir });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n');
   fs.writeFileSync(path.join(dir, '.env'), [
@@ -102,8 +102,8 @@ test('zn secret set refuses values in argv and agent shells', async () => {
   assert.deepEqual((await vault.listSecrets())[0], { name: 'FOO', mode: 'env', allowHosts: [], allowCommands: ['psql'], allowIn: ['header'], source: 'local', lastUsed: null });
 });
 
-test('zn secret import copies values and leaves the file untouched', async () => {
-  const dir = project();
+test('zn secret import copies values and leaves the file untouched', async (t) => {
+  const dir = project(t);
   const before = fs.readFileSync(path.join(dir, '.env'), 'utf8');
   const vault = createFakeVault();
   const o = io(dir, vault);
@@ -115,8 +115,8 @@ test('zn secret import copies values and leaves the file untouched', async () =>
   assert.equal(leaks(o.stdout.text() + o.stderr.text()).length, 0);
 });
 
-test('E2E: shadowed .env + zn run with an allowed command never shows a value; other commands are refused', async () => {
-  const dir = project();
+test('E2E: shadowed .env + zn run with an allowed command never shows a value; other commands are refused', async (t) => {
+  const dir = project(t);
   const vault = createFakeVault({ withApprovals: true });
   const transcript = [];
   const hook = async (raw) => {
@@ -193,8 +193,8 @@ test('E2E: shadowed .env + zn run with an allowed command never shows a value; o
   assert.deepEqual(leaks(JSON.stringify(vault.auditLog)), [], 'audit log has no values');
 });
 
-test('env shadow is idempotent and env unshadow restores the original', async () => {
-  const dir = project();
+test('env shadow is idempotent and env unshadow restores the original', async (t) => {
+  const dir = project(t);
   const original = fs.readFileSync(path.join(dir, '.env'), 'utf8');
   const vault = createFakeVault();
   const o1 = io(dir, vault);
@@ -209,7 +209,7 @@ test('env shadow is idempotent and env unshadow restores the original', async ()
   assert.equal(fs.readFileSync(path.join(dir, '.env'), 'utf8'), original);
 });
 
-test('policy agrees: a shadowed .env is readable, the original is not', () => {
-  const dir = project();
+test('policy agrees: a shadowed .env is readable, the original is not', (t) => {
+  const dir = project(t);
   assert.ok(policy.readDenial(path.join(dir, '.env'), { cwd: dir, home: dir }));
 });
