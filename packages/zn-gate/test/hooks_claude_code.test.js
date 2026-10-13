@@ -572,3 +572,27 @@ test('Windows: an extensionless file next to its .cmd is not the program (npm la
     assert.equal(path.basename(found), 'tool');
   }
 });
+
+test('the prompt hook blocks the prompt when it cannot run; tool hooks do not', (t) => {
+  const home = tempDir(t, 'zn-onf-');
+  const env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
+  const opts = { scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
+  const read = () => JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).hooks || {};
+  adapter.install(opts);
+  assert.equal(read().UserPromptSubmit[0].hooks[0].onFailure, 'block');
+  // A tool hook that cannot run lets the call through, as documented.
+  assert.equal(read().PreToolUse[0].hooks[0].onFailure, undefined);
+  assert.equal(read().PostToolUse[0].hooks[0].onFailure, undefined);
+  // Reinstall and uninstall still recognise the prompt hook.
+  adapter.install(opts);
+  assert.equal(read().UserPromptSubmit.length, 1);
+  adapter.uninstall({ scope: 'user', home, env, mcp: false });
+  assert.equal(read().UserPromptSubmit, undefined);
+});
+
+test('OpenCode plugin: a hook that fails or times out blocks the call and the message', () => {
+  const src = require('../lib/agents/opencode').pluginSource({ scope: 'user', nodePath: '/usr/bin/node', runnerPath: '/opt/zn/lib/hooks/runner.js' });
+  assert.match(src, /action: "error", message: "timeout"/);
+  assert.match(src, /if \(r\.action === "error"\) throw new Error\("zn: the secret scrubber is not working \(" \+ r\.message \+ "\); call blocked"\)/);
+  assert.match(src, /if \(r\.action === "error"\) throw new Error\("zn: the secret scrubber is not working \(" \+ r\.message \+ "\); message not sent"\)/);
+});

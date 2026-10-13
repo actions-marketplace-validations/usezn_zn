@@ -257,7 +257,9 @@ function ourHooks(command) {
   return {
     PreToolUse: { matcher: PRE_MATCHER, hooks: [h] },
     PostToolUse: { matcher: POST_MATCHER, hooks: [h] },
-    UserPromptSubmit: { hooks: [h] },
+    // A prompt hook that cannot start or times out blocks the prompt
+    // (Claude Code 2.1.295 and later; earlier versions ignore the field).
+    UserPromptSubmit: { hooks: [{ ...h, onFailure: 'block' }] },
   };
 }
 
