@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.1] - 2026-10-13
 
-Security release for Windows. Update with `npm install -g zn-gate@1.5.1`. The Python package has no code changes in this release.
+Security release, mainly for Windows. Update with `npm install -g zn-gate@1.5.1`. The Python package has no code changes in this release.
 
 ### Security
 - **Windows: `zn run` starts batch files through the system cmd.exe only.** For a `.cmd` or `.bat` program (for example an npm-installed CLI), the program that received the secret values could be chosen through the caller's environment. zn run now starts the system's cmd.exe, found through the system itself rather than any environment variable (`/d /v:off /s /c`, arguments passed verbatim), refuses to run the batch file if it cannot find it, and refuses a program path containing `%`, `!` or `"`, which cmd.exe would expand.
@@ -216,7 +216,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.5.0...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.5.1...next
+[1.5.1]: https://github.com/usezn/zn/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/usezn/zn/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/usezn/zn/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/usezn/zn/compare/v1.3.0...v1.4.0
