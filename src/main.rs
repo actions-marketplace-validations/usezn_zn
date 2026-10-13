@@ -14,9 +14,9 @@ use chrono::Utc;
 use clap::Parser;
 use cliclack::{intro, log, note};
 use futures::stream::Stream;
-use opentelemetry::KeyValue;
+use opentelemetry::{trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{trace as sdktrace, Resource};
+use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ use zn::metrics;
 use zn::proxy::McpPool;
 use zn::scrubber::Scrubber;
 use zn::shield;
-use zn::tenants::{TenantContext, TenantRole, TenantStore};
+use zn::tenants::{TenantContext, TenantRole, TenantStore, GLOBAL_NAMESPACE};
 use zn::tui;
 use zn::webhooks::{self, WebhookManager};
 
@@ -300,10 +300,10 @@ async fn main() -> Result<()> {
     }
 
     // 1. Branding Header
-    intro("🛡️ zn v1.0 | usezn.com | Developed with love and patience by ZN | x.com/use_zn")?;
+    intro("🛡️ zn | usezn.com")?;
 
     // 2. Initialize Tracing & OTLP
-    init_tracing()?;
+    let _tracing = init_tracing()?;
 
     // 3. Handle Commands
     match &args.command {
@@ -374,7 +374,7 @@ async fn start_proxy(args: Args) -> Result<()> {
         zn_config.server.port = port;
     }
     if let Some(api_key) = args.api_key {
-        zn_config.security.api_key = Some(api_key);
+        zn_config.security.api_key = zn::config::normalize_credential(Some(api_key));
     }
     if let Some(db_path) = args.db_path {
         zn_config.audit.db_path = db_path;
@@ -463,7 +463,13 @@ async fn start_proxy(args: Args) -> Result<()> {
     )?);
 
     // Initialize Tenant Store
-    let tenants = Arc::new(TenantStore::new(vault.get_connection())?);
+    // A generated SuperAdmin key is written next to the audit database,
+    // never printed.
+    let seed_key_file = zn::tenants::seed_key_file_for(&zn_config.audit.db_path);
+    let tenants = Arc::new(TenantStore::open(
+        vault.get_connection(),
+        Some(&seed_key_file),
+    )?);
 
     // Initialize Broadcast Channel
     let (tx, _) = broadcast::channel(zn_config.server.channel_capacity);
@@ -508,10 +514,7 @@ async fn start_proxy(args: Args) -> Result<()> {
                 Arc::new(b)
             }
             Err(e) => {
-                log::warning(format!(
-                    "⚠️ Neural Core Failed to Start: {}. Running in lobotomized mode.",
-                    e
-                ))?;
+                log::warning(format!("⚠️ Neural Core Failed to Start: {}.", e))?;
                 panic!("Critical: Neural Core (Candle) failed to load: {}", e);
             }
         }
@@ -542,14 +545,17 @@ async fn start_proxy(args: Args) -> Result<()> {
     ))?;
     let canary = Arc::new(zn::ai::CanaryDeployer::new(backend));
 
-    // Initialize Neural Memory (LanceDB)
+    // Initialize Neural Memory (SQLite)
     let vector_db_path = "data/vectors";
     std::fs::create_dir_all(vector_db_path).ok();
-    let memory = Arc::new(zn::ai::VectorMemory::new(
-        vector_db_path,
-        zn_config.neural.dim as i32,
-        &zn_config.neural.model_id,
-    ));
+    let memory = Arc::new(
+        zn::ai::VectorMemory::new(
+            vector_db_path,
+            zn_config.neural.dim as i32,
+            &zn_config.neural.model_id,
+        )
+        .with_limits_from_env(),
+    );
     log::info(format!("💾 Neural Memory Active: [{}]", vector_db_path))?;
 
     let pool = McpPool::auto_discover().unwrap_or_else(|e| {
@@ -767,11 +773,14 @@ async fn build_pipeline() -> Result<AnalyzerPipeline> {
     // Initialize vector memory
     let vector_db_path = "data/vectors";
     std::fs::create_dir_all(vector_db_path).ok();
-    let memory = Arc::new(zn::ai::VectorMemory::new(
-        vector_db_path,
-        config.neural.dim as i32,
-        &config.neural.model_id,
-    ));
+    let memory = Arc::new(
+        zn::ai::VectorMemory::new(
+            vector_db_path,
+            config.neural.dim as i32,
+            &config.neural.model_id,
+        )
+        .with_limits_from_env(),
+    );
 
     // Initialize canary deployer
     let canary = Arc::new(zn::ai::CanaryDeployer::new(backend));
@@ -814,7 +823,7 @@ impl AnalyzerPipeline {
             &self.config.fusion,
         );
         if fused_blocked && !rules_hit {
-            // Neural camera alone blocks (the negation case EXP-024 found).
+            // Neural camera alone blocks: the negation case that rules miss.
             verdict = "block";
             matched_rule = Some("fusion_neural".to_string());
             risk_score = fusion_ev.as_ref().map_or(1.0, |ev| ev.neural_score as f64);
@@ -830,9 +839,15 @@ impl AnalyzerPipeline {
                 let prob = model.classify(&vec).ok().flatten();
 
                 // Search nearest neighbor - use ambient tokio runtime
+                let namespace = self
+                    .config
+                    .security
+                    .namespace
+                    .as_deref()
+                    .unwrap_or(GLOBAL_NAMESPACE);
                 let nearest = self
                     .memory
-                    .search("analyze", &vec, 1)
+                    .search(namespace, "analyze", &vec, 1)
                     .await
                     .ok()
                     .and_then(|r| r.first().map(|(t, d)| (t.clone(), *d)));
@@ -987,8 +1002,14 @@ async fn run_mcp() -> Result<()> {
 async fn process_mcp_message(
     line: &str,
     state: &AppState,
-    _namespace: Option<String>,
+    namespace: Option<String>,
 ) -> Result<Option<String>> {
+    // The vector memory is scoped to the authenticated namespace (WebSocket
+    // tenants) or, for the local stdio proxy, to the configured one. The
+    // agent id comes from the message and is not trusted for isolation.
+    let memory_namespace = namespace
+        .or_else(|| state.config.security.namespace.clone())
+        .unwrap_or_else(|| GLOBAL_NAMESPACE.to_string());
     let scrubbed_line = Scrubber::scrub(line);
 
     // Shodan Canary: Detect potential reconnaissance scans
@@ -1010,10 +1031,21 @@ async fn process_mcp_message(
             // 🎯 OCR GUARD: detect malicious text embedded in images (prompt
             // injection, credentials, destructive commands) on the RAW input,
             // before stripping metadata would remove the text layer.
-            match zn::engine::vision::VisionEngine::detect_malicious_ocr(
-                &arguments,
-                &state.config.managed_rules,
-            ) {
+            // OCR runs an external command and waits for it, so it runs on
+            // the blocking thread pool instead of stalling this async task.
+            // A failed OCR task fails closed.
+            let ocr_check = if state.config.managed_rules.visual_pii_redaction {
+                let ocr_arguments = arguments.clone();
+                let rules = state.config.managed_rules.clone();
+                tokio::task::spawn_blocking(move || {
+                    zn::engine::vision::VisionEngine::detect_malicious_ocr(&ocr_arguments, &rules)
+                })
+                .await
+                .unwrap_or(Err(zn::engine::vision::VisionError::ParseTimeout))
+            } else {
+                Ok(None)
+            };
+            match ocr_check {
                 Ok(Some((ocr_text, rule))) => {
                     use sha2::{Digest, Sha256};
                     let hash = hex::encode(Sha256::digest(ocr_text.as_bytes()));
@@ -1154,14 +1186,18 @@ async fn process_mcp_message(
                         let duration = start_neural.elapsed();
                         metrics::record_neural_embed(duration.as_secs_f64());
 
-                        // D-1: the classifier probability is an independent
+                        // The classifier probability is an independent
                         // signal — it fires even when the anomaly is quiet or
                         // the agent memory is empty. `None` in anomaly-only
                         // mode (no head.json).
                         let prob = model.classify(&vec).ok().flatten();
 
                         // Search nearest synchronously for the decision logic
-                        if let Ok(results) = state.memory.search(&agent_id_str, &vec, 1).await {
+                        if let Ok(results) = state
+                            .memory
+                            .search(&memory_namespace, &agent_id_str, &vec, 1)
+                            .await
+                        {
                             if let Some((t, d)) = results.first() {
                                 nearest = Some((t.clone(), *d));
                                 anomaly_score = Some(*d);
@@ -1205,9 +1241,10 @@ async fn process_mcp_message(
 
                         // Async Store the new observation
                         let mem = state.memory.clone();
+                        let ns = memory_namespace.clone();
                         let agent = agent_id_str.clone();
                         tokio::spawn(async move {
-                            let _ = mem.store(&agent, &neural_input, &vec).await;
+                            let _ = mem.store(&ns, &agent, &neural_input, &vec).await;
                         });
 
                         log::info(format!(
@@ -1385,16 +1422,16 @@ async fn mcp_ws_handler(
     });
 
     // If we have a master token configured, we still check it as a base layer
-    if let Some(required_token) = &state.config.security.mcp_ws_token {
-        if provided_token.as_ref() != Some(required_token) {
-            log::warning("Blocked Unauthorized WebSocket Connection: Invalid or missing token")
-                .ok();
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                "Invalid security token",
-            )
-                .into_response();
-        }
+    if !zn::auth::mcp_ws_token_matches(
+        state.config.security.mcp_ws_token.as_deref(),
+        provided_token.as_deref(),
+    ) {
+        log::warning("Blocked Unauthorized WebSocket Connection: Invalid or missing token").ok();
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Invalid security token",
+        )
+            .into_response();
     }
 
     let namespace = tenant.namespace.clone();
@@ -1560,12 +1597,24 @@ async fn policies_upload_handler(
             let file_name = field.file_name().unwrap_or("policy.wasm").to_string();
 
             // Validate extension
-            if !file_name.ends_with(".wasm") {
+            let Some(policy_name) = file_name.strip_suffix(".wasm") else {
                 return axum::response::Json(serde_json::json!({
                     "status": "error",
                     "error": "Only .wasm files are allowed"
                 }));
-            }
+            };
+            // The file name comes from the client: it must be a plain policy
+            // name that stays inside the policy directory.
+            let path =
+                match zn::engine::policy_file_path(&state.config.engine.policy_dir, policy_name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return axum::response::Json(serde_json::json!({
+                            "status": "error",
+                            "error": e.to_string()
+                        }))
+                    }
+                };
 
             let data = match field.bytes().await {
                 Ok(d) => d,
@@ -1577,14 +1626,8 @@ async fn policies_upload_handler(
                 }
             };
 
-            // Ensure policies directory exists
-            if !std::path::Path::new("policies").exists() {
-                let _ = std::fs::create_dir_all("policies");
-            }
-
-            // Save to policies directory
-            let path = std::path::Path::new("policies").join(&file_name);
-            if let Err(e) = std::fs::write(&path, &data) {
+            // Save to the policy directory: temporary file + rename, no symlinks.
+            if let Err(e) = zn::engine::write_policy_file(&path, &data) {
                 return axum::response::Json(serde_json::json!({
                     "status": "error",
                     "error": format!("Failed to save file: {}", e)
@@ -1629,19 +1672,19 @@ async fn policies_delete_handler(
             "error": "Forbidden: SuperAdmin role required"
         }));
     }
+    // The name comes from the client: it must be a plain policy name. The
+    // file to delete is the matching entry of a listing of the policy
+    // directory, never a path built from the name. A missing file is not an
+    // error, so deleting twice succeeds.
+    if let Err(e) = zn::engine::remove_policy_file(&state.config.engine.policy_dir, &payload.name) {
+        return axum::response::Json(serde_json::json!({
+            "status": "error",
+            "error": e.to_string()
+        }));
+    }
+
     // Unregister from engine
     state.engine.unregister_policy(&payload.name);
-
-    // Delete file
-    let path = std::path::Path::new("policies").join(format!("{}.wasm", payload.name));
-    if path.exists() {
-        if let Err(e) = std::fs::remove_file(path) {
-            return axum::response::Json(serde_json::json!({
-                "status": "error",
-                "error": format!("Failed to delete policy file: {}", e)
-            }));
-        }
-    }
 
     axum::response::Json(serde_json::json!({
         "status": "ok",
@@ -1661,26 +1704,38 @@ async fn tenants_create_handler(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     axum::Json(payload): axum::Json<CreateTenantRequest>,
-) -> axum::response::Json<serde_json::Value> {
+) -> (
+    axum::http::StatusCode,
+    axum::response::Json<serde_json::Value>,
+) {
     if tenant.role != TenantRole::SuperAdmin {
-        return axum::response::Json(serde_json::json!({
-            "status": "error",
-            "error": "Forbidden: SuperAdmin role required"
-        }));
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::response::Json(serde_json::json!({
+                "status": "error",
+                "error": "Forbidden: SuperAdmin role required"
+            })),
+        );
     }
 
     match state
         .tenants
         .create_tenant(&payload.name, &payload.namespace, &payload.api_key)
     {
-        Ok(_) => axum::response::Json(serde_json::json!({
-            "status": "ok",
-            "message": "Tenant created successfully"
-        })),
-        Err(e) => axum::response::Json(serde_json::json!({
-            "status": "error",
-            "error": e.to_string()
-        })),
+        Ok(_) => (
+            axum::http::StatusCode::OK,
+            axum::response::Json(serde_json::json!({
+                "status": "ok",
+                "message": "Tenant created successfully"
+            })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Json(serde_json::json!({
+                "status": "error",
+                "error": e.to_string()
+            })),
+        ),
     }
 }
 
@@ -1752,8 +1807,18 @@ fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
         .allow_credentials(true)
 }
 
+/// Flushes and shuts down the OTLP tracer provider when dropped, so the last
+/// batch of spans is exported before the process exits.
+struct TracingGuard(SdkTracerProvider);
+
+impl Drop for TracingGuard {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown();
+    }
+}
+
 /// Initialize OTLP Tracing and Registry
-fn init_tracing() -> Result<()> {
+fn init_tracing() -> Result<TracingGuard> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -1761,25 +1826,27 @@ fn init_tracing() -> Result<()> {
         .with_thread_ids(true)
         .with_target(false);
 
-    // OTLP Exporter (can be disabled via env)
-    let otlp_endpoint =
-        std::env::var("ZN_OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4318".to_string());
-
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .http()
-                .with_endpoint(format!("{}/v1/traces", otlp_endpoint)),
+    // OTLP exporter. ZN_OTLP_ENDPOINT (base URL) wins when set; otherwise the
+    // standard OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT
+    // variables apply, falling back to http://localhost:4318/v1/traces.
+    let mut exporter = opentelemetry_otlp::SpanExporter::builder().with_http();
+    if let Ok(base) = std::env::var("ZN_OTLP_ENDPOINT") {
+        exporter = exporter.with_endpoint(format!("{}/v1/traces", base.trim_end_matches('/')));
+    }
+    let exporter = exporter
+        .build()
+        .map_err(|e| anyhow!("Failed to initialize OTLP exporter: {}", e))?;
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name("zn-proxy")
+                .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+                .build(),
         )
-        .with_trace_config(
-            sdktrace::Config::default().with_resource(Resource::new(vec![
-                KeyValue::new("service.name", "zn-proxy"),
-                KeyValue::new("service.version", "1.0.0"),
-            ])),
-        )
-        .install_batch(opentelemetry_sdk::runtime::Tokio)
-        .map_err(|e| anyhow!("Failed to initialize OTLP tracer: {}", e))?;
+        .build();
+    let tracer = provider.tracer("zn-proxy");
+    opentelemetry::global::set_tracer_provider(provider.clone());
 
     let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
@@ -1789,7 +1856,7 @@ fn init_tracing() -> Result<()> {
         .with(otlp_layer)
         .init();
 
-    Ok(())
+    Ok(TracingGuard(provider))
 }
 
 /// List pending authorizations for consensus (SuperAdmin only)
@@ -1962,7 +2029,7 @@ mod fusion_wiring_tests {
         let tau = p.config.fusion.tau;
 
         // Highest-scoring calibration vector ({tool}: {input}) whose RULES
-        // camera misses — exactly the framing-only gap EXP-024 found.
+        // camera misses: the framing-only gap that rules alone do not catch.
         let fixture: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))

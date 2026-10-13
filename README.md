@@ -34,11 +34,24 @@
 
 **For:** developers using Claude Code, Codex CLI, Cursor, OpenCode or any MCP client, and teams building agents with MCP, LangChain, CrewAI or LlamaIndex.
 
-**What it does today:** checks what your agent reads and calls for prompt injection, redacts secrets from tool output before the model sees it, and audits prompts, skills and configs. Runs locally, needs no account, has zero runtime dependencies.
+**What it does:** keeps secret values out of what your agent sends to its model, checks what your agent reads and calls for prompt injection, and audits prompts, skills and configs. Everything runs on your machine, is MIT-licensed and needs no account. The Python package has no runtime dependencies; the npm package's only one is `age-encryption` (with its `@noble`/`@scure` dependencies) for the secret vault, bundled in the package.
 
 ## Install
 
-Pick your agent. Each command adds zn-gate as an MCP server (Node.js 18+).
+**Keep secrets out of your agent's context.** The secrets scrubber and broker for coding agents keeps real values in an encrypted vault on your machine, and your agent works with markers such as `__ZN_STRIPE_KEY__`.
+
+```bash
+npm install -g zn-gate             # Node.js 18+
+zn unlock                          # create or unlock the local vault
+zn env shadow .env                 # move .env values into the vault, leave markers
+zn hooks install claude-code       # or: codex, cursor, opencode
+```
+
+Cursor support is partial: zn-gate can only rewrite the output of MCP tools there, not of shell commands or file reads.
+
+Five-minute walkthrough: [docs/secrets.md](docs/secrets.md). What each agent supports: [docs/compat.md](docs/compat.md). Limits: [docs/threat-model.md](docs/threat-model.md).
+
+**Add zn-gate as an MCP server.** Pick your agent. Each command adds zn-gate as an MCP server (Node.js 18+).
 
 **Claude Code**
 ```bash
@@ -68,7 +81,7 @@ npx -y zn-gate init --revert    # undo
 ```
 It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`), Codex CLI (`~/.codex/config.toml`) and OpenCode (`~/.config/opencode/opencode.json`). [Full list and rules](packages/zn-gate/README.md#wrap-the-mcp-servers-you-already-use).
 
-**Python**
+**Python** (rules engine and secret redaction; the vault, hooks and `zn run` are in the npm package)
 ```bash
 pip install zn-gate
 ```
@@ -119,18 +132,27 @@ sequenceDiagram
 ```
 
 ### Scrubber: secrets stay out of the model's context
-- **Today:** redacts AWS keys, OpenAI and Anthropic keys, GitHub tokens, JWTs, private keys and database URL passwords in everything that passes through zn-gate: tool output checked with `check_tool_result`, tool arguments checked with `check_tool_call`, and output of MCP servers wrapped by `zn-gate shield` / `init`. Python: `sanitize_tool_result`, `@guard(mask_secrets=True)` and the framework integrations.
-- **Not covered today:** your agent's built-in tools (for example a native file read in Claude Code) unless their output goes through zn-gate.
-- **Roadmap:** personal data (PII) detection; hooks for agents' built-in tools; stable placeholders (`__ZN_AWS_KEY_1__`) backed by a local encrypted vault.
+- **Today, through zn-gate:** redacts AWS keys, OpenAI and Anthropic keys, GitHub tokens, JWTs, private keys and database URL passwords in everything that passes through zn-gate: tool output checked with `check_tool_result`, tool arguments checked with `check_tool_call`, and output of MCP servers wrapped by `zn-gate shield` / `init`. Python: `sanitize_tool_result`, `@guard(mask_secrets=True)` and the framework integrations.
+- **Today, agent hooks and vault (npm package):** hooks for Claude Code, Codex CLI and OpenCode scrub the output of the agents' built-in tools and block pasted secrets (in Cursor only MCP tool output is scrubbed); a local encrypted vault with stable markers (`__ZN_AWS_KEY_1__`); `zn run` fills values only into commands you approved; personal data (cards, IBAN, national IDs, e-mail, phone) is detected too. What each agent allows differs: see [docs/compat.md](docs/compat.md).
 
 ### Galvanize: prompt-injection detection
 - **Today, local:** a deterministic rules engine (signatures plus normalization against homoglyphs, zero-width characters, BiDi overrides, comment splicing and Base64) checks prompts, tool arguments, tool output and MCP tool descriptions.
-- **Today, optional cloud:** the Galvanize-60M classifier ([open weights on Hugging Face](https://huggingface.co/usezn/Galvanize-60M), Apache-2.0) can also check prompts sent to `analyze_prompt`, only if you set `ZN_CLOUD=1` and `ZN_API_KEY`.
-- **Roadmap:** running Galvanize-60M locally inside zn-gate; published held-out results with method and data.
+- **Today, optional cloud check:** the Galvanize 2 classifier ([open weights on Hugging Face](https://huggingface.co/usezn/Galvanize-2), Apache-2.0) can also check prompts sent to `analyze_prompt`, only if you set `ZN_CLOUD=1` and `ZN_API_KEY`. The secrets zn-gate detects are removed from the prompt on your machine before it is sent; personal data is not removed on this path.
+- **Roadmap:** running Galvanize locally inside zn-gate.
 
 ### Scan: audit what your agent is about to trust
 - **Today:** `zn-gate scan <path>` audits prompt templates, `AGENTS.md` / `SKILL.md` files and configs for injection traps and leaked secrets (exit code 1 on findings, for CI). The same check runs as a [GitHub Action](#github-action). MCP servers can be checked on the web at [usezn.com/scan](https://usezn.com/scan).
 - **Roadmap:** auditing MCP servers and skills from the CLI before you add them.
+
+## What the cloud adds for teams
+
+Everything above runs locally, for free, with no account. The optional cloud at [usezn.com](https://usezn.com) is for teams that need a shared record of what their agents did:
+
+- **Audit and traceability:** an evidence dashboard with the metadata of each cloud decision (verdict, rule, score, latency), 90-day retention and CSV/JSONL export.
+- **A larger detection model** for prompts, when you opt in (`ZN_CLOUD=1`).
+- **Team controls** (shared policies, organization-level audit): in progress.
+
+By default nothing is sent. If you set `ZN_CLOUD=1` and an API key, `analyze` sends the prompt text after removing the secrets zn-gate detects locally: personal data is not removed on this path, and a secret it does not detect would be sent with the text. The dashboard keeps the metadata of each cloud decision. Tool output and tool-call arguments are never sent.
 
 ## What leaves your machine
 
@@ -143,12 +165,12 @@ flowchart LR
         Z["zn-gate<br/>rules engine + secret redaction"]
         T["Tools and MCP servers<br/>files, shell, web, databases"]
     end
-    C["api.usezn.com<br/>Galvanize-60M classifier"]
+    C["api.usezn.com<br/>Galvanize 2 classifier"]
     A -- "tool calls and prompts" --> Z
     Z -- "allowed calls, secrets masked" --> T
     T -- "tool output" --> Z
     Z -- "redacted output, verdicts" --> A
-    Z -. "prompts only, redacted,<br/>only with ZN_CLOUD=1 and ZN_API_KEY" .-> C
+    Z -. "prompts only, detected secrets removed,<br/>only with ZN_CLOUD=1 and ZN_API_KEY" .-> C
 ```
 
 | Data | Evaluated | Sent anywhere? |
@@ -156,7 +178,7 @@ flowchart LR
 | Tool output (`check_tool_result`, `shield`) | Locally | **Never**, in any configuration |
 | Tool-call arguments (`check_tool_call`, `shield`) | Locally | **Never**, in any configuration |
 | MCP tool and parameter descriptions (`shield`) | Locally | **Never**, in any configuration |
-| Prompts (`analyze_prompt`, `zn-gate analyze`, Python `analyze()`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. Secrets are redacted locally before sending. |
+| Prompts (`analyze_prompt`, `zn-gate analyze`, Python `analyze()`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. Detected secrets are removed locally before sending; personal data is not. |
 
 `ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `npx -y zn-gate status` prints what your configuration sends.
 
@@ -168,8 +190,9 @@ We only publish numbers we can reproduce, with the method next to them.
 
 - **Latency of the local engine:** one table by input size, with hardware, date and the script to reproduce it (`bench/bench_by_size.js`), in the [npm package README](packages/zn-gate/README.md#performance-local-rules-engine-no-network). Short summary from that run: about 0.01 ms for a 200 B prompt, 0.3 ms for a 4 KB tool output with redaction, about 4 ms for 64 KB with redaction (p50).
 - **Self-test:** 51 curated vectors pass. That is a smoke test, not a detection or false-positive rate.
-- **Known limitation:** on whole source files, the current normalizer produces false positives on ordinary code comments. Not fixed in 1.4.1. Until it is, use `check_tool_result` for web and third-party content rather than your own repository files.
-- **Detection rates:** none published yet. We will publish Galvanize results on a held-out test set, with method and data, before quoting a number.
+- **Known limitation:** on whole source files, the rules can flag ordinary code comments. Version 1.5.0 reduces these on code and documentation, at the cost of letting some loosely worded override attempts through the local rules. To check it on your own source files, run `zn-gate scan --code <path>`; for the MCP servers you wrap, `--shadow` logs detections without blocking.
+- **Known limitation:** detection of credentials under prefixed variable names (e.g. `OPENAI_API_KEY=`) is partial in this release.
+- **Detection rates:** on a private held-out set of 3,309 examples, Galvanize 2 has 83.4% recall at a 0.81% false positive rate (serving threshold 0.662); these numbers are for the cloud classifier, not the local rules engine. Method, per-language results, known weak spots and a reproducible benchmark are in the [model card](https://huggingface.co/usezn/Galvanize-2) and the [announcement](https://usezn.com/blog/introducing-galvanize-2/). It is one layer of defense, not a guarantee.
 
 ## Configuration
 
@@ -186,26 +209,65 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 ### GitHub Action
 
+The action installs the published `zn-gate` package from PyPI at an exact version and runs `zn-gate scan` on the path you give it. The scan runs entirely on the runner and sends nothing anywhere.
+
 ```yaml
-- uses: usezn/zn@main
-  with:
-    version: '1.4.1'
-    path: './prompts'
-    fail-on-threat: 'true'
-    format: 'github'
+name: AI agent security scan
+
+on:
+  pull_request:
+    paths:
+      - 'prompts/**'
+      - '**/*.prompt'
+      - '**/AGENTS.md'
+      - '**/SKILL.md'
+
+permissions:
+  contents: read
+
+jobs:
+  zn-gate-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Scan AI agent prompts and tools
+        # Pin the action to a full commit SHA; the comment names the release.
+        # v1.4.1 does not have the package-sha256 input (v1.5.0 and later).
+        uses: usezn/zn@d9da1b1a87e12c4da468cb9beec425dc3f972c5f # v1.4.1
+        with:
+          version: '1.5.0'
+          path: '.'
+          fail-on-threat: 'true'
+          format: 'github'
 ```
+
+| Input | Default | Description |
+|---|---|---|
+| `version` | current stable release | Exact `zn-gate` version to install from PyPI. Ranges and `latest` are refused. |
+| `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the wheel for `version`, as listed on PyPI. When set, the install fails if the downloaded file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
+| `path` | `.` | File or directory to scan. |
+| `fail-on-threat` | `true` | Fail the step when a threat is found. Set `false` to report only. |
+| `format` | `github` | `github` (inline annotations), `text` or `json`. |
+
+| Output | Description |
+|---|---|
+| `scan-exit-code` | Exit code of the scan: 0 clean (or `fail-on-threat: 'false'`), 1 threats found, 2 error. Empty if the scan did not run. |
+
+The action needs only `contents: read`. It installs the wheel with `--only-binary=:all: --no-deps` (zn-gate has no dependencies) into a private virtualenv, so no build step runs and your job's own Python packages are not touched. pip still reads the runner's own pip settings (`PIP_*` environment variables and `pip.conf`), so a mirror or proxy you configure there is used; set `package-sha256` so that the wheel is checked whatever index it comes from. The action runs on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow.
 
 ### Repository layout
 
 - `packages/zn-gate`: Node.js CLI, MCP server and `shield` proxy (npm).
 - `packages/zn-gate-py`: Python SDK and CLI (PyPI).
-- `src/`: Rust gateway daemon.
+- `src/`: legacy Rust gateway, not released ([docs/rust-core.md](docs/rust-core.md)).
 - `bench/`: benchmark scripts and results.
 - `assets/brand/`: logo files (SVG master and light/dark variants, PNG lockup and banners).
 
 ## FAQ
 
-**Do I need an account or API key?** No. Everything local works without one.
+**Do I need an account or API key?** No. Everything local works without one. An account is only needed for the optional cloud (team audit and the larger detection model).
 
 **Does zn-gate slow my agent down?** The local check adds under a millisecond for typical prompts and tool outputs (p99 0.8 ms at 4 KB on our test host). See the measured table above.
 
@@ -219,10 +281,12 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 Report vulnerabilities to [security@usezn.com](mailto:security@usezn.com). Policy, scope and safe harbor: [SECURITY.md](SECURITY.md). Hall of Fame: [usezn.com/security](https://usezn.com/security/).
 
+Releases published by the release workflow, starting with the first one after 1.5.0-beta.1, are signed and carry build provenance. 1.5.0-beta.1 and earlier versions were published by hand and have no signatures or provenance. To check a download: [docs/verify-release.md](docs/verify-release.md).
+
 ## Contributing
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT. Copyright (c) 2026 usezn ([usezn.com](https://usezn.com)). The Galvanize-60M weights are Apache-2.0. The [zn-prompt-injection-bench](https://huggingface.co/datasets/usezn/zn-prompt-injection-bench) dataset is CC-BY-4.0.
+MIT. Copyright (c) 2026 usezn ([usezn.com](https://usezn.com)). The [Galvanize 2](https://huggingface.co/usezn/Galvanize-2) and [Galvanize-60M](https://huggingface.co/usezn/Galvanize-60M) weights are Apache-2.0. The [zn-prompt-injection-bench](https://huggingface.co/datasets/usezn/zn-prompt-injection-bench) dataset is CC-BY-4.0. The npm package bundles third-party code listed in [THIRD_PARTY_NOTICES.md](packages/zn-gate/THIRD_PARTY_NOTICES.md).

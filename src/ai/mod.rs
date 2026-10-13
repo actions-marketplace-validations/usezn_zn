@@ -8,7 +8,7 @@ pub mod registry;
 pub use backend::{CandleBert, FastBootBackend, Head, OnnxModel};
 pub use canary::{CanaryDeployer, CanaryStats};
 pub use embedder::{Embedder, Embedding};
-pub use memory::VectorMemory;
+pub use memory::{MemoryError, VectorMemory};
 pub use registry::{ModelEntry, ModelRegistry};
 
 /// Pluggable inference backend for the neural core.
@@ -23,7 +23,7 @@ pub trait ModelBackend: Send + Sync {
     fn dim(&self) -> usize;
 }
 
-/// Fused System-2 decision (D-1): fire when the anomaly distance crosses
+/// Fused System-2 decision: fire when the anomaly distance crosses
 /// `threshold` OR the classifier probability crosses `classifier_threshold`.
 /// `prob = None` is anomaly-only mode (no `head.json`), where the classifier
 /// term is skipped and the decision is exactly the legacy anomaly rule.
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn classifier_fires_without_anomaly() {
-        // The D-1 bug: a known attack close to stored vectors (quiet anomaly)
+        // Regression: a known attack close to stored vectors (quiet anomaly)
         // but high classifier probability must still fire.
         assert!(neural_fired(0.2, 1.2, Some(0.9), 0.5));
         assert!(!neural_fired(0.2, 1.2, Some(0.4), 0.5));

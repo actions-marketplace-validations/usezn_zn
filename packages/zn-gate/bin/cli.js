@@ -8,7 +8,7 @@ const { startMcpShield } = require('../lib/shield');
 const { scanEnvironments, configureEnvironments } = require('../lib/init');
 const { logEvidence, verifyEvidenceLedger, getEvidenceStats, exportEvidenceLedger, startEvidenceUi, EVIDENCE_FILE } = require('../lib/evidence');
 const { analyze, analyzeLocal, isCloudEnabled, resolveEndpoint, RULES_VERSION } = require('../lib/client');
-const { evaluate } = require('../lib/rules');
+const { evaluate, redactSecrets } = require('../lib/rules');
 
 const VERSION = require('../package.json').version;
 
@@ -92,6 +92,24 @@ COMMANDS:
   status              Show engine configuration and gateway connectivity
   version, -V         Show package version
 
+SECRETS (values stay on this machine; agents only see __ZN_<NAME>__ markers):
+  secret set NAME     Store a secret (hidden prompt or --clipboard; never as an argument)
+                      [--mode proxy|env|file] [--host H] [--command C]
+  secret list         List stored secrets (names and policy, never values)
+  secret allow NAME   Add allowed hosts (--host) or commands (--command) to a secret
+  secret approve NAME Approve the first use of a secret by an allowed command
+  secret rm NAME      Remove a secret
+  secret import FILE  Copy the secret values of a .env file into the vault
+  secret adopt TOKEN  Store a value the scrubber detected (e.g. AWS_KEY_1) as a named secret
+  env shadow [FILE]   Move .env values into the vault and leave markers in the file
+  run -- <command>    Run a command with markers replaced by values (allowed commands only)
+                      and its output masked [--secrets A,B to set env vars]
+  secret log          Show the local audit log of secret use [--since 1h] (same as vault log)
+  hooks install claude-code [--project]
+                      Install the Claude Code hooks and the "secrets" MCP server
+  secrets-mcp         Run the "secrets" MCP server (stdio)
+  hook <agent>        Hook entry point used by agents (reads the event on stdin)
+
 OPTIONS:
   --key <api_key>     API key for the optional cloud gate (or ZN_API_KEY). Used only
                       by 'analyze' / analyze_prompt, and only if ZN_CLOUD=1 is set.
@@ -103,6 +121,15 @@ OPTIONS:
   --exclude <dirs>    Additional directories to exclude (e.g. fixtures,legacy)
   --verbose           Enable debug logging to stderr
   -h, --help          Show this help message
+
+VAULT (local, encrypted with age; the key stays in the OS keychain):
+  unlock              Unlock the vault for this session [--ttl 8h] [--idle 30m]
+                      (first run creates it; --passphrase-stdin without a keychain)
+  lock                Lock the vault now
+  vault status        Show whether the vault exists and is unlocked
+  vault log           Show the audit log of secret use [--since 1h]; checks the chain when unlocked
+  vault verify        Verify the HMAC-chained audit log of secret use
+  vault forget [dir]  Forget the token map of a project (vault locked)
 
 INIT OPTIONS:
   --dry-run           Scan environments and preview changes without modifying configs
@@ -292,7 +319,8 @@ Files   : ${files.length} file(s) queued for audit\n
           line: lineIdx + 1,
           rule: evalRes.rule,
           reason: evalRes.reason,
-          sample: line.slice(0, 100),
+          // Printed to the terminal and CI logs: never show a detected secret.
+          sample: redactSecrets(line).sanitized.slice(0, 100),
         });
       }
     }
@@ -320,8 +348,38 @@ Status       : ${totalFindings === 0 ? 'Clean workspace' : 'Review and neutraliz
   }
 }
 
+// Secrets broker and agent hooks. Dispatched before the global option parsing
+// so flags after `zn run --` belong to the child command, untouched.
+const BROKER_COMMANDS = new Set(['run', 'hook', 'secrets-mcp', 'secret', 'secrets', 'env', 'audit', 'hooks']);
+
+async function runBrokerCommand(command, rest) {
+  if (command === 'run') {
+    await require('../lib/broker/run').main(rest);
+    return;
+  }
+  if (command === 'hook') {
+    await require('../lib/hooks/runner').main(rest);
+    return;
+  }
+  if (command === 'secrets-mcp') {
+    require('../lib/broker/mcp').startSecretsMcp();
+    return;
+  }
+  process.exitCode = await require('../lib/broker/cli').dispatch(command, rest);
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  if (args[0] === 'vault' && args[1] === 'log') {
+    // exitCode (not process.exit) so a large log is flushed completely through a pipe.
+    process.exitCode = await require('../lib/broker/cli').dispatch('vault', args.slice(1));
+    return;
+  }
+
+  if (BROKER_COMMANDS.has(args[0]) && !(args.length === 2 && (args[1] === '-h' || args[1] === '--help'))) {
+    await runBrokerCommand(args[0], args.slice(1));
+    return;
+  }
   if (args.length === 0 || args.includes('-h') || args.includes('--help')) {
     printHelp();
     process.exit(0);
@@ -382,6 +440,11 @@ async function main() {
   }
 
   const command = args[0];
+
+  if (command === 'unlock' || command === 'lock' || command === 'vault') {
+    const { runVaultCommand } = require('../lib/vault/cli');
+    process.exit(await runVaultCommand(args));
+  }
 
   if (command === 'init') {
     process.stdout.write(`

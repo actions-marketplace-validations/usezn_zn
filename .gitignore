@@ -29,6 +29,7 @@ venv/
 # Local evidence, DBs, models
 *.db
 zn.json
+zn-superadmin-key.txt
 models/
 .zn/
 *.bak.*
@@ -43,3 +44,17 @@ models/
 # OS
 .DS_Store
 Thumbs.db
+
+# Leak bench output
+bench/leak_bench_results.json
+leak_bench_results.json
+
+# Secrets and local data (never commit real credentials)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+/data/

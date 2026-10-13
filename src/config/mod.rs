@@ -8,6 +8,9 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Shortest accepted `ZN_JWT_SECRET`: HS256 keys should have at least 256 bits.
+pub const MIN_JWT_SECRET_BYTES: usize = 32;
+
 /// Main configuration structure for zn
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZnConfig {
@@ -165,7 +168,7 @@ pub struct SecurityConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            api_key: std::env::var("ZN_API_KEY").ok(),
+            api_key: normalize_credential(std::env::var("ZN_API_KEY").ok()),
             allowed_origins: vec![
                 "http://localhost:5173".to_string(),
                 "http://localhost:9090".to_string(),
@@ -176,9 +179,26 @@ impl Default for SecurityConfig {
             rate_limit_per_minute: default_rate_limit(),
             namespace: std::env::var("ZN_NAMESPACE").ok(),
             jwt_secret: std::env::var("ZN_JWT_SECRET").ok(),
-            mcp_ws_token: std::env::var("ZN_MCP_WS_TOKEN").ok(),
+            mcp_ws_token: normalize_credential(std::env::var("ZN_MCP_WS_TOKEN").ok()),
         }
     }
+}
+
+/// Trims a key or token and treats a blank one as not set. Used for
+/// `ZN_API_KEY` and `ZN_MCP_WS_TOKEN` (and their config file values), so
+/// `ZN_API_KEY=` from an unset compose variable never matches an empty token
+/// and a key pasted with a trailing newline still works.
+pub fn normalize_credential(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// The value a credential takes after the environment overrides: the
+/// environment variable when it is set (even to a blank value, which unsets
+/// it), otherwise the current value, then normalized.
+fn credential_override(current: Option<String>, env_value: Option<String>) -> Option<String> {
+    normalize_credential(env_value.or(current))
 }
 
 fn default_true() -> bool {
@@ -654,9 +674,12 @@ impl ZnConfig {
             }
         }
 
-        if let Ok(key) = std::env::var("ZN_API_KEY") {
-            self.security.api_key = Some(key);
-        }
+        // A blank key (for example `ZN_API_KEY=` from an unset compose
+        // variable) counts as not set: it must never match an empty token.
+        self.security.api_key = credential_override(
+            self.security.api_key.take(),
+            std::env::var("ZN_API_KEY").ok(),
+        );
 
         if let Ok(ns) = std::env::var("ZN_NAMESPACE") {
             self.security.namespace = Some(ns);
@@ -671,9 +694,11 @@ impl ZnConfig {
                 origins.split(',').map(|s| s.trim().to_string()).collect();
         }
 
-        if let Ok(token) = std::env::var("ZN_MCP_WS_TOKEN") {
-            self.security.mcp_ws_token = Some(token);
-        }
+        // A blank token counts as not set; the gateway then generates one.
+        self.security.mcp_ws_token = credential_override(
+            self.security.mcp_ws_token.take(),
+            std::env::var("ZN_MCP_WS_TOKEN").ok(),
+        );
 
         if let Ok(gas) = std::env::var("ZN_GAS_LIMIT") {
             if let Ok(g) = gas.parse() {
@@ -769,6 +794,15 @@ impl ZnConfig {
 
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
+        if let Some(secret) = &self.security.jwt_secret {
+            if secret.len() < MIN_JWT_SECRET_BYTES {
+                return Err(anyhow!(
+                    "ZN_JWT_SECRET must be at least {} bytes (for example `openssl rand -hex 32`)",
+                    MIN_JWT_SECRET_BYTES
+                ));
+            }
+        }
+
         if self.security.api_key.is_none() && self.environment == "production" {
             tracing::warn!("No API key configured in production - Management API is unprotected!");
         }
@@ -815,5 +849,66 @@ impl ZnConfig {
             5 => 0.3, // paranoid
             _ => 0.5,
         }
+    }
+}
+
+#[cfg(test)]
+mod jwt_secret_tests {
+    use super::*;
+
+    #[test]
+    fn short_jwt_secret_is_refused() {
+        let mut config = ZnConfig::default();
+        config.security.jwt_secret = None;
+        assert!(config.validate().is_ok());
+        let one_byte_short = "x".repeat(MIN_JWT_SECRET_BYTES - 1);
+        for short in ["", "secret", one_byte_short.as_str()] {
+            config.security.jwt_secret = Some(short.to_string());
+            assert!(config.validate().is_err(), "{} bytes", short.len());
+        }
+        config.security.jwt_secret = Some("x".repeat(MIN_JWT_SECRET_BYTES));
+        assert!(config.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn some(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    #[test]
+    fn blank_credentials_count_as_not_set() {
+        for blank in ["", " ", "   ", "\t", "\n", " \r\n"] {
+            assert_eq!(normalize_credential(some(blank)), None, "{blank:?}");
+        }
+        assert_eq!(normalize_credential(None), None);
+    }
+
+    #[test]
+    fn credentials_are_trimmed() {
+        assert_eq!(normalize_credential(some("  key\n")), some("key"));
+        assert_eq!(normalize_credential(some("k e y")), some("k e y"));
+    }
+
+    #[test]
+    fn environment_overrides_the_config_file() {
+        // ZN_API_KEY= (blank) unsets a key from the config file.
+        assert_eq!(credential_override(some("file-key"), some("")), None);
+        assert_eq!(credential_override(some("file-key"), some("   ")), None);
+        // A set variable wins, trimmed.
+        assert_eq!(
+            credential_override(some("file-key"), some(" env-key ")),
+            some("env-key")
+        );
+        // Without the variable the file value is kept, normalized.
+        assert_eq!(
+            credential_override(some(" file-key "), None),
+            some("file-key")
+        );
+        assert_eq!(credential_override(some("  "), None), None);
+        assert_eq!(credential_override(None, None), None);
     }
 }

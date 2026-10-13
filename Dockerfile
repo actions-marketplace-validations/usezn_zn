@@ -9,8 +9,8 @@
 FROM rust:1-bookworm AS builder
 
 # Pinned protoc (matches the version the project is verified against).
-# lance-encoding's build script needs the well-known types; Debian bookworm's
-# protobuf-compiler (3.21) does not resolve them under prost-build 0.13.
+# candle-onnx's build script (prost-build) compiles the ONNX protobuf schema;
+# Debian bookworm's protobuf-compiler (3.21) is older than the tested version.
 ARG PROTOC_VERSION=29.3
 RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

@@ -155,19 +155,19 @@ def run_benchmark():
         json.dump(results, f, indent=2)
         
     print("\n" + "=" * 75)
-    print("BENCHMARK COMPARATIVO: zn-gate LOCAL VS CLOUD GUARDRAILS")
+    print("BENCHMARK: zn-gate LOCAL VS CLOUD GUARDRAILS")
     print("=" * 75)
     print(f"Throughput          : {results['throughput_ops_sec']:,} requests/second")
-    print(f"Latencia p50        : {results['latency_p50_us']} µs ({results['latency_p50_ms']} ms)")
-    print(f"Latencia p99        : {results['latency_p99_us']} µs")
-    print(f"Recall Inyecciones  : {results['recall_percent']}%")
-    print(f"Tasa Falsos Positivos: {results['false_positive_rate_percent']}%")
+    print(f"Latency p50         : {results['latency_p50_us']} µs ({results['latency_p50_ms']} ms)")
+    print(f"Latency p99         : {results['latency_p99_us']} µs")
+    print(f"Injection recall    : {results['recall_percent']}%")
+    print(f"False positive rate : {results['false_positive_rate_percent']}%")
     print("-" * 75)
-    print("Comparativa de Overhead en flujo de agente (10 Tool Calls):")
+    print("Agent-flow overhead comparison (10 tool calls):")
     for row in results["industry_comparison"]:
         print(f"  • {row['solution']:<26} | p50: {row['latency_p50']:<16} | 10 Tools: {row['overhead_10_tools']:<14} | Air-Gapped: {row['air_gapped']}")
     print("=" * 75)
-    print(f"[OK] Reporte JSON generado en: {out_path}\n")
+    print(f"[OK] JSON report written to: {out_path}\n")
 
 if __name__ == "__main__":
     run_benchmark()
