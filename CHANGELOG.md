@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-15
+
+zn-gate 1.7.0 adds `zn-gate stats` (local counts, with sharing only as an explicit opt-in), MCP checks in Cursor, and an optional cloud classifier key for the Claude Code plugin; the Python package redacts the same provider tokens as Node.js; the Rust engine's rules are more precise; and the agent plugin launcher only loads verified files.
+
 ### Changed
 - `zn-gate scan` (Node.js and Python) reports the files it does not read: files of 2 MiB or more, binary `.key` files and files that cannot be read (Python also lists pipes and other files that are not regular files, which it no longer opens). Node prints them after the summary; Python lists them in text output, as `::notice` lines with `--format github`, and as `skipped` with `total_skipped` in JSON. Python's JSON `total_files` now counts only the files that were read.
 - Claude Code plugin: the listing icon is now `icon.png` at the plugin root and is named in the manifest (`"icon": "./icon.png"`), as the plugin manifest reference describes, and the manifest's homepage and documentation links point to usezn.com instead of a folder of this repository.
