@@ -355,6 +355,62 @@ try {
     }
   });
 
+  test('a bundled plugin uses only its own vendor/zn-gate copy', () => {
+    const vendor = path.join(tmp, 'plugin-test', 'vendor', 'zn-gate');
+    for (const [rel, text] of Object.entries(SOURCES)) write(path.join(vendor, ...rel.split('/')), text);
+    setLock({ package: 'zn-gate', version: '9.9.9', files, bundled: 'vendor/zn-gate' });
+    try {
+      // packageDir in ~/.zn/config.json and zn-gate on PATH are ignored.
+      setConfig({ plugin: { packageDir: path.join(tmp, 'nowhere') } });
+      const r = run(['hook', 'codex'], '{"x":3}', { path: path.join(tmp, 'empty-bin') });
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.match(r.stdout, /^ran codex/);
+      // A changed file in the bundled copy is refused, even with a good copy on PATH.
+      setConfig({});
+      fs.appendFileSync(path.join(vendor, 'lib', 'hooks', 'policy.js'), '// changed\n');
+      const changed = run(['hook', 'codex'], '{}');
+      refused(changed, /was changed/);
+      assert.doesNotMatch(changed.stderr, /npm/);
+      assert.match(changed.stderr, /Reinstall the zn-gate plugin/);
+      // A missing bundled copy is refused with the same hint.
+      fs.rmSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true, force: true });
+      refused(run(['hook', 'codex'], '{}'), /vendor\/zn-gate\) is missing\. Reinstall the zn-gate plugin/);
+      // No fallback to another copy: a good copy in the plugin's node_modules and in packageDir is not used.
+      const own = path.join(tmp, 'plugin-test', 'node_modules', 'zn-gate');
+      for (const [rel, text] of Object.entries(SOURCES)) write(path.join(own, ...rel.split('/')), text);
+      setConfig({ plugin: { packageDir: pkgDir } });
+      refused(run(['hook', 'codex'], '{}'), /is missing/);
+      fs.rmSync(path.join(tmp, 'plugin-test', 'node_modules'), { recursive: true, force: true });
+      setConfig({});
+      // A bundled folder that is a link (a junction on Windows) is refused.
+      fs.mkdirSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true });
+      fs.symlinkSync(pkgDir, vendor, WIN ? 'junction' : 'dir');
+      refused(run(['hook', 'codex'], '{}'), /vendor\/zn-gate folder is a symbolic link/);
+      fs.rmSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true, force: true });
+      // A folder without zn-gate's package.json is refused with the plugin hint.
+      fs.mkdirSync(vendor, { recursive: true });
+      refused(run(['hook', 'codex'], '{}'), /does not hold zn-gate\. Reinstall the zn-gate plugin/);
+    } finally {
+      fs.rmSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true, force: true });
+      setConfig({});
+      setLock({ package: 'zn-gate', version: '9.9.9', files });
+    }
+  });
+
+  test('a lock file with another bundled path is invalid', () => {
+    try {
+      for (const bundled of ['node_modules/zn-gate', 'vendor\\zn-gate', './vendor/zn-gate', null]) {
+        setLock({ package: 'zn-gate', version: '9.9.9', files, bundled });
+        refused(run(['hook', 'codex'], '{}'), /lock file/);
+        const mcp = run(['secrets-mcp']);
+        assert.strictEqual(mcp.status, 1, mcp.stdout);
+        assert.match(mcp.stderr, /lock file/);
+      }
+    } finally {
+      setLock({ package: 'zn-gate', version: '9.9.9', files });
+    }
+  });
+
   test('plugin options exported to hooks never reach zn-gate', () => {
     const code = 'require(' + JSON.stringify(LAUNCHER) + ');' +
       'process.stdout.write(Object.keys(process.env).filter((k) => /^CLAUDE_PLUGIN_OPTION_/i.test(k)).join(",") || "none")';

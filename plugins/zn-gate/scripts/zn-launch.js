@@ -101,15 +101,21 @@ function znConfig() {
   return readJson(path.join(homeDir(), '.zn', 'config.json')) || {};
 }
 
+// A plugin built with zn-gate inside it ("bundled" in the lock file) uses only
+// that copy, at this fixed path under the plugin folder.
+const BUNDLED_DIR = 'vendor/zn-gate';
+
 function loadLock() {
   const lock = readJson(LOCK_FILE);
-  if (!lock || lock.package !== 'zn-gate' || typeof lock.version !== 'string' || !lock.files || typeof lock.files !== 'object') {
+  if (!lock || lock.package !== 'zn-gate' || typeof lock.version !== 'string' || !lock.files || typeof lock.files !== 'object' ||
+      ('bundled' in lock && lock.bundled !== BUNDLED_DIR)) {
     throw new Error('the plugin lock file (scripts/zn-gate.lock.json) is missing or invalid');
   }
   return lock;
 }
 
 function installHint(lock) {
+  if (lock.bundled) return 'Reinstall the zn-gate plugin to restore its copy of zn-gate ' + lock.version + '.';
   return 'In Claude Code, the plugin installs it: make sure npm is on your PATH, then run ' +
     'claude plugin update zn-gate@usezn and start a new session. In other agents, install the pinned release with: ' +
     'npm install -g zn-gate@' + lock.version + ' && npm audit signatures (see the plugin README).';
@@ -132,7 +138,9 @@ function isPackageDir(dir) {
  *      Windows (<prefix>\zn-gate.cmd next to <prefix>\node_modules).
  * Every candidate must still match the lock file exactly (see verify).
  */
-function candidates() {
+function candidates(lock) {
+  // Bundled: only the copy inside the plugin (no ~/.zn/config.json packageDir, no PATH).
+  if (lock && lock.bundled) return [path.resolve(__dirname, '..', ...BUNDLED_DIR.split('/'))];
   const cfg = znConfig();
   if (cfg.plugin && typeof cfg.plugin.packageDir === 'string') return [path.resolve(cfg.plugin.packageDir)];
   const out = [path.resolve(__dirname, '..', 'node_modules', 'zn-gate')];
@@ -209,9 +217,35 @@ function verify(lock) {
     return { error: 'this plugin build has no file digests for zn-gate ' + lock.version + ' (development build), so it cannot run. ' +
       'Use a released plugin version.' };
   }
+  if (lock.bundled) {
+    // verify() follows the package directory to its real path: the bundled
+    // folders themselves must not be links to somewhere else.
+    const root = path.resolve(__dirname, '..');
+    let rel = '';
+    for (const part of BUNDLED_DIR.split('/')) {
+      rel = rel ? rel + '/' + part : part;
+      let st;
+      try {
+        st = fs.lstatSync(path.join(root, ...rel.split('/')));
+      } catch (err) {
+        return { error: err.code === 'ENOENT'
+          ? 'the plugin\'s copy of zn-gate ' + lock.version + ' (' + BUNDLED_DIR + ') is missing. ' + installHint(lock)
+          : 'cannot read the plugin\'s ' + rel + ' folder (' + err.code + '). ' + installHint(lock) };
+      }
+      if (st.isSymbolicLink()) return { error: 'the plugin\'s ' + rel + ' folder is a symbolic link. ' + installHint(lock) };
+      if (!st.isDirectory()) return { error: 'the plugin\'s ' + rel + ' is not a folder. ' + installHint(lock) };
+    }
+    // The same check without a gap between the steps: the real path must be the expected one.
+    if (fs.realpathSync(path.join(root, ...BUNDLED_DIR.split('/'))) !== path.join(fs.realpathSync(root), ...BUNDLED_DIR.split('/'))) {
+      return { error: 'the plugin\'s ' + BUNDLED_DIR + ' folder is not inside the plugin. ' + installHint(lock) };
+    }
+  }
   const reasons = [];
-  for (const dir of candidates()) {
-    if (!isPackageDir(dir)) continue;
+  for (const dir of candidates(lock)) {
+    if (!isPackageDir(dir)) {
+      if (lock.bundled) return { error: 'the plugin\'s ' + BUNDLED_DIR + ' folder does not hold zn-gate. ' + installHint(lock) };
+      continue;
+    }
     const real = fs.realpathSync(dir);
     const pkg = readJson(path.join(real, 'package.json')) || {};
     if (pkg.version !== lock.version) {
@@ -234,9 +268,12 @@ const isBuiltin = Module.isBuiltin || ((id) => Module.builtinModules.includes(St
  * A CommonJS loader over the verified file set. require() of a relative path
  * or a package resolves only to verified files; built-in modules come from
  * Node. import() is handed to Node's own loader: ES modules cannot be
- * evaluated from memory without experimental flags. Since the tree holds no
- * file outside the lock, it resolves to a verified file (zn-gate imports only
- * its bundled age-encryption), but Node reads it from disk again.
+ * evaluated from memory without experimental flags. The tree holds no file
+ * outside the lock, so a name that the lock includes resolves to a verified
+ * file, which Node reads from disk again. A name that is not in the tree is
+ * looked up by Node in node_modules folders above the package, outside the
+ * check: the release build checks that every literal import of the shipped
+ * files resolves inside the bundle.
  */
 function makeLoader(dir, files) {
   const cache = new Map();
