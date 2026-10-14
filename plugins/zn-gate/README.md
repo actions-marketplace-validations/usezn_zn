@@ -151,7 +151,8 @@ asks for with `secrets_http_request`, only to hosts you allowed for each
 secret (`zn secret allow NAME --host api.example.com`). zn-gate also has an
 optional cloud prompt analysis (`zn analyze`, enabled only with `ZN_CLOUD=1`
 and an API key, sending prompt text with secrets redacted first); the
-plugin's hooks and MCP servers do not use it.
+plugin's hooks never use it, and its `zn-gate` MCP server uses it only for
+`analyze_prompt` when you set the API key below.
 
 ## Optional: the zn cloud classifier (Claude Code)
 
