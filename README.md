@@ -47,6 +47,8 @@ zn env shadow .env                 # move .env values into the vault, leave mark
 zn hooks install claude-code       # or: codex, cursor, opencode
 ```
 
+> **Windows PowerShell:** `npm` and `npx` can fail with "running scripts is disabled on this system", because the default execution policy blocks `npm.ps1`. Use `npm.cmd` and `npx.cmd` instead (for example `npm.cmd install -g zn-gate`), run the commands from Command Prompt, or allow local scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
 Cursor support is partial: zn-gate can only rewrite the output of MCP tools there, not of shell commands or file reads.
 
 Five-minute walkthrough: [docs/secrets.md](docs/secrets.md). What each agent supports: [docs/compat.md](docs/compat.md). Limits: [docs/threat-model.md](docs/threat-model.md).
@@ -202,6 +204,8 @@ We only publish numbers we can reproduce, with the method next to them.
 | `ZN_API_KEY` | unset | API key from [usezn.com/dashboard](https://usezn.com/dashboard/). No effect without `ZN_CLOUD=1`. |
 | `ZN_LOCAL_ONLY` | unset | `true` forces local-only, even with `ZN_CLOUD=1`. |
 | `ZN_STAGE` / `ZN_API_URL` | `v30` | Cloud endpoint selection. |
+
+zn Team: `zn team join <token>` connects a machine to your organization's signed secrets policy and uploads its audit log (metadata only). What the organization can and cannot change on the machine, offline behavior and the OpenTelemetry export (`zn vault log export --otlp`): [docs/team.md](docs/team.md).
 
 Custom rules: add banned patterns and forbidden paths in `.znrules` or `zn.config.json` at your project root ([example](packages/zn-gate/README.md#custom-rules-znrules-or-znconfigjson)).
 

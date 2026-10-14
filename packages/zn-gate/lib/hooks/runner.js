@@ -39,6 +39,7 @@ const markers = require('../broker/markers');
 const { gitStatusOf } = require('../broker/files');
 const deps = require('../deps');
 const { shQuote, SH_QUOTE_ESCAPE, portablePath } = require('../shell-quote');
+const { znCommand } = require('../zn-command');
 
 const SECRET_SOURCES = new Set(['exact', 'pattern']);
 const POST_TOOLS = new Set(['read', 'bash', 'powershell', 'monitor', 'grep', 'lsp', 'webfetch', 'mcp', 'mcpresource']);
@@ -132,6 +133,20 @@ function znRunPrefix(opts, agentId) {
   return 'ZN_AGENT=' + String(agentId).replace(/[^a-z0-9-]/g, '') + ' ' + q(opts.nodePath || process.execPath) + ' ' + q(runJs) + ' --';
 }
 
+/* Custom secret formats from the zn Team policy (verified cache), compiled
+ * once per hook process. They only add redactions. */
+let orgDetectors = null;
+function orgDetectorsFor(opts) {
+  if (orgDetectors === null) {
+    try {
+      const team = require('../team/policy');
+      const { detectorsOf } = require('../team/effective');
+      orgDetectors = require('../team/detectors').compile(detectorsOf(team.state({ home: opts && opts.znHome })));
+    } catch (_) { orgDetectors = []; }
+  }
+  return orgDetectors;
+}
+
 async function ctxFor(ev, d, agentId, destination, needVault = true) {
   return {
     project: deps.findProjectRoot(ev.cwd || process.cwd()),
@@ -139,6 +154,7 @@ async function ctxFor(ev, d, agentId, destination, needVault = true) {
     tool: ev.toolName || ev.tool,
     destination,
     vault: needVault ? await d.vault() : undefined,
+    detectors: d.detectors ? d.detectors() : orgDetectorsFor(),
   };
 }
 
@@ -326,13 +342,16 @@ async function decidePost(ev, d, agentId) {
     decision: 'allow',
     updatedOutput: updated,
     message: 'zn: ' + total + ' secret value(s) in this output were replaced with __ZN_ tokens (' + summary + '). ' +
-      (locked ? '__ZN_REDACTED_ markers cannot be restored. ' : 'Real values stay on this machine; use the tokens as they are.'),
-    userMessage: locked ? LOCKED_NOTICE : undefined,
+      (locked ? '__ZN_REDACTED_ markers cannot be restored, so do not retry to get the values. ' : 'Real values stay on this machine; use the tokens as they are.'),
+    userMessage: locked ? lockedNotice() : undefined,
   };
 }
 
-const LOCKED_NOTICE = 'zn: the secret vault is locked, so values in this output were redacted irreversibly. ' +
-  'Run `zn unlock` to enable exact-value redaction and restore.';
+/* Shown to the person (systemMessage) when the vault is locked. */
+function lockedNotice() {
+  return 'zn hid secret values in this output. Your vault is locked, so they cannot be put back afterwards. ' +
+    'To keep them restorable next time, unlock it in your terminal: ' + znCommand('unlock');
+}
 
 /* --------------------------- user_prompt -------------------------- */
 
@@ -346,17 +365,59 @@ async function decidePrompt(ev, d, agentId) {
   if (typeof engine.prepare === 'function') ctx = await engine.prepare(ctx);
   const spans = engine.scan(prompt, ctx) || [];
   const secrets = spans.filter((s) => SECRET_SOURCES.has(s.source));
+  // Prompts only: NAME=value in the middle of a sentence, even when the value
+  // does not look random (see lib/scrub/prompt.js).
+  for (const a of require('../scrub/prompt').findPromptAssignments(prompt)) {
+    if (!secrets.some((s) => s.start < a.end && a.start < s.end)) secrets.push(a);
+  }
   if (secrets.length === 0) return { decision: 'allow' };
-  const kinds = [...new Set(secrets.map((s) => s.name || s.type))];
-  const suggestion = kinds.length === 1 && /^[A-Z][A-Z0-9_]*$/.test(String(secrets[0].name || ''))
-    ? secrets[0].name
-    : String(secrets[0].type || 'MY_SECRET').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/_\d+$/, '') || 'MY_SECRET';
+  const names = secrets.map(nameOf);
+  const shown = [...new Set(secrets.map((s, i) => names[i] || kindLabel(s.type)))];
+  const suggestion = names[0] || suggestedName(secrets[0]);
   return {
     decision: 'deny',
-    message: 'zn: this prompt was not sent because it contains a secret (' + kinds.join(', ') + '). ' +
-      'Store it locally instead: run `zn secret set ' + suggestion + '` in your terminal, then refer to it as __ZN_' +
-      suggestion + '__ in your prompt.',
+    message: 'zn: this prompt was not sent because it contains a secret (' + shown.join(', ') + '). ' +
+      'Save it in your vault instead: ' + znCommand('secret set ' + suggestion) +
+      ', then ask your agent to use it (as __ZN_' + suggestion + '__).',
   };
+}
+
+// A vault name: upper case, at most 64 characters. A JSON key such as
+// "db_password" is shown as DB_PASSWORD; anything else falls back to the kind.
+const NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const GENERIC_TYPES = new Set(['SECRET', 'CREDENTIAL']);
+
+function nameOf(span) {
+  const n = String(span.name || '').toUpperCase();
+  return NAME_RE.test(n) ? n : null;
+}
+
+// Words that keep their usual capitals in a message a person reads.
+const ACRONYMS = new Set(['AWS', 'API', 'SSH', 'JWT', 'SSN', 'NIE', 'DNI', 'IBAN', 'PAT', 'DB', 'PII', 'URL', 'GCP', 'OAUTH', 'TLS', 'SSL', 'SMTP']);
+const BRANDS = {
+  ANTHROPIC: 'Anthropic', AZURE: 'Azure', DATABRICKS: 'Databricks', DIGITALOCEAN: 'DigitalOcean', DISCORD: 'Discord',
+  DOCKERHUB: 'Docker Hub', GITHUB: 'GitHub', GITLAB: 'GitLab', GOOGLE: 'Google', MAILGUN: 'Mailgun', NEWRELIC: 'New Relic',
+  NPM: 'npm', OPENAI: 'OpenAI', PYPI: 'PyPI', REPLICATE: 'Replicate', SENDGRID: 'SendGrid', SHOPIFY: 'Shopify',
+  SLACK: 'Slack', STRIPE: 'Stripe', SUPABASE: 'Supabase', TELEGRAM: 'Telegram', TWILIO: 'Twilio', XAI: 'xAI',
+};
+
+/* "AWS_KEY" -> "an AWS key", "GITHUB_TOKEN" -> "a GitHub token", for a message
+ * a person reads. Only known acronyms and brands get capitals. */
+function kindLabel(type) {
+  const words = String(type || '').split(/_+/).filter(Boolean).map((w) => {
+    const u = w.toUpperCase();
+    if (Object.prototype.hasOwnProperty.call(BRANDS, u)) return BRANDS[u];
+    if (ACRONYMS.has(u)) return u;
+    return w.toLowerCase();
+  });
+  const label = words.join(' ') || 'secret';
+  return (/^([AEIOU]|AWS\b|API\b|SSH\b|SSN\b|IBAN\b|OAUTH\b)/i.test(label) ? 'an ' : 'a ') + label;
+}
+
+/* The name to suggest for `zn secret set` when the detection has no name. */
+function suggestedName(span) {
+  const t = String(span.type || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/_\d+$/, '');
+  return t && !GENERIC_TYPES.has(t) ? t : 'MY_SECRET';
 }
 
 /* ------------------------------ entry ----------------------------- */
