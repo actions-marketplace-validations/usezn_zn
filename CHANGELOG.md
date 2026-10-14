@@ -13,9 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **If you use zn-gate 1.5.x, update.** In 1.5.x, `zn-gate scan` (Node.js) printed `PASSED` for a folder whose `.env` or other files held API keys, because it only reported prompt-injection text. 1.6.0 reports exposed credentials too (see 1.6.0-beta.1 below). After updating, run `zn-gate scan` again on your projects. This release also includes everything in 1.6.0-beta.1.
 
-### Security
-- Agent hooks: an AI agent could run the zn commands that manage your secrets and protection (`zn unlock`, `zn lock`, `zn secret ...`, `zn env shadow|unshadow`, `zn hooks install|uninstall`) by calling a specific package version, for example `npx -y zn-gate@1.5.1 hooks uninstall` or `npm exec zn-gate@1.5.1 -- unlock`: the hook only recognised the plain `zn` and `zn-gate` names. Most of these commands also refuse to run without an interactive terminal or when they detect a coding agent, which stopped the usual agents; `zn lock` had no such check. The hooks now deny the versioned forms with `npx`, `npm exec`, `pnpm dlx`, `yarn dlx` and `bunx`. Affected: 1.5.0-beta.1 to 1.6.0-beta.1.
-
 ### Added
 - Every rule layer has a version: `SCRUB_RULES_VERSION` (secret and PII patterns), `AUDIT_RULES_VERSION` (`zn audit` rules) and `POLICY_RULES_VERSION` (hook policy). `SCRUB_RULES_VERSION` is `2026-10-14.2`, `POLICY_RULES_VERSION` is `2026-10-14.4`, and `AUDIT_RULES_VERSION` is `2026-10-14.1`. `zn-gate --version` and `zn-gate status` show the scrub and audit versions next to the rules engine version.
 
@@ -35,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zn unlock` no longer hangs at "Repeat passphrase" when the second line arrives before its prompt (for example when both lines are pasted at once). Each prompt used its own line reader and the second line was lost, so the vault was never created and `zn env shadow` then reported that the vault was locked. Wait for each prompt before typing: text typed before a prompt appears can be shown on screen by the terminal. Different passphrases, Ctrl+C and Ctrl+D now end with a clear message instead of waiting.
 
 ### Security
+- Agent hooks: an AI agent could run the zn commands that manage your secrets and protection (`zn unlock`, `zn lock`, `zn secret ...`, `zn env shadow|unshadow`, `zn hooks install|uninstall`) by calling a specific package version, for example `npx -y zn-gate@1.5.1 hooks uninstall` or `npm exec zn-gate@1.5.1 -- unlock`: the hook only recognised the plain `zn` and `zn-gate` names. Most of these commands also refuse to run without an interactive terminal or when they detect a coding agent, which stopped the usual agents; `zn lock` had no such check. The hooks now deny the versioned forms with `npx`, `npm exec`, `pnpm dlx`, `yarn dlx` and `bunx`. Affected: 1.5.0-beta.1 to 1.6.0-beta.1.
 - Trigger words are now found in the same way in Node.js and Python. A non-ASCII letter next to a trigger word (for example `éjailbreak`) no longer hides it: Python previously allowed this while Node.js blocked it, and both now block.
 - Compatibility characters are folded before matching: fullwidth Latin text such as `ｉｇｎｏｒｅ` is treated as `ignore`, in both languages. The folding is used only for detection; the text returned to you is not changed.
 - Invisible characters (zero-width spaces and joiners, the word joiner, variation selectors and Unicode tag characters) are ignored when matching, so a trigger word or a secret split by them is still detected.
