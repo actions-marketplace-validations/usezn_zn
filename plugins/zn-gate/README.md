@@ -143,13 +143,38 @@ It is not a sandbox:
 
 Nothing, by default. The hooks, the scrubber and the `zn-gate` MCP server run
 locally and make no network requests: the plugin starts the `zn-gate` MCP
-server with local rules only, even when `ZN_CLOUD` and `ZN_API_KEY` are set.
+server with local rules only, even when `ZN_CLOUD` and `ZN_API_KEY` are set
+in your environment. The only way to change that is the optional API key
+below.
 The `secrets` MCP server makes the HTTP requests the agent
 asks for with `secrets_http_request`, only to hosts you allowed for each
 secret (`zn secret allow NAME --host api.example.com`). zn-gate also has an
 optional cloud prompt analysis (`zn analyze`, enabled only with `ZN_CLOUD=1`
 and an API key, sending prompt text with secrets redacted first); the
 plugin's hooks and MCP servers do not use it.
+
+## Optional: the zn cloud classifier (Claude Code)
+
+With a zn Pro or Team API key (from https://usezn.com/dashboard), the
+`analyze_prompt` tool of the `zn-gate` MCP server also asks the zn cloud
+classifier, which catches more than the local rules. Only then is text sent:
+the text Claude passes to `analyze_prompt`, with secrets redacted first, goes
+to `api.usezn.com` and counts against your plan's quota. `check_tool_call`,
+`check_tool_result`, the `secrets` server and the hooks never send anything,
+with or without a key.
+
+Claude Code asks for the key when you enable the plugin. You can change or
+remove it later with `/plugin` (Installed, zn-gate, Configure options); it
+does not appear in `/config`. The key is marked sensitive, so Claude Code
+stores it with its own credentials (in the macOS Keychain, or in Claude Code's
+credentials file on other systems), not in `settings.json`. Leave it empty to
+keep everything on your machine.
+
+The key is used only with the default zn endpoint, with certificate checks
+on: `ZN_API_URL`, `ZN_STAGE` and `NODE_TLS_REJECT_UNAUTHORIZED` from your
+environment are ignored by the plugin, and the key is not passed to the hooks.
+Cursor and other agents run the plugin with local rules only. What is sent
+and kept: https://usezn.com/privacy
 
 ## Updates
 

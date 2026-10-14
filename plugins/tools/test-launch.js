@@ -57,7 +57,7 @@ const SOURCES = {
   'lib/hooks/policy.js': "exports.name = 'policy';\n",
   'lib/data.json': '{"name": "data"}\n',
   'lib/broker/mcp.js': "exports.startSecretsMcp = () => process.stdout.write('mcp');\n",
-  'lib/mcp.js': "exports.startMcpServer = (o) => process.stdout.write(['zn-gate-mcp', process.env.ZN_LOCAL_ONLY, o && o.localOnly].join(' '));\n",
+  'lib/mcp.js': "exports.startMcpServer = (o) => process.stdout.write(['zn-gate-mcp', process.env.ZN_LOCAL_ONLY, o && o.localOnly, process.env.ZN_CLOUD || '-', process.env.ZN_API_KEY || '-', process.env.ZN_API_URL || '-', process.env.ZN_PLUGIN_API_KEY || '-'].join(' '));\n",
   'node_modules/dep/package.json': '{"name": "dep", "main": "main.js"}\n',
   'node_modules/dep/main.js': "exports.name = 'dep';\n",
   'node_modules/esm-dep/package.json': '{"name": "esm-dep", "type": "module", "exports": "./index.js"}\n',
@@ -327,10 +327,43 @@ try {
     assert.match(r.stdout, /^ran codex/);
   });
 
-  test('zn-gate-mcp starts the MCP server with local rules only', () => {
-    const r = run(['zn-gate-mcp'], undefined, { env: { ZN_CLOUD: '1', ZN_API_KEY: 'zn_test_key', ZN_LOCAL_ONLY: 'false' } });
+  test('zn-gate-mcp ignores ZN_CLOUD and ZN_API_KEY from the environment: local rules only', () => {
+    const r = run(['zn-gate-mcp'], undefined, { env: { ZN_CLOUD: '1', ZN_API_KEY: 'zn_fakekeyfakekeyfake1', ZN_LOCAL_ONLY: 'false' } });
     assert.strictEqual(r.status, 0, r.stderr);
-    assert.strictEqual(r.stdout, 'zn-gate-mcp true true');
+    assert.strictEqual(r.stdout, 'zn-gate-mcp true true - - - -');
+  });
+
+  test('zn-gate-mcp stays local when the plugin key option is empty or not expanded', () => {
+    for (const v of ['', '   ', '${user_config.api_key}', 'short']) {
+      const r = run(['zn-gate-mcp'], undefined, { env: { ZN_PLUGIN_API_KEY: v } });
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.strictEqual(r.stdout, 'zn-gate-mcp true true - - - -', JSON.stringify(v));
+    }
+  });
+
+  test('zn-gate-mcp uses the plugin key option for the cloud, on the default endpoint only', () => {
+    const r = run(['zn-gate-mcp', 'claude-code'], undefined, { env: { ZN_PLUGIN_API_KEY: 'zn_pluginkeypluginkey1', ZN_API_KEY: 'zn_envkeyenvkeyenvkey1', ZN_API_URL: 'https://example.invalid/x', ZN_STAGE: 'dev', ZN_LOCAL_ONLY: 'true', NODE_TLS_REJECT_UNAUTHORIZED: '0' } });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout, 'zn-gate-mcp  false 1 zn_pluginkeypluginkey1 - -');
+  });
+
+  test('zn-gate-mcp ignores ZN_PLUGIN_API_KEY unless started for Claude Code', () => {
+    for (const args of [['zn-gate-mcp'], ['zn-gate-mcp', 'cursor']]) {
+      const r = run(args, undefined, { env: { ZN_PLUGIN_API_KEY: 'zn_pluginkeypluginkey1' } });
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.strictEqual(r.stdout, 'zn-gate-mcp true true - - - -', args.join(' '));
+    }
+  });
+
+  test('plugin options exported to hooks never reach zn-gate', () => {
+    const code = 'require(' + JSON.stringify(LAUNCHER) + ');' +
+      'process.stdout.write(Object.keys(process.env).filter((k) => /^CLAUDE_PLUGIN_OPTION_/i.test(k)).join(",") || "none")';
+    const r = spawnSync(process.execPath, ['-e', code], {
+      encoding: 'utf8',
+      env: { PATH: binDir, HOME: home, USERPROFILE: home, SystemRoot: process.env.SystemRoot || '', CLAUDE_PLUGIN_OPTION_API_KEY: 'zn_pluginkeypluginkey1', claude_plugin_option_other: 'x' },
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout, 'none');
   });
 
   test('the copy in the plugin folder is used, and checked like any other', () => {

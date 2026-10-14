@@ -8,9 +8,12 @@
  *
  *   node zn-launch.js hook <agent>     agent hook (event JSON on stdin)
  *   node zn-launch.js secrets-mcp      the "secrets" MCP server (stdio)
- *   node zn-launch.js zn-gate-mcp      the "zn-gate" MCP server (stdio), local
- *                                     rules only: text is never sent to the
- *                                     zn cloud API
+ *   node zn-launch.js zn-gate-mcp [claude-code]
+ *                                     the "zn-gate" MCP server (stdio): local
+ *                                     rules only, unless started for Claude Code
+ *                                     with the plugin's api_key option set; then
+ *                                     analyze_prompt text (secrets redacted) also
+ *                                     goes to api.usezn.com
  *   node zn-launch.js check [agent]    report the installation status; never blocks
  *
  * It does not download, install or update anything. Claude Code installs
@@ -72,6 +75,10 @@ const SUPPORTED_AGENTS = new Set(['claude-code', 'codex', 'cursor']);
 // set through NODE_OPTIONS or a module path in NODE_PATH must not reach them.
 delete process.env.NODE_OPTIONS;
 delete process.env.NODE_PATH;
+// Claude Code exports every plugin option, sensitive ones included, to hook
+// processes as CLAUDE_PLUGIN_OPTION_<NAME>. zn-gate never needs them, and the
+// API key must not reach the hooks or the processes they start.
+for (const k of Object.keys(process.env)) if (/^CLAUDE_PLUGIN_OPTION_/i.test(k)) delete process.env[k];
 
 /* The account's home directory from the user database, not from $HOME. */
 function homeDir() {
@@ -502,19 +509,50 @@ function runMcp() {
   makeLoader(res.dir, res.files).load('lib/broker/mcp.js').startSecretsMcp();
 }
 
-function runZnGateMcp() {
+/**
+ * The plugin's optional zn API key: the "api_key" plugin option, which
+ * Claude Code passes to the "zn-gate" MCP server as ZN_PLUGIN_API_KEY. An
+ * option left empty, or not expanded by the agent, is not a key.
+ */
+function pluginApiKey(env) {
+  const k = String(env.ZN_PLUGIN_API_KEY || '').trim();
+  return /^[A-Za-z0-9._-]{16,256}$/.test(k) ? k : null;
+}
+
+/**
+ * Only the plugin option turns on the cloud classifier: ZN_CLOUD, ZN_API_KEY,
+ * ZN_API_URL and ZN_STAGE from the environment the agent was started with are
+ * dropped, so the key can only go to the default zn endpoint. Without a key,
+ * local rules only.
+ */
+function znGateMcpEnv(env, agent) {
+  // Only Claude Code passes the option (from .mcp.json); in other agents the
+  // server inherits the user's environment, so the variable is not trusted.
+  const key = agent === 'claude-code' ? pluginApiKey(env) : null;
+  for (const name of ['ZN_PLUGIN_API_KEY', 'ZN_API_KEY', 'ZN_CLOUD', 'ZN_API_URL', 'ZN_STAGE', 'ZN_LOCAL_ONLY']) delete env[name];
+  if (key) {
+    env.ZN_API_KEY = key;
+    env.ZN_CLOUD = '1';
+    // The key is sent as a bearer token: certificate checks stay on.
+    delete env.NODE_TLS_REJECT_UNAUTHORIZED;
+  } else {
+    env.ZN_LOCAL_ONLY = 'true';
+  }
+  return { cloud: Boolean(key) };
+}
+
+function runZnGateMcp(agent) {
   const fail = (msg) => {
     process.stderr.write('zn plugin: ' + msg + '\n');
     process.exit(1);
   };
   process.on('uncaughtException', (err) => fail('zn-gate failed (' + ((err && err.message) || String(err)) + ')'));
   process.on('unhandledRejection', (err) => fail('zn-gate failed (' + ((err && err.message) || String(err)) + ')'));
-  // Local rules only, whatever ZN_CLOUD and ZN_API_KEY say.
-  process.env.ZN_LOCAL_ONLY = 'true';
+  const { cloud } = znGateMcpEnv(process.env, agent);
   const lock = loadLock();
   const res = verify(lock);
   if (res.error) return fail(res.error);
-  makeLoader(res.dir, res.files).load('lib/mcp.js').startMcpServer({ localOnly: true });
+  makeLoader(res.dir, res.files).load('lib/mcp.js').startMcpServer({ localOnly: !cloud });
 }
 
 /* Hooks that `zn hooks install` wrote into the agent's own settings run too. */
@@ -555,12 +593,12 @@ function main(argv) {
   const [mode, agent] = argv;
   if (mode === 'hook') return runHook(agent);
   if (mode === 'secrets-mcp') return runMcp();
-  if (mode === 'zn-gate-mcp') return runZnGateMcp();
+  if (mode === 'zn-gate-mcp') return runZnGateMcp(agent);
   if (mode === 'check') return runCheck(agent || '');
   process.stderr.write('usage: zn-launch.js hook <claude-code|codex|cursor> | secrets-mcp | zn-gate-mcp | check [agent]\n');
   process.exitCode = 1;
 }
 
-module.exports = { verify, loadLock, makeLoader, readVerified };
+module.exports = { verify, loadLock, makeLoader, readVerified, znGateMcpEnv };
 
 if (require.main === module) main(process.argv.slice(2));
