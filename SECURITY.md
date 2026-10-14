@@ -76,7 +76,7 @@ We gratefully acknowledge independent security researchers who have helped prote
 | **2026-09-07** | [SEC-2026-01](docs/advisories/SEC-2026-01.md) | Control-plane authorization gap on policy and consensus handlers | **[WinstonRedGuard (github.com/WRG-11)](https://github.com/WRG-11)** |
 | **2026-09-30** | [SEC-2026-02](docs/advisories/SEC-2026-02.md) | Insufficient session and token revocation on password reset (CWE-613) | **[Ganesh RK](https://www.linkedin.com/in/ganesh-rk-6b827828a/)** |
 | **2026-10** | [SEC-2026-03](https://usezn.com/security/) | Incomplete session revocation on password change (CWE-613 follow-up) | **[Akshay Gore](https://www.linkedin.com/in/akshay-gore-512737345/)** |
-| **2026-10** | [SEC-2026-04](https://usezn.com/security/) | Session termination flow hardening (logout redirects and error handling) | **Sudarshan Dhanvai** |
+| **2026-10** | [SEC-2026-04](https://usezn.com/security/) | Session termination flow hardening (logout redirects & error handling) | **Sudarshan Dhanvai** |
 
 ---
 
