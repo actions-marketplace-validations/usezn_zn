@@ -1,8 +1,8 @@
 'use strict';
 
-// zn-gate check: every installed agent hook blocks the fake .env read, the
-// installed command itself is run when it has zn's exact shape, a hook whose
-// Node.js is gone is reported, and the report says what to do in plain words.
+// zn-gate check: an agent counts as protected only when its zn hook for reading
+// files is installed, zn blocks the fake .env and allows an ordinary file, and
+// the installed hook does the same when it is run as the agent runs it.
 
 process.env.ZN_STATS = 'off';
 const test = require('node:test');
@@ -17,11 +17,11 @@ const RUNNER = path.join(__dirname, '..', 'lib', 'hooks', 'runner.js');
 
 function homeWithHooks(t, agents) {
   const home = tempDir(t, 'zn-check-home-');
-  const env = { HOME: home };
+  const env = { HOME: home, PATH: process.env.PATH };
   for (const id of agents) {
     getAdapter(id).install({ scope: 'user', home, env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
   }
-  return { home, env };
+  return { home, env, cwd: tempDir(t, 'zn-check-cwd-') };
 }
 
 function textOf(res) {
@@ -30,82 +30,134 @@ function textOf(res) {
   return { s, code };
 }
 
-test('check: every installed agent blocks the fake .env read, through zn and through the installed hook', async (t) => {
-  const { home, env } = homeWithHooks(t, ['claude-code', 'codex', 'cursor', 'opencode']);
-  const res = await check({ home, env });
+const byId = (res, id) => res.results.find((r) => r.id === id);
+
+function fakePlugin(home, launcherSource, settings) {
+  const root = path.join(home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.8.1');
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), launcherSource);
+  fs.writeFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: root }] } }));
+  if (settings) fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify(settings));
+  return root;
+}
+
+// A stand-in for the plugin launcher that hands the event to the real runner (as the real launcher does after
+// verifying the pinned package), or fails closed on every event when `broken`.
+function launcher({ broken = false, systemMessage = '' } = {}) {
+  return "const [mode] = process.argv.slice(2);\n" +
+    "if (mode === 'check') { " + (systemMessage ? "process.stdout.write(JSON.stringify({ systemMessage: " + JSON.stringify(systemMessage) + " }));" : '') + " process.exit(0); }\n" +
+    (broken ? "process.stderr.write('zn plugin: zn-gate is not installed'); process.exit(2);\n"
+      : "const r = require('child_process').spawnSync(process.execPath, [" + JSON.stringify(RUNNER) + ", 'claude-code'], { input: require('fs').readFileSync(0), encoding: 'utf8' });\n" +
+        "process.stdout.write(r.stdout || ''); process.exit(r.status || 0);\n");
+}
+
+test('check: every agent installed for the user blocks .env and allows an ordinary file, also through the installed hook', async (t) => {
+  const ctx = homeWithHooks(t, ['claude-code', 'codex', 'cursor', 'opencode']);
+  const res = await check(ctx);
   for (const r of res.results) {
-    assert.equal(r.installed, true, r.id);
-    assert.equal(r.blocked, true, `${r.id}: ${r.message || r.error}`);
+    assert.equal(r.state, 'protected', `${r.id}: ${r.problem}`);
     assert.ok(r.message.length > 0, r.id);
-    if (r.id !== 'opencode') {
-      assert.equal(r.live && r.live.ok, true, `${r.id}: ${r.live && r.live.why}`);
-      assert.equal(r.live.blocked, true, `${r.id}: the installed hook did not block`);
-    }
+    if (r.id !== 'opencode') assert.equal(r.verified, true, `${r.id}: installed hook not run`);
   }
-  assert.equal(res.removed, true, 'the test folder is deleted');
+  assert.equal(res.removed, true);
   const { s, code } = textOf(res);
   assert.equal(code, 0);
-  assert.match(s, /OK Claude Code\s+blocked/);
-  assert.match(s, /Nothing was sent anywhere/);
+  assert.match(s, /OK Claude Code\s+blocked the \.env file and allowed the ordinary file/);
+  assert.match(s, /its plugin runs inside OpenCode, so it was not started here/);
   assert.match(s, /zn env shadow \.env/);
 });
 
-test('check: agents without zn are listed with the command that protects them; none installed is a failure', async (t) => {
+test('check: no setup at all is a failure, with the command for each agent', async (t) => {
   const home = tempDir(t, 'zn-check-empty-');
-  const res = await check({ home, env: { HOME: home } });
-  assert.ok(res.results.every((r) => !r.installed));
+  const res = await check({ home, env: { HOME: home, PATH: process.env.PATH }, cwd: home });
   const { s, code } = textOf(res);
   assert.equal(code, 1);
-  assert.match(s, /Codex CLI\s+zn is not set up for this agent\. To protect it: zn hooks install codex/);
-  assert.match(s, /zn is not set up for any agent yet/);
+  assert.match(s, /Codex CLI\s+zn is not set up for this agent\. To protect it, run `zn hooks install codex` in your own terminal/);
+  assert.match(s, /claude plugin install zn-gate@usezn/);
 });
 
-test('check: a hook whose Node.js is gone is reported as not protected, with the fix', async (t) => {
-  const { home, env } = homeWithHooks(t, ['codex']);
-  const file = getAdapter('codex').hooksFile({ home, env });
-  const missingNode = path.join(home, 'gone', 'node');
-  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split(process.execPath.replace(/\\/g, '/')).join(missingNode.replace(/\\/g, '/')));
-  const res = await check({ home, env });
-  const cx = res.results.find((r) => r.id === 'codex');
-  assert.equal(cx.installed, true);
-  assert.equal(cx.live.ok, false);
-  assert.match(cx.live.why, /no longer there/);
-  const { s, code } = textOf(res);
-  assert.equal(code, 1);
-  assert.match(s, /X  Codex CLI\s+NOT protected: the hook installed in .* cannot start/);
-  assert.match(s, /run `zn hooks install codex` again in your own terminal/);
+test('check: a hook whose Node.js is gone is not protected', async (t) => {
+  const ctx = homeWithHooks(t, ['codex']);
+  const file = getAdapter('codex').hooksFile(ctx);
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split(process.execPath.replace(/\\/g, '/')).join(path.join(ctx.home, 'gone', 'node').replace(/\\/g, '/')));
+  const r = byId(await check(ctx), 'codex');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /Node\.js .* is no longer there/);
+});
+
+test('check: zn hooks without the read hook are not protected', async (t) => {
+  const ctx = homeWithHooks(t, ['codex']);
+  const file = getAdapter('codex').hooksFile(ctx);
+  const tree = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete tree.hooks.PreToolUse;
+  fs.writeFileSync(file, JSON.stringify(tree));
+  const r = byId(await check(ctx), 'codex');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /not the one that checks reading files \(PreToolUse\)/);
+});
+
+test('check: a `zn hook` command with no zn on PATH is not protected', async (t) => {
+  const ctx = homeWithHooks(t, ['cursor']);
+  const file = getAdapter('cursor').hooksFile(ctx);
+  const tree = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const list of Object.values(tree.hooks)) for (const h of list) h.command = 'zn hook cursor';
+  fs.writeFileSync(file, JSON.stringify(tree));
+  ctx.env = { HOME: ctx.home, PATH: path.join(ctx.home, 'empty-bin') };
+  const r = byId(await check(ctx), 'cursor');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /no `zn` on your PATH/);
 });
 
 test('check: a command that is not zn\'s exact hook is never run', async (t) => {
-  const { home, env } = homeWithHooks(t, ['cursor']);
-  const file = getAdapter('cursor').hooksFile({ home, env });
-  const marker = path.join(home, 'ran');
+  const ctx = homeWithHooks(t, ['cursor']);
+  const file = getAdapter('cursor').hooksFile(ctx);
+  const marker = path.join(ctx.home, 'ran');
   const tree = JSON.parse(fs.readFileSync(file, 'utf8'));
-  for (const list of Object.values(tree.hooks || {})) {
-    for (const h of list) h.command = 'touch ' + marker + ' && ' + h.command;
-  }
+  for (const list of Object.values(tree.hooks)) for (const h of list) h.command = h.command.replace("'" + RUNNER.replace(/\\/g, '/'), "'$(touch " + marker + ")" + RUNNER.replace(/\\/g, '/'));
   fs.writeFileSync(file, JSON.stringify(tree));
-  const res = await check({ home, env });
+  const r = byId(await check(ctx), 'cursor');
   assert.equal(fs.existsSync(marker), false);
-  assert.equal(res.results.find((r) => r.id === 'cursor').installed, false);
+  assert.equal(r.state, 'not-set-up');
 });
 
-test('check: the Claude Code plugin is found and its own launcher is run, as Claude Code runs it', async (t) => {
+test('check: the Claude Code plugin is checked through its launcher; a launcher that blocks everything is not protected', async (t) => {
   const home = tempDir(t, 'zn-check-plugin-');
-  const env = { HOME: home };
-  const pluginRoot = path.join(home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.8.1');
-  fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
-  const seen = path.join(home, 'launcher-ran');
-  // A stand-in launcher: records that it ran with CLAUDE_PLUGIN_ROOT and answers like zn's hook (deny).
-  fs.writeFileSync(path.join(pluginRoot, 'scripts', 'zn-launch.js'),
-    "require('fs').writeFileSync(" + JSON.stringify(seen) + ", process.env.CLAUDE_PLUGIN_ROOT + ' ' + process.argv.slice(2).join(' '));\n" +
-    "process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' } }));\n");
-  fs.writeFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'),
-    JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: pluginRoot }] } }));
-  const res = await check({ home, env });
-  const cc = res.results.find((r) => r.id === 'claude-code');
-  assert.equal(cc.installed, true);
-  assert.equal(cc.live.via, 'plugin');
-  assert.equal(cc.live.blocked, true);
-  assert.equal(fs.readFileSync(seen, 'utf8'), pluginRoot + ' hook claude-code');
+  const env = { HOME: home, PATH: process.env.PATH };
+  fakePlugin(home, launcher());
+  let r = byId(await check({ home, env, cwd: home }), 'claude-code');
+  assert.equal(r.state, 'protected', r.problem);
+  assert.equal(r.verified, true);
+  fakePlugin(home, launcher({ broken: true }));
+  r = byId(await check({ home, env, cwd: home }), 'claude-code');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /blocks everything, ordinary files too/);
+});
+
+test('check: the plugin\'s own check message, a plugin turned off, and a disableAllHooks setting are not protected', async (t) => {
+  const home = tempDir(t, 'zn-check-plugin2-');
+  const env = { HOME: home, PATH: process.env.PATH };
+  fakePlugin(home, launcher({ systemMessage: 'zn plugin: zn-gate 1.8.1 is not installed. Run: npm i -g zn-gate@1.8.1' }));
+  let r = byId(await check({ home, env, cwd: home }), 'claude-code');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /npm i -g zn-gate@1\.8\.1/);
+  fakePlugin(home, launcher(), { enabledPlugins: { 'zn-gate@usezn': false } });
+  r = byId(await check({ home, env, cwd: home }), 'claude-code');
+  assert.match(r.problem, /turned off/);
+  fakePlugin(home, launcher(), { disableAllHooks: true });
+  r = byId(await check({ home, env, cwd: home }), 'claude-code');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /disableAllHooks/);
+});
+
+test('check: a setup for one project only is reported, not run, and not counted as protected', async (t) => {
+  const home = tempDir(t, 'zn-check-proj-');
+  const proj = tempDir(t, 'zn-check-repo-');
+  getAdapter('codex').install({ scope: 'project', projectDir: proj, home, env: { HOME: home }, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+  const res = await check({ home, env: { HOME: home, PATH: process.env.PATH }, cwd: proj });
+  const r = byId(res, 'codex');
+  assert.equal(r.state, 'project-only');
+  const { s, code } = textOf(res);
+  assert.equal(code, 1);
+  assert.match(s, /set up only for one project/);
 });

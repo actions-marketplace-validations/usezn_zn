@@ -107,7 +107,7 @@ It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.
 npx -y zn-gate check
 ```
 
-For each agent you set up, zn-gate sends its hook the request your agent would send to read a `.env` file with a fake key, in a temporary folder, and shows what your agent would be told. A line that says **NOT protected** says how to fix it. Nothing is sent over the network and no setting changes. [What the output means](docs/check.md).
+For each agent set up for your user, zn-gate asks its hook to let the agent read a `.env` file with a fake key and an ordinary file, in a temporary folder. It shows what your agent would be told, and a line that says **NOT protected** says how to fix it. Nothing is sent over the network and no setting changes. [What the output means](docs/check.md).
 
 ```bash
 npx -y zn-gate test

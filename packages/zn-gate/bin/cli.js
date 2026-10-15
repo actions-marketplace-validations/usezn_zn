@@ -796,7 +796,8 @@ Recent Events (last ${Math.min(options.tail, stats.total)}):
   if (command === 'check' || command === 'doctor') {
     process.env.ZN_STATS = 'off'; // the test read is not counted in zn-gate stats
     const zc = require('../lib/check');
-    process.exit(zc.report(await zc.check({})));
+    process.exitCode = zc.report(await zc.check({}));
+    return;
   }
 
   if (command === 'pins') {

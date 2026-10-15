@@ -10,30 +10,33 @@ npx -y zn-gate check
 
 ## What it does
 
-zn-gate makes a temporary folder with a `.env` file that holds a fake key (`ZN_CHECK_EXAMPLE_KEY=zn-check-fake-value-not-a-real-key`). For each agent, it sends zn's hook the same request your agent sends when it is about to read that file, and shows you what happened.
+zn-gate makes a temporary folder with two files: a `.env` file that holds a fake key (`ZN_CHECK_EXAMPLE_KEY=zn-check-fake-value-not-a-real-key`) and an ordinary `README.txt`. For each agent set up for your user, it asks zn's hook to let the agent read each file, the same way your agent asks. An agent counts as protected only when the `.env` file is blocked and the ordinary file is allowed.
 
-- It works with Claude Code, Codex CLI, Cursor and OpenCode.
-- For Claude Code, Codex CLI and Cursor it also runs the hook that is actually installed. This catches a hook that can no longer start, for example after the Node.js version it was installed with was removed.
-- Nothing is sent over the network, no agent is started and no setting changes. The folder is deleted at the end.
+- **Claude Code**: zn-gate checks the zn-gate plugin, or the hooks of `zn hooks install claude-code`. It also notices when the plugin is turned off and when a Claude Code setting turns hooks off.
+- **Codex CLI and Cursor**: zn-gate checks the hooks of `zn hooks install`.
+- **What it runs**: for Claude Code, Codex CLI and Cursor it runs the hook that is installed, exactly as your agent would. A hook that cannot start, or that blocks every file because part of zn is missing, is reported as **NOT protected**.
+- **OpenCode**: zn-gate checks zn's rules. The zn plugin runs inside OpenCode, so it is not started here.
+- **What it leaves alone**: it checks the setup for your user. A setup made for one project only (`--project`) is listed but not run.
+- **Nothing changes**: nothing is sent over the network, no agent is started and no setting changes. The folder is deleted at the end.
 
 ## What you will see
 
 ```text
 zn-gate check: does zn stop your coding agent from reading a secret?
 
-  OK Claude Code  blocked. Your agent would be told:
-     "zn: blocked reading .env: ..."
-  -  Codex CLI    zn is not set up for this agent. To protect it: zn hooks install codex
+  OK Claude Code  blocked the .env file and allowed the ordinary file. Your agent would be told:
+     "zn: ..."
+  -  Codex CLI    zn is not set up for this agent. To protect it, run `zn hooks install codex` in your own terminal.
   ...
 
 Your agent cannot read secret files such as .env through these tools. Nothing was sent anywhere.
 ```
 
-- **OK ... blocked**: zn is protecting that agent. The quoted text is what your agent is told when it tries.
-- **- ... not set up**: zn is not installed for that agent. The line gives the command that installs it.
-- **X ... NOT protected**: zn is installed but did not block, or its hook cannot start. The line says what to run to fix it.
+- **OK**: zn is protecting that agent. The quoted text is what your agent is told when it tries to read the file.
+- **-**: zn is not set up for that agent, or only for one project. The line gives the command that sets it up for your user.
+- **X ... NOT protected**: zn is set up but would not protect the agent. The line says why and what to run to fix it.
 
-`zn-gate check` exits with 0 only when every agent that has zn set up blocked the read.
+`zn-gate check` exits with 0 only when every agent that is set up for your user is protected.
 
 ## If your agent needs a value from `.env`
 
