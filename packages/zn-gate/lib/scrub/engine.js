@@ -44,6 +44,8 @@ const { collectSources, buildMatcher } = require('./exact');
 const { find: findCustom } = require('../team/detectors');
 const { CODES } = require('../errors');
 const { warnNotice, WARN_REASON } = require('../team/effective');
+/* The vault's resolve-policy answer version this engine understands. */
+const RESOLVE_POLICY = 1;
 const { invisibleView } = require('../rules');
 
 const TOKEN_SOURCE = '__ZN_([A-Z0-9](?:[A-Z0-9_]*[A-Z0-9])?)__';
@@ -375,6 +377,7 @@ const ACTIONS = Object.freeze({
   locked: 'keep',
   vault_error: 'keep',
   org_deny: 'keep',            // the organization policy blocks this secret
+  vault_outdated: 'keep',      // the vault process predates the organization policy check
 });
 
 const NET_COMMANDS = new RegExp('(?:^|[\\s;&|()`$\'"])(?:' + [
@@ -456,10 +459,18 @@ async function detokenize(text, ctx) {
         reason = 'locked';
       } else {
         try {
-          // withPolicy: the vault applies the organization policy to named
-          // secrets and says so. An older vault returns the bare value.
+          // withPolicy: the vault applies the organization policy and says so
+          // ({value, policy: 1, ...}). A vault that answers with the bare value
+          // (a daemon started before an update) cannot have checked the policy:
+          // nothing is restored (fail closed, vault_outdated) until it is restarted.
           value = await vault.resolve(project, f.token, { destination: dest, agent: c.agent, tool: c.tool, withPolicy: true });
-          if (value !== null && typeof value === 'object') {
+          if (typeof value === 'string' || (value !== null && typeof value === 'object' && value.policy === undefined)) {
+            reason = 'vault_outdated';
+            value = null;
+          } else if (value !== null && typeof value === 'object' && value.policy !== RESOLVE_POLICY) {
+            reason = 'vault_error';
+            value = null;
+          } else if (value !== null && typeof value === 'object') {
             const got = value;
             value = got.deny === true ? null : got.value;
             if (got.deny === true) reason = 'org_deny';
