@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-15
+
+**If you use the zn-gate agent hooks, update.** This release makes the hooks' glob matching and path resolution run in linear time.
+
+### Security
+- Glob matching and path resolution in the agent hooks run in linear time, and a bracket expression in a glob never matches a path separator, as in the shell (`POLICY_RULES_VERSION` is now `2026-10-15.7`).
+
 ## [1.7.0] - 2026-10-15
 
 zn-gate 1.7.0 adds `zn-gate stats` (local counts of what zn-gate did), MCP argument checks in Cursor, a preview of the organization before `zn team join`, and an optional cloud classifier key for the Claude Code plugin. The Python package redacts the same provider tokens as Node.js, `zn-gate scan` lists the files it does not read, the Rust engine's rules are more precise, and the agent plugin launcher only loads verified files.
