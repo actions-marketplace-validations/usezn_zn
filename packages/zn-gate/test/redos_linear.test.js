@@ -74,7 +74,7 @@ test('patchScan sees every marker Codex reads and flags marker-like lines it can
   }
   assert.deepEqual(codex.patchFiles('*** Add File: a.txt\r\n+x\r\n'), ['a.txt'], 'CRLF patches still read');
   for (const s of ['+*** Add File: x', ' context *** Add File: x', '@@ def f():', '-*** Update File: y', ' *** Update notes below',
-    '*** Additional notes']) {
+    '*** Additional notes', '*** Move to the next section', '***Update file names***', '*** Rename step']) {
     assert.equal(scan(s).suspicious, false, JSON.stringify(s));
   }
   const ev = codex.normalize({ hook_event_name: 'PreToolUse', tool_name: 'apply_patch', cwd: '/w',
