@@ -43,7 +43,7 @@ const path = require('path');
 const { whichSync } = require('../broker/markers');
 const { writeFileAtomic } = require('../broker/files');
 const cfg = require('./config-file');
-const { patchFiles } = require('./codex');
+const { patchFiles, PATCH_SCAN_CAP } = require('./codex');
 
 const id = 'opencode';
 const PLUGIN_FILE = 'zn-gate.js';
@@ -85,10 +85,12 @@ function normalize(raw) {
   };
   if (t === 'apply_patch' || t === 'patch') {
     // Every file the patch touches is checked, as in the Codex adapter.
-    const files = patchFiles(args.patchText);
+    const tooLong = String(args.patchText || '').length > PATCH_SCAN_CAP;
+    const files = tooLong ? [] : patchFiles(args.patchText);
     input.paths = files;
     input.path = files[0];
-    input.unparsed = files.length === 0;
+    input.tooLong = tooLong;
+    input.unparsed = !tooLong && files.length === 0;
   }
   if (raw.hook === 'tool.execute.before') return { ...base, event: 'pre_tool', tool, toolName: t, input };
   if (raw.hook === 'tool.execute.after') {

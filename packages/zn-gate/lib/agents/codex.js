@@ -44,6 +44,7 @@ const os = require('os');
 const path = require('path');
 const cfg = require('./config-file');
 const { whichSync } = require('../broker/markers');
+const { lines } = require('../linear-text');
 
 const id = 'codex';
 const PRE_MATCHER = '^(Bash|apply_patch)$';
@@ -51,13 +52,20 @@ const PRE_MATCHER = '^(Bash|apply_patch)$';
 const POST_MATCHER = '.*';
 const HOOK_TIMEOUT_S = 30;
 
-/* apply_patch: the files it touches and the text it adds. */
+// Patches longer than this are refused before parsing, like shell commands over
+// 100 KB: checking them could take longer than the agent waits for the hook.
+const PATCH_SCAN_CAP = 100 * 1024; // characters
+const PATCH_MARKERS = ['*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: '];
+
+/* apply_patch: the files it touches, one marker line at a time (linear time). */
 function patchFiles(patch) {
   const files = [];
-  // Indented markers count too: a patch that puts spaces before them is still applied.
-  const re = /^\s*\*\*\* (?:Add|Update|Delete) File: (.+)$|^\s*\*\*\* Move to: (.+)$/gm;
-  let m;
-  while ((m = re.exec(String(patch || ''))) !== null) files.push((m[1] || m[2]).trim());
+  for (const line of lines(String(patch || ''))) {
+    // Indented markers count too: a patch that puts spaces before them is still applied.
+    const t = line.trimStart();
+    const marker = PATCH_MARKERS.find((k) => t.startsWith(k));
+    if (marker && t.length > marker.length) files.push(t.slice(marker.length).trim());
+  }
   return files;
 }
 
@@ -77,12 +85,14 @@ function normalize(raw) {
   if (toolName === 'apply_patch') {
     // Every file the patch touches is checked by the policy; a patch whose
     // file names cannot be read is refused rather than let through.
-    const files = patchFiles(ti.command);
+    const tooLong = String(ti.command || '').length > PATCH_SCAN_CAP;
+    const files = tooLong ? [] : patchFiles(ti.command);
     const home = os.homedir();
     const zn = files.find((f) => path.resolve(base.cwd, f).replace(/\\/g, '/').startsWith(path.join(home, '.zn').replace(/\\/g, '/')));
     input.paths = files;
     input.path = zn || files[0];
-    input.unparsed = files.length === 0;
+    input.tooLong = tooLong;
+    input.unparsed = !tooLong && files.length === 0;
     input.texts = [{ key: ['command'], value: String(ti.command || '') }];
     input.command = undefined;
     tool = 'write';
@@ -221,4 +231,5 @@ module.exports = {
   POST_MATCHER,
   hooksFile,
   patchFiles,
+  PATCH_SCAN_CAP,
 };

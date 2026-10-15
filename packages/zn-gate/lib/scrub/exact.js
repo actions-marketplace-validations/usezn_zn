@@ -25,6 +25,7 @@
  */
 
 const fs = require('fs');
+const { stripInlineComment, trimTrailing, npmAuth, znrulesValue } = require('../linear-text');
 const os = require('os');
 const path = require('path');
 
@@ -134,8 +135,8 @@ function unquote(v) {
     const inner = t.slice(1, -1);
     return t[0] === '"' ? inner.replace(/\\n/g, '\n').replace(/\\"/g, '"') : inner;
   }
-  // strip trailing inline comment on unquoted values
-  return t.replace(/\s+#.*$/, '');
+  // strip trailing inline comment on unquoted values (linear: a .env line can be long)
+  return stripInlineComment(t);
 }
 
 function parseDotenv(text) {
@@ -198,12 +199,12 @@ function fromNpmrc(home, dir) {
     const text = readSmall(file);
     if (!text) continue;
     for (const raw of text.split(/\r?\n/)) {
-      const m = /(?:^|:)(_authToken|_auth|_password)\s*=\s*(\S+)\s*$/.exec(raw.trim());
-      if (!m || /^\$\{/.test(m[2])) continue;
-      out.push(...entriesFor('NPM' + m[1].toUpperCase(), unquote(m[2]), 'NPM_TOKEN', 'npmrc'));
-      if (m[1] !== '_authToken') {
+      const m = npmAuth(raw.trim());
+      if (!m || /^\$\{/.test(m[1])) continue;
+      out.push(...entriesFor('NPM' + m[0].toUpperCase(), unquote(m[1]), 'NPM_TOKEN', 'npmrc'));
+      if (m[0] !== '_authToken') {
         // _auth and _password are base64; the decoded secret can leak too.
-        const decoded = Buffer.from(unquote(m[2]), 'base64').toString('utf8');
+        const decoded = Buffer.from(unquote(m[1]), 'base64').toString('utf8');
         const pw = decoded.includes(':') ? decoded.slice(decoded.indexOf(':') + 1) : decoded;
         if (/^[\x20-\x7e]+$/.test(pw)) out.push(...entriesFor('NPM_PASSWORD', pw, 'NPM_PASSWORD', 'npmrc'));
       }
@@ -264,12 +265,12 @@ function fromZnrules(dir) {
   const out = [];
   let n = 0;
   for (const raw of text.split(/\r?\n/)) {
-    const m = /^\s*secret:\s*(.+?)\s*$/.exec(raw);
-    if (!m) continue;
+    const secret = znrulesValue(raw);
+    if (secret === null) continue;
     n++;
-    const named = /^([A-Z][A-Z0-9_]{0,63})=(.+)$/.exec(m[1]);
+    const named = /^([A-Z][A-Z0-9_]{0,63})=(.+)$/.exec(secret);
     const name = named ? named[1] : 'ZNRULES_SECRET_' + n;
-    const value = unquote(named ? named[2] : m[1]);
+    const value = unquote(named ? named[2] : secret);
     if (value.length >= MIN_LENGTH) out.push({ name, type: 'SECRET', value, origin: 'znrules' });
   }
   return out;
@@ -318,7 +319,7 @@ function variants(value) {
   const out = [value];
   const buf = Buffer.from(value, 'utf8');
   const b64 = buf.toString('base64');
-  out.push(b64, b64.replace(/=+$/, ''), buf.toString('base64url'));
+  out.push(b64, trimTrailing(b64, '='), buf.toString('base64url'));
   const hex = buf.toString('hex');
   out.push(hex, hex.toUpperCase());
   out.push(encodeURIComponent(value));
