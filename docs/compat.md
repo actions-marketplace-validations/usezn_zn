@@ -21,7 +21,8 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
 
 In every agent, a shell command longer than 100 KB (counted in characters; this
 includes PowerShell and Claude Code's Monitor tool) is blocked, because zn
-could not check it within the time the agent waits for the hook.
+could not check it within the time the agent waits for the hook. The same
+limit applies to a patch (`apply_patch`) in Codex and OpenCode.
 
 ## Why the differences
 

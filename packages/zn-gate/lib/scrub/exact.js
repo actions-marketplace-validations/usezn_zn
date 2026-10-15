@@ -25,6 +25,7 @@
  */
 
 const fs = require('fs');
+const { stripInlineComment, trimTrailing } = require('../linear-text');
 const os = require('os');
 const path = require('path');
 
@@ -134,8 +135,8 @@ function unquote(v) {
     const inner = t.slice(1, -1);
     return t[0] === '"' ? inner.replace(/\\n/g, '\n').replace(/\\"/g, '"') : inner;
   }
-  // strip trailing inline comment on unquoted values
-  return t.replace(/\s+#.*$/, '');
+  // strip trailing inline comment on unquoted values (linear: a .env line can be long)
+  return stripInlineComment(t);
 }
 
 function parseDotenv(text) {
@@ -318,7 +319,7 @@ function variants(value) {
   const out = [value];
   const buf = Buffer.from(value, 'utf8');
   const b64 = buf.toString('base64');
-  out.push(b64, b64.replace(/=+$/, ''), buf.toString('base64url'));
+  out.push(b64, trimTrailing(b64, '='), buf.toString('base64url'));
   const hex = buf.toString('hex');
   out.push(hex, hex.toUpperCase());
   out.push(encodeURIComponent(value));
@@ -505,6 +506,7 @@ function buildMatcher(entries) {
 
 module.exports = {
   MIN_LENGTH,
+  unquote,
   AC_PREFIX,
   collectSources,
   variants,

@@ -178,6 +178,9 @@ async function decidePre(ev, d, agentId, opts) {
   }
   if (tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit') {
     // A patch can touch several files: every one is checked, not only the first.
+    if (input.tooLong) {
+      return { decision: 'deny', message: 'zn: this patch is too long for zn to check (over 100 KB), so it was blocked. Next step: tell the user; do not resend it in parts.' };
+    }
     if (input.unparsed) return { decision: 'deny', message: 'zn: could not read the file names in this patch, so zn cannot check it.' };
     for (const p of Array.isArray(input.paths) ? input.paths : [input.path]) {
       const deny = policy.writeDenial(p, pathOpts);

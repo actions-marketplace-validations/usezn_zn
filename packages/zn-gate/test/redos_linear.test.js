@@ -1,0 +1,118 @@
+'use strict';
+
+// The linear replacements of lib/linear-text.js and their callers: same result
+// as the regex each one replaced (random inputs built from the characters that
+// matter), and fast on the inputs that made those regexes backtrack.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { trimTrailing, stripInlineComment } = require('../lib/linear-text');
+const codex = require('../lib/agents/codex');
+const opencode = require('../lib/agents/opencode');
+const { unquote } = require('../lib/scrub/exact');
+const { normalizeProject } = require('../lib/vault/store');
+const { claudePermission } = require('../lib/audit/patterns');
+const { _internal: audit } = require('../lib/audit');
+
+const BIG = 200 * 1024;
+
+function ms(fn) {
+  const t0 = process.hrtime.bigint();
+  fn();
+  return Number(process.hrtime.bigint() - t0) / 1e6;
+}
+
+// Deterministic pseudo-random strings from a list of pieces.
+function* randomStrings(pieces, count, maxPieces, seed = 7) {
+  let x = seed;
+  const next = () => {
+    x = (x * 1103515245 + 12345) % 2147483648;
+    return x;
+  };
+  for (let n = 0; n < count; n++) {
+    let s = '';
+    const len = next() % (maxPieces + 1);
+    for (let i = 0; i < len; i++) s += pieces[next() % pieces.length];
+    yield s;
+  }
+}
+
+function oldPatchFiles(patch) {
+  const files = [];
+  const re = /^\s*\*\*\* (?:Add|Update|Delete) File: (.+)$|^\s*\*\*\* Move to: (.+)$/gm;
+  let m;
+  while ((m = re.exec(String(patch || ''))) !== null) files.push((m[1] || m[2]).trim());
+  return files;
+}
+
+test('patchFiles gives the same files as the old regex', () => {
+  const pieces = ['*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: ', '*** Add File:', '** Add File: ',
+    ' ', '\t', '\n', '\r', '\r\n', '\u2028', 'a', 'b.js', ' x ', '*', '#'];
+  for (const s of randomStrings(pieces, 20000, 12)) assert.deepEqual(codex.patchFiles(s), oldPatchFiles(s), JSON.stringify(s));
+});
+
+test('stripInlineComment and unquote give the same value as the old regex', () => {
+  const pieces = [' ', '\t', '#', 'a', 'b', '\n', '\r', '\u2028', '##', ' #', '"', "'"];
+  for (const s of randomStrings(pieces, 20000, 12)) {
+    assert.equal(stripInlineComment(s), s.replace(/\s+#.*$/, ''), JSON.stringify(s));
+  }
+  assert.equal(unquote('abc  # comment'), 'abc');
+  assert.equal(unquote('"a # b"'), 'a # b');
+  assert.equal(unquote('a#b'), 'a#b');
+});
+
+test('trimTrailing, the audit helpers and normalizeProject match the old regexes', () => {
+  for (const s of randomStrings(['=', 'a', ' ', '*', '/', '\\', 'x='], 5000, 10)) {
+    assert.equal(trimTrailing(s, '='), s.replace(/=+$/, ''));
+    assert.equal(trimTrailing(s, '*'), s.replace(/\*+$/, ''));
+    assert.equal(trimTrailing(s, '\\/'), s.replace(/[\\/]+$/, ''));
+    const t = s.trim();
+    assert.equal(audit.withoutTrailingEquals(t), t.replace(/\s*=$/, ''), JSON.stringify(t));
+  }
+  const old = /^\s*(?:contents|pull-requests|issues|actions|packages|id-token|deployments|statuses|checks)\s*:\s*write\b/m;
+  const pieces = ['contents', 'issues', 'checks', 'checksum', 'id-token', 'pull-requests', ':', ' ', '\t', '\n', '\r', 'write', 'writer',
+    'read', 'x', '#', '\u2029'];
+  for (const s of randomStrings(pieces, 20000, 10)) assert.equal(audit.grantsWrite(s), old.test(s), JSON.stringify(s));
+});
+
+test('the inputs that made those regexes backtrack now take milliseconds', () => {
+  const nl = '\n'.repeat(BIG);
+  const cases = {
+    'patchFiles on newlines': () => codex.patchFiles(nl + '*** Add File: x'),
+    'unquote on spaces': () => unquote('a' + ' '.repeat(BIG) + 'b'),
+    'unquote on spaces then #': () => unquote('a' + ' '.repeat(BIG) + '#'),
+    'grantsWrite on newlines': () => audit.grantsWrite('contents' + nl + 'x'),
+    'grantsWrite on spaces': () => audit.grantsWrite(('checks' + ' '.repeat(50)).repeat(BIG / 60)),
+    'withoutTrailingEquals on spaces': () => audit.withoutTrailingEquals('[' + ' '.repeat(BIG) + 'x'),
+    'claudePermission on stars': () => claudePermission('Bash(' + '*'.repeat(BIG) + 'x)'),
+    'normalizeProject on slashes': () => normalizeProject('/' + '\\'.repeat(BIG) + 'x'),
+    'trimTrailing on equals': () => trimTrailing('='.repeat(BIG) + 'x', '='),
+  };
+  for (const [name, fn] of Object.entries(cases)) {
+    const t = Math.min(ms(fn), ms(fn));
+    assert.ok(t < 200, `${name} took ${t.toFixed(1)} ms`);
+  }
+});
+
+test('Codex and OpenCode refuse a patch over 100 KB before parsing it', () => {
+  const big = '*** Begin Patch\n*** Add File: a.txt\n+' + 'x'.repeat(codex.PATCH_SCAN_CAP) + '\n*** End Patch';
+  const ev = codex.normalize({ hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { command: big }, cwd: '/w' });
+  assert.equal(ev.input.tooLong, true);
+  assert.equal(ev.input.unparsed, false);
+  const oc = opencode.normalize({ hook: 'tool.execute.before', tool: 'apply_patch', args: { patchText: big }, cwd: '/w' });
+  assert.equal(oc.input.tooLong, true);
+  const small = codex.normalize({ hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { command: '*** Add File: a.txt\n+x' }, cwd: '/w' });
+  assert.equal(small.input.tooLong, false);
+  assert.deepEqual(small.input.paths, ['a.txt']);
+});
+
+test('the Codex hook denies a patch over 100 KB with a clear message', async () => {
+  const runner = require('../lib/hooks/runner');
+  const big = '*** Begin Patch\n' + '\n'.repeat(codex.PATCH_SCAN_CAP) + '*** Add File: a.txt\n+x\n*** End Patch';
+  const raw = { hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { command: big }, cwd: process.cwd() };
+  const t0 = Date.now();
+  const { decision } = await runner.handle(codex, raw, {});
+  assert.equal(decision.decision, 'deny');
+  assert.match(decision.message, /too long for zn to check/);
+  assert.ok(Date.now() - t0 < 2000);
+});
