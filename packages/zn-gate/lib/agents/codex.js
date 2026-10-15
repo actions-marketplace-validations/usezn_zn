@@ -68,7 +68,7 @@ const ANY_EDGE = /^[\s\u0085]+|[\s\u0085]+$/g;
 const ODD_NAME = /[\u0000-\u001f\u007f\u0085\u2028\u2029]/;
 // A line that looks like a file marker without being one the agents read, or a
 // marker that sends the patch to another environment: the patch is refused.
-const MARKER_LIKE = /^\*{3}\s*(?:(?:add|update|delete)\s*file|move\s*to|rename|environment\s*id)\b/i;
+const MARKER_LIKE = /^\*{3}\s*(?:(?:add|update|delete|rename)\s*file|move\s*to|environment\s*id)\s*:/i;
 
 /*
  * apply_patch: every name the patch could touch, one line at a time (linear
