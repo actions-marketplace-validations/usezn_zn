@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - The vault audit log no longer slows down when the end of the file holds a long run of blank lines before a large record. Reading the last record used a regular expression that took seconds in that case, on every new audit record.
 - File names in a Codex or OpenCode patch (`apply_patch`), values in `.env`, `.npmrc` and `.znrules` files, and a few `zn audit` checks are now read in linear time. Long runs of blank lines, spaces, `*` or `=` used to make them take seconds. `SCRUB_RULES_VERSION` is now `2026-10-15.2` and `AUDIT_RULES_VERSION` `2026-10-15.1`.
+- File names in a Codex or OpenCode patch (`apply_patch`) are read the way each agent reads them: lines split only at line feeds, and names in every form Codex or OpenCode could use. A patch with a name zn cannot read safely, or with a line that looks like a file marker but is not one, is blocked.
 
 ### Changed
 - In Codex and OpenCode, a patch (`apply_patch`) longer than 100 KB is blocked, like shell commands over 100 KB, because zn could not check it within the time the agent waits for the hook.
