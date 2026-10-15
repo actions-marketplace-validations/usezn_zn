@@ -199,7 +199,7 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 The action installs the published zn-gate packages at an exact version and runs on the runner only; it sends nothing anywhere. It has two checks, chosen with `mode`:
 
 - `scan`: `zn-gate scan` looks for prompt-injection traps and leaked secrets in prompts, tool definitions and config files (Python package from PyPI). This is what earlier releases of the action did.
-- `audit`: `zn audit` reviews what your coding agents are configured to trust: `.claude/`, `.mcp.json`, `.codex/`, `.cursor/`, hooks, `AGENTS.md` / `CLAUDE.md`, plugins and skills (npm package, zn-gate 1.6.0 or later).
+- `audit`: `zn audit` reviews what your coding agents are configured to trust: `.claude/`, `.mcp.json`, `.codex/`, `.cursor/`, hooks, `AGENTS.md` / `CLAUDE.md`, plugins and skills (npm package; needs version 1.6.0 or later).
 - `both` (default): runs the two. With a `version` older than 1.6.0 it runs the scan only and prints a warning.
 
 Scan prompts on pull requests:
