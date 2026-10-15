@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **If you use the zn-gate agent hooks, update.** This release makes the hooks' glob matching and path resolution run in linear time.
 
 ### Security
-- Glob matching and path resolution in the agent hooks run in linear time, and a bracket expression in a glob never matches a path separator, as in the shell (`POLICY_RULES_VERSION` is now `2026-10-15.9`).
+- Glob matching, brace expansion and path resolution in the agent hooks run in linear time, and a bracket expression in a glob never matches a path separator, as in the shell (`POLICY_RULES_VERSION` is now `2026-10-15.11`).
 
 ## [1.7.0] - 2026-10-15
 
