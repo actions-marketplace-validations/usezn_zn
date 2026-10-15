@@ -4,13 +4,19 @@
  * zn-gate init: the guided setup. It finds the coding agents on this machine,
  * checks which ones zn already protects (lib/check.js), and for each one that
  * is not protected shows the one route that protects it:
- *   - Claude Code: the zn-gate plugin (two `claude plugin` commands);
+ *   - Claude Code: the zn-gate plugin (two `claude plugin` commands, or the
+ *     same two `/plugin` commands typed in Claude Code when there is no
+ *     `claude` command);
  *   - Codex CLI, Cursor, OpenCode: `zn hooks install <agent>`, from a global
- *     install of zn-gate (hooks never point into the npx cache, which npm can
- *     delete).
+ *     install of zn-gate (hooks never point into the npx cache or another
+ *     temporary copy, which can be deleted).
  * In your own terminal it offers to run each step, one confirmation each.
- * Without a terminal, or when an AI agent runs it, it only prints the steps:
- * installing hooks stays a person's decision. It ends with `zn-gate check`.
+ * Without a terminal, or when an AI agent runs it, it only prints the steps,
+ * and the agent hooks deny `zn-gate init` to agents (lib/hooks/policy.js), as
+ * they deny `zn hooks install`. It ends with `zn-gate check`.
+ *
+ * Programs are run by absolute path, found only in absolute PATH entries, so
+ * a program planted in the current folder (a cloned repository) never runs.
  *
  * The previous behaviour of `init` (wrapping the MCP servers you already use
  * with the zn-gate proxy) is `zn-gate init --wrap-mcp`.
@@ -22,58 +28,103 @@ const { spawnSync } = require('child_process');
 
 const PKG_ROOT = path.join(__dirname, '..');
 const VERSION = require('../package.json').version;
+const isWin = process.platform === 'win32';
 
-/* zn-gate is running from the npx cache (or another temporary copy) rather than a global install. */
-function fromNpx(dir = __dirname) {
-  return /[\\/]_npx[\\/]/.test(dir);
+/* zn-gate runs from a temporary copy (npx, pnpm dlx, yarn dlx, bunx) rather than an install that stays. */
+function fromTemporaryCopy(dir = __dirname) {
+  return /[\\/](?:_npx|dlx-[^\\/]*|xfs-[^\\/]*|\.bun[\\/]install[\\/]cache|bunx-[^\\/]*)[\\/]/.test(dir);
 }
 
-/* The plan: [{id, name, found, state, steps: [{label, file, args}]}]. */
+/* Absolute path of a program, searched only in absolute PATH entries; null when not found. */
+function findProgram(name, env) {
+  const exe = require('./exe');
+  const absPath = String((env || process.env).PATH || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d)).join(path.delimiter);
+  const found = exe.whichSync(isWin ? name + '.cmd' : name, absPath) || (isWin ? exe.whichSync(name + '.exe', absPath) : null);
+  return found ? path.resolve(found) : null;
+}
+
+function cmp(a, b) {
+  const pa = String(a).split(/[.-]/).map((x) => parseInt(x, 10) || 0);
+  const pb = String(b).split(/[.-]/).map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+}
+
+/* {prefix, version, zn} of the global npm install of zn-gate, or {} when npm is not found. */
+function globalInstall(env) {
+  const npm = findProgram('npm', env);
+  if (!npm) return {};
+  const r = spawnSync(npm, ['prefix', '-g'], { encoding: 'utf8', env, shell: isWin, windowsHide: true, timeout: 30000 });
+  const prefix = r.status === 0 ? String(r.stdout || '').trim() : '';
+  if (!prefix || !path.isAbsolute(prefix)) return { npm };
+  const pkgDir = isWin ? path.join(prefix, 'node_modules', 'zn-gate') : path.join(prefix, 'lib', 'node_modules', 'zn-gate');
+  let version = null;
+  try { version = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).version || null; } catch (err) { version = null; }
+  const zn = isWin ? path.join(prefix, 'zn.cmd') : path.join(prefix, 'bin', 'zn');
+  return { npm, prefix, version, zn };
+}
+
+/* The plan: {items: [{id, name, found, state, problem, steps}], setup: [step]} ; a step is {label, run: [file, args] | null, manual}. */
 async function plan(opts = {}) {
   const { getAdapter } = require('./agents');
   const { check } = require('./check');
   const env = opts.env || process.env;
   const home = opts.home;
   const res = await check({ home, env, cwd: opts.cwd });
-  const npx = opts.npx !== undefined ? opts.npx : fromNpx();
-  const out = [];
+  const temporary = opts.temporary !== undefined ? opts.temporary : fromTemporaryCopy();
+  const glob = opts.global || (temporary ? globalInstall(env) : {});
+  const items = [];
+  let needsZn = false;
   for (const r of res.results) {
     const found = r.state !== 'not-set-up' || getAdapter(r.id).detect({ home, env });
     const item = { id: r.id, name: r.name, found, state: r.state, problem: r.problem || '', steps: [] };
     if (found && r.state !== 'protected') {
       if (r.id === 'claude-code') {
-        item.steps.push({ label: 'add the usezn plugin marketplace', file: 'claude', args: ['plugin', 'marketplace', 'add', 'usezn/zn'] });
-        item.steps.push({ label: 'install the zn-gate plugin', file: 'claude', args: ['plugin', 'install', 'zn-gate@usezn'] });
+        const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
+        if (claude) {
+          item.steps.push({ label: 'add the usezn plugin marketplace', run: [claude, ['plugin', 'marketplace', 'add', 'usezn/zn']], manual: 'claude plugin marketplace add usezn/zn' });
+          item.steps.push({ label: 'install the zn-gate plugin', run: [claude, ['plugin', 'install', 'zn-gate@usezn']], manual: 'claude plugin install zn-gate@usezn' });
+        } else {
+          item.steps.push({ label: 'in Claude Code, type these two commands', run: null, manual: 'in Claude Code, type /plugin marketplace add usezn/zn and then /plugin install zn-gate@usezn' });
+        }
       } else {
-        if (npx) item.steps.push({ label: 'install zn-gate ' + VERSION + ' for your user', file: 'npm', args: ['install', '-g', 'zn-gate@' + VERSION] });
-        item.steps.push({ label: 'install zn\'s hooks for ' + r.name, file: 'zn', args: ['hooks', 'install', r.id] });
+        needsZn = true;
+        // This install's own CLI, or, from a temporary copy, the global one (by absolute path).
+        const zn = temporary ? (glob.zn || null) : process.execPath;
+        const args = temporary ? ['hooks', 'install', r.id] : [path.join(PKG_ROOT, 'bin', 'cli.js'), 'hooks', 'install', r.id];
+        item.steps.push({ label: 'install zn\'s hooks for ' + r.name, run: zn ? [zn, args] : null, manual: 'zn hooks install ' + r.id, needsGlobal: temporary });
       }
     }
-    out.push(item);
+    items.push(item);
   }
-  return out;
+  const setup = [];
+  if (needsZn && temporary) {
+    if (glob.version && cmp(glob.version, VERSION) >= 0) {
+      // A global install that is the same or newer is used as it is: never downgrade it.
+    } else if (glob.npm) {
+      setup.push({ label: 'install zn-gate ' + VERSION + ' for your user' + (glob.version ? ' (you have ' + glob.version + ')' : ''), run: [glob.npm, ['install', '-g', 'zn-gate@' + VERSION]], manual: 'npm install -g zn-gate@' + VERSION });
+    } else {
+      setup.push({ label: 'install zn-gate for your user', run: null, manual: 'npm install -g zn-gate' });
+    }
+  }
+  return { items, setup, temporary };
 }
 
-function commandLine(step) {
-  return [step.file, ...step.args].join(' ');
-}
-
-/* Run one step in the user's terminal (inherits stdio). Fixed program names and arguments only. */
+/* Run one step in the user's terminal (inherits stdio). Absolute program path and fixed arguments only. */
 function runStep(step, env) {
-  let file = step.file;
-  let args = step.args;
-  if (step.file === 'zn' && !fromNpx()) {
-    // This install's own CLI: no PATH lookup.
-    file = process.execPath;
-    args = [path.join(PKG_ROOT, 'bin', 'cli.js'), ...step.args];
-  }
-  // npm and claude are .cmd files on Windows, which only start through a shell; the arguments are fixed strings.
-  const r = spawnSync(file, args, { stdio: 'inherit', env, shell: process.platform === 'win32' && file !== process.execPath });
+  const [file, args] = step.run;
+  const childEnv = { ...env };
+  if (isWin) childEnv.NoDefaultCurrentDirectoryInExePath = '1';
+  // A .cmd file (npm, claude, zn on Windows) only starts through cmd.exe; its path is absolute and quoted.
+  const viaShell = isWin && /\.cmd$/i.test(file);
+  const r = viaShell
+    ? spawnSync('"' + file + '"', args, { stdio: 'inherit', env: childEnv, shell: true, windowsHide: true })
+    : spawnSync(file, args, { stdio: 'inherit', env: childEnv, windowsHide: true });
   return !r.error && r.status === 0;
 }
 
 /**
- * guide({home, env, cwd, stdin, stdout, confirm}) -> exit code.
+ * guide({home, env, cwd, stdin, write, confirm, run}) -> exit code.
  * `confirm(question)` resolves true/false; it is asked only when a person runs init in a terminal.
  */
 async function guide(opts = {}) {
@@ -83,7 +134,7 @@ async function guide(opts = {}) {
   const stdin = opts.stdin || process.stdin;
   const agent = tty.agentEnvDetected(env);
   const interactive = Boolean(stdin.isTTY) && !agent;
-  const items = await plan(opts);
+  const { items, setup } = await plan(opts);
 
   w('\nzn-gate init: set up zn for the coding agents on this machine\n\n');
   const todo = items.filter((i) => i.steps.length);
@@ -93,40 +144,53 @@ async function guide(opts = {}) {
     else w(`  >  ${i.name.padEnd(12)} ${i.state === 'not-protected' ? 'not protected: ' + i.problem : 'not set up yet'}\n`);
   }
   w('\n');
+  const tail = () => w('(To wrap the MCP servers in your agent configs, which `zn-gate init` used to do: `zn-gate init --wrap-mcp`.)\n');
   if (!items.some((i) => i.found)) {
-    w('No supported coding agent was found (Claude Code, Codex CLI, Cursor, OpenCode).\n');
+    w('No supported coding agent was found (Claude Code, Codex CLI, Cursor, OpenCode). Nothing was changed.\n');
     w('Install one, then run `npx -y zn-gate init` again. Other editors: https://usezn.com/docs/install\n');
+    tail();
     return 1;
   }
   if (!todo.length) {
     w('Every agent found is already protected. To see it block a test secret: `zn-gate check`\n');
     return 0;
   }
+  const allSteps = [...setup, ...todo.flatMap((i) => i.steps)];
   if (!interactive) {
-    w(agent
-      ? 'An AI agent is running this, so zn only prints the steps: installing hooks is your decision.\n'
-      : 'This is not an interactive terminal, so zn only prints the steps.\n');
+    w((agent
+      ? 'An AI agent is running this, so zn only prints the steps: installing hooks is your decision.'
+      : 'This is not an interactive terminal, so zn only prints the steps.') + ' Nothing was changed.\n');
     w('Run them in your own terminal:\n\n');
-    for (const i of todo) for (const s of i.steps) w(`  ${commandLine(s)}\n`);
+    for (const s of allSteps) w(`  ${s.manual}\n`);
     w('\nThen check that it works: `npx -y zn-gate check`\n');
+    tail();
     return 1;
   }
   const ask = opts.confirm || ((q) => tty.confirm(q, { stdin, stderr: process.stderr }));
+  const run = opts.run || runStep;
   let skipped = 0;
+  let globalReady = !setup.length;
+  for (const s of setup) {
+    if (!s.run) { w(`First, ${s.label}: ${s.manual}\n`); skipped++; break; }
+    if (!(await ask(`${s.label}: run \`${s.manual}\`?`))) { w(`  skipped. You can run it later: ${s.manual}\n`); skipped++; break; }
+    if (!run(s, env)) { w(`  that did not finish. Run it yourself: ${s.manual}\n`); skipped++; break; }
+    globalReady = true;
+  }
+  let glob = null;
   for (const i of todo) {
     w(`${i.name}:\n`);
     for (const s of i.steps) {
-      if (!(await ask(`  ${s.label}: run \`${commandLine(s)}\`?`))) {
-        w(`  skipped. You can run it later: ${commandLine(s)}\n`);
-        skipped++;
-        break;
+      let step = s;
+      if (s.needsGlobal) {
+        if (!globalReady) { w(`  needs zn-gate installed for your user first. Later: ${s.manual}\n`); skipped++; break; }
+        if (!s.run) {
+          glob = glob || globalInstall(env);
+          step = glob.zn && fs.existsSync(glob.zn) ? { ...s, run: [glob.zn, ['hooks', 'install', i.id]] } : s;
+        }
       }
-      const ok = (opts.run || runStep)(s, env);
-      if (!ok) {
-        w(`  that did not finish. Run it yourself: ${commandLine(s)}\n`);
-        skipped++;
-        break;
-      }
+      if (!step.run) { w(`  ${s.label}: ${s.manual}\n`); skipped++; break; }
+      if (!(await ask(`  ${s.label}: run \`${s.manual}\`?`))) { w(`  skipped. You can run it later: ${s.manual}\n`); skipped++; break; }
+      if (!run(step, env)) { w(`  that did not finish. Run it yourself: ${s.manual}\n`); skipped++; break; }
     }
   }
   w('\n');
@@ -135,4 +199,4 @@ async function guide(opts = {}) {
   return skipped ? 1 : code;
 }
 
-module.exports = { guide, plan, fromNpx, _internal: { commandLine, runStep } };
+module.exports = { guide, plan, fromTemporaryCopy, _internal: { findProgram, globalInstall, cmp, runStep } };

@@ -46,7 +46,7 @@ Antigravity has hooks (`PreToolUse`, `PostToolUse` and others, in `.agents/hooks
 
 ### Where the configuration lives
 
-All projects: `~/.gemini/antigravity/mcp_config.json` (or `~/.gemini/config/mcp_config.json` in some versions). One project: `.agents/mcp_config.json`. `npx -y zn-gate init` wraps the servers in the all-projects file for you, or wrap them by hand as below.
+All projects: `~/.gemini/antigravity/mcp_config.json` (or `~/.gemini/config/mcp_config.json` in some versions). One project: `.agents/mcp_config.json`. `npx -y zn-gate init --wrap-mcp` wraps the servers in the all-projects file for you, or wrap them by hand as below.
 
 ### Check the output of your other MCP servers
 
@@ -70,7 +70,7 @@ To check the output of the other MCP servers you use in Antigravity, start each 
 }
 ```
 
-Every result of that server is then checked for prompt injection, and secrets zn-gate recognizes are removed, before the agent sees it. `zn-gate init` does this automatically for Claude Desktop, Claude Code, Cursor, Codex, OpenCode and Antigravity.
+Every result of that server is then checked for prompt injection, and secrets zn-gate recognizes are removed, before the agent sees it. `zn-gate init --wrap-mcp` does this automatically for Claude Desktop, Claude Code, Cursor, Codex, OpenCode and Antigravity.
 
 ## Antigravity documentation
 
