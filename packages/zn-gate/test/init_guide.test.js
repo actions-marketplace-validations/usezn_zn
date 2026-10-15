@@ -94,9 +94,17 @@ test('findProgram: only absolute PATH entries are searched (a program in the cur
   const dir = tempDir(t, 'zn-init-bin-');
   const name = process.platform === 'win32' ? 'zntestprog.cmd' : 'zntestprog';
   fs.writeFileSync(path.join(dir, name), '');
-  const rel = path.relative(process.cwd(), dir) || '.';
-  assert.equal(_internal.findProgram('zntestprog', { PATH: rel }), null);
-  assert.equal(_internal.findProgram('zntestprog', { PATH: '.' + path.delimiter + rel }), null);
+  // Relative entries are resolved against the current folder; on Windows the temp folder can be on another drive.
+  const before = process.cwd();
+  process.chdir(dir);
+  try {
+    assert.equal(_internal.findProgram('zntestprog', { PATH: '.' }), null);
+    process.chdir(path.dirname(dir));
+    assert.equal(_internal.findProgram('zntestprog', { PATH: path.basename(dir) }), null);
+    assert.equal(_internal.findProgram('zntestprog', { PATH: '.' + path.delimiter + path.basename(dir) }), null);
+  } finally {
+    process.chdir(before);
+  }
   assert.equal(_internal.findProgram('zntestprog', { PATH: dir }), path.join(dir, name));
 });
 
