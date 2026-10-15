@@ -162,6 +162,8 @@ SECRETS (values stay on this machine; agents only see __ZN_<NAME>__ markers):
   secret log          Show the local audit log of secret use [--since 1h] (same as vault log)
   hooks install claude-code [--project]
                       Install the Claude Code hooks and the "secrets" MCP server
+  check               Show that zn blocks your agent from reading a fake secret
+                      (also: doctor). Safe: a temporary folder, nothing is sent
   secrets-mcp         Run the "secrets" MCP server (stdio)
   hook <agent>        Hook entry point used by agents (reads the event on stdin)
 
@@ -788,6 +790,13 @@ Recent Events (last ${Math.min(options.tail, stats.total)}):
 
   if (command === 'test') {
     await runTestSuite(options);
+    return;
+  }
+
+  if (command === 'check' || command === 'doctor') {
+    process.env.ZN_STATS = 'off'; // the test read is not counted in zn-gate stats
+    const zc = require('../lib/check');
+    process.exitCode = zc.report(await zc.check({}));
     return;
   }
 

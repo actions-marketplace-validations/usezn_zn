@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `zn-gate check` (also `zn-gate doctor`) shows that zn stops your coding agent from reading a secret. For each agent set up for your user (Claude Code through the zn-gate plugin or `zn hooks install`, Codex CLI, Cursor, OpenCode), it asks zn's hook to let the agent read a `.env` file with a fake key and an ordinary file, in a temporary folder. An agent counts as protected only when the first is blocked and the second allowed. For Claude Code, Codex CLI and Cursor it also runs the installed hook, which finds a hook that cannot start or that blocks every file. It says how to fix an agent that is not protected. Nothing is sent over the network and no setting changes. See [docs/check.md](docs/check.md).
 - `zn hooks install claude-code` and `zn-gate status` warn when Claude Code settings stop zn from running: an organization policy that turns off all hooks (`disableAllHooks`), runs only its own hooks (`allowManagedHooksOnly`), or does not allow the `secrets` MCP server (`managed-mcp.json`, `allowManagedMcpServersOnly`, `allowedMcpServers`, `deniedMcpServers`), or `disableAllHooks` in your own settings. Claude Code does not show these. Only the settings files are read, not policy sent through claude.ai, MDM or the Windows registry.
 
 ### Changed
