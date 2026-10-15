@@ -79,6 +79,8 @@ function patchScan(patch) {
   const files = new Set();
   let suspicious = false;
   for (let line of String(patch || '').split('\n')) {
+    // Every marker, and every marker-like line, has "***": other lines are skipped cheaply.
+    if (!line.includes('***')) continue;
     if (line.endsWith('\r')) line = line.slice(0, -1);
     const forms = new Set([line.replace(RUST_EDGE, ''), line.trim(), line.replace(ANY_EDGE, '')]);
     let marked = false;
