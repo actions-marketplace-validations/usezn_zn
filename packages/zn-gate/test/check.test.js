@@ -161,3 +161,38 @@ test('check: a setup for one project only is reported, not run, and not counted 
   assert.equal(code, 1);
   assert.match(s, /set up only for one project/);
 });
+
+test('check: a project file that is a FIFO or a symlink is not read, and relative PATH entries are ignored', { skip: process.platform === 'win32' }, async (t) => {
+  const home = tempDir(t, 'zn-check-fifo-');
+  const proj = tempDir(t, 'zn-check-fiforepo-');
+  fs.mkdirSync(path.join(proj, '.codex'), { recursive: true });
+  require('child_process').spawnSync('mkfifo', [path.join(proj, '.codex', 'hooks.json')]);
+  fs.mkdirSync(path.join(proj, '.cursor'), { recursive: true });
+  fs.symlinkSync('/etc/hostname', path.join(proj, '.cursor', 'hooks.json'));
+  const started = Date.now();
+  const res = await check({ home, env: { HOME: home, PATH: 'relbin:' + process.env.PATH }, cwd: proj });
+  assert.ok(Date.now() - started < 10000, 'a FIFO in the project never blocks the check');
+  assert.equal(byId(res, 'codex').state, 'not-set-up');
+  assert.equal(byId(res, 'cursor').state, 'not-set-up');
+});
+
+test('check: a `zn hook` command does not find zn through a relative PATH entry', async (t) => {
+  const ctx = homeWithHooks(t, ['cursor']);
+  const file = getAdapter('cursor').hooksFile(ctx);
+  const tree = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const list of Object.values(tree.hooks)) for (const h of list) h.command = 'zn hook cursor';
+  fs.writeFileSync(file, JSON.stringify(tree));
+  const rel = path.join(ctx.cwd, 'relbin');
+  fs.mkdirSync(rel);
+  fs.writeFileSync(path.join(rel, process.platform === 'win32' ? 'zn.cmd' : 'zn'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const saved = process.cwd();
+  process.chdir(ctx.cwd);
+  try {
+    ctx.env = { HOME: ctx.home, PATH: 'relbin' };
+    const r = byId(await check(ctx), 'cursor');
+    assert.equal(r.state, 'not-protected');
+    assert.match(r.problem, /no `zn` on your PATH/);
+  } finally {
+    process.chdir(saved);
+  }
+});
