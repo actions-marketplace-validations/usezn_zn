@@ -129,7 +129,8 @@ USAGE:
   zn-gate <command> [options]
 
 COMMANDS:
-  init                Find and wrap MCP servers in known agent configs (Claude, Cursor, Codex, OpenCode...)
+  init                Set up zn for the coding agents on this machine, one step at a time, then check it
+  init --wrap-mcp     Find and wrap the MCP servers in known agent configs (Claude, Cursor, Codex, OpenCode...)
   shield, mcp-shield  Wrap and protect ANY external MCP server (uvx, npx, node, python)
   scan <path>         Recursively audit prompt templates, markdown, skills, and configs for injection traps
                       [--format text|json|github] (matched values are never printed)
@@ -199,7 +200,7 @@ TEAM (zn Team: organization policy and audit upload; needs the vault unlocked):
   team sync           Download the policy and upload the audit log now
   team leave          Disconnect this machine (confirmed outside the agent)
 
-INIT OPTIONS:
+INIT --wrap-mcp OPTIONS (each one also selects --wrap-mcp):
   --dry-run           Scan environments and preview changes without modifying configs
   --shadow            Wrap servers in non-blocking shadow mode (alerts logged without drops)
   --revert            Restore pre-zn backups for all detected configurations
@@ -214,8 +215,11 @@ EVIDENCE OPTIONS:
   --tail <number>     Display the last N security records (default: 20)
 
 EXAMPLES:
-  # Wrap the MCP servers found in your agent configs (backups are written first)
+  # Set up zn for your coding agents, then see it block a test secret
   npx -y zn-gate init
+
+  # Wrap the MCP servers found in your agent configs (backups are written first)
+  npx -y zn-gate init --wrap-mcp
 
   # Audit prompt templates / agent skills for hidden injection traps
   npx -y zn-gate scan ./prompts
@@ -664,6 +668,13 @@ async function main() {
   if (command === 'unlock' || command === 'lock' || command === 'vault') {
     const { runVaultCommand } = require('../lib/vault/cli');
     process.exit(await runVaultCommand(args));
+  }
+
+  if (command === 'init' && !(args.includes('--wrap-mcp') || options.dryRun || options.revert || options.shadow)) {
+    // Guided setup: one route per agent, run only by a person in a terminal, then zn-gate check.
+    process.env.ZN_STATS = 'off';
+    process.exitCode = await require('../lib/init-guide').guide({});
+    return;
   }
 
   if (command === 'init') {

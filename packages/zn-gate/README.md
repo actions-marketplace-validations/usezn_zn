@@ -40,6 +40,8 @@ zn hooks install codex           # or: cursor, opencode
 
 In Codex, approve the new hooks with `/hooks`. In Cursor, shell output and file contents are not scrubbed. What each agent supports: [docs/compat.md](https://github.com/usezn/zn/blob/main/docs/compat.md).
 
+**Not sure what to run?** `npx -y zn-gate init` finds Claude Code, Codex CLI, Cursor and OpenCode on your machine, shows the route above for each one that is not protected yet, runs each step after you confirm it (in your own terminal; an AI agent only gets the list), and ends with `zn-gate check`.
+
 **Other editors** (VS Code, Antigravity, Windsurf, Cline, Zed, JetBrains, Continue): zn-gate works there as an MCP server only. Setup for each one: [usezn.com/docs/integrations/editors](https://usezn.com/docs/integrations/editors/).
 
 **Then keep your `.env` values in the vault.** With the plugin or the hooks, the agent cannot read `.env` files with real values; move them into zn-gate's encrypted vault, and the file keeps markers such as `__ZN_STRIPE_KEY__`:
@@ -77,7 +79,7 @@ Cursor (`~/.cursor/mcp.json`) and other editors: `{ "mcpServers": { "zn-gate": {
 
 ```bash
 npx -y zn-gate init --dry-run   # preview, changes nothing
-npx -y zn-gate init             # wrap (a .bak.<timestamp> copy is written first)
+npx -y zn-gate init --wrap-mcp  # wrap (a .bak.<timestamp> copy is written first)
 npx -y zn-gate init --shadow    # log detections without blocking
 npx -y zn-gate init --revert    # restore the latest backup
 ```
