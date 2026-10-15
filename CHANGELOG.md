@@ -12,15 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `zn hooks install claude-code` and `zn-gate status` warn when Claude Code settings stop zn from running: an organization policy that turns off all hooks (`disableAllHooks`), runs only its own hooks (`allowManagedHooksOnly`), or does not allow the `secrets` MCP server (`managed-mcp.json`, `allowManagedMcpServersOnly`, `allowedMcpServers`, `deniedMcpServers`), or `disableAllHooks` in your own settings. Claude Code does not show these. Only the settings files are read, not policy sent through claude.ai, MDM or the Windows registry.
 
+### Changed
+- CI: draft pull requests skip the test, package, plugin, Rust, Windows and action jobs until they are marked ready for review, and pushes that change only documentation skip the test and plugin workflows (Markdown in the packages and plugins still runs them); the plugin checks also skip documentation-only pull requests. On release pull requests, which are opened before the plugin can be pinned, a plugin pin one step behind the release is a warning in `Public facts`; it still fails on `main` and `next`, so `main` stays red after a release merge until the plugin is pinned. The `Plugin repository` workflow ends with a warning instead of failing while the plugin repository's copy of its checks is out of date.
+- CI: pushes to `next` leave out the macOS jobs of the leak bench and the scrubber and vault tests, and run the plugin checks on macOS with Node.js 22 only; Ubuntu and Windows still run every version. The full matrix still runs on `main`, on pull requests into `main` and release branches, with the `full-ci` label and on manual runs. A new push to `next` cancels the CI runs still going for the previous one; runs on `main` always complete.
+- The hash-pinned tool lists used by the CI and release workflows (`.github/ci-test-requirements.txt`, `.github/release-requirements.txt`) now say how to regenerate them with uv when a security alert names them, since Dependabot cannot update them.
+
+## [1.8.1] - 2026-10-15
+
+**If you use the zn-gate agent hooks with Claude Code, Codex CLI, Cursor or OpenCode, update.** This release reads Codex and OpenCode patches the way those agents read them, and makes the secret scrubber and several other checks run in linear time. Update with `npm install -g zn-gate@1.8.1`; the Python package has no code changes and moves to 1.8.1 to keep the versions in step.
+
 ### Fixed
 - The vault audit log no longer slows down when the end of the file holds a long run of blank lines before a large record. Reading the last record used a regular expression that took seconds in that case, on every new audit record.
 - File names in a Codex or OpenCode patch (`apply_patch`), values in `.env`, `.npmrc` and `.znrules` files, and a few `zn audit` checks are now read in linear time. Long runs of blank lines, spaces, `*` or `=` used to make them take seconds. `SCRUB_RULES_VERSION` is now `2026-10-15.2` and `AUDIT_RULES_VERSION` `2026-10-15.1`.
 - File names in a Codex or OpenCode patch (`apply_patch`) are read the way each agent reads them: lines split only at line feeds, and names in every form Codex or OpenCode could use. A patch with a name zn cannot read safely, or with a line that looks like a file marker but is not one, is blocked.
 
 ### Changed
-- CI: draft pull requests skip the test, package, plugin, Rust, Windows and action jobs until they are marked ready for review, and pushes that change only documentation skip the test and plugin workflows (Markdown in the packages and plugins still runs them); the plugin checks also skip documentation-only pull requests. On release pull requests, which are opened before the plugin can be pinned, a plugin pin one step behind the release is a warning in `Public facts`; it still fails on `main` and `next`, so `main` stays red after a release merge until the plugin is pinned. The `Plugin repository` workflow ends with a warning instead of failing while the plugin repository's copy of its checks is out of date.
-- CI: pushes to `next` leave out the macOS jobs of the leak bench and the scrubber and vault tests, and run the plugin checks on macOS with Node.js 22 only; Ubuntu and Windows still run every version. The full matrix still runs on `main`, on pull requests into `main` and release branches, with the `full-ci` label and on manual runs. A new push to `next` cancels the CI runs still going for the previous one; runs on `main` always complete.
-- The hash-pinned tool lists used by the CI and release workflows (`.github/ci-test-requirements.txt`, `.github/release-requirements.txt`) now say how to regenerate them with uv when a security alert names them, since Dependabot cannot update them.
 - In Codex and OpenCode, a patch (`apply_patch`) longer than 100 KB is blocked, like shell commands over 100 KB, because zn could not check it within the time the agent waits for the hook.
 
 ## [1.8.0] - 2026-10-15
@@ -402,7 +408,11 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.6.0...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.8.1...next
+[1.8.1]: https://github.com/usezn/zn/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/usezn/zn/compare/v1.7.1...v1.8.0
+[1.7.1]: https://github.com/usezn/zn/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/usezn/zn/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/usezn/zn/compare/v1.5.1...v1.6.0
 [1.6.0-beta.1]: https://github.com/usezn/zn/compare/v1.5.1...v1.6.0-beta.1
 [1.5.1]: https://github.com/usezn/zn/compare/v1.5.0...v1.5.1
