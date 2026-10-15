@@ -348,6 +348,9 @@ function makeOps(state, ctl) {
             const effs = await team.effectiveList(same, agentId, false);
             const blocked = effs.filter((e) => e && e.deny).map((e) => e.name);
             if (blocked.length) return orgDenied(blocked);
+            // A warn rule for that secret: restored with the notice, as for a named marker.
+            const warned = effs.find((e) => e && e.warn === true);
+            if (warned) org = { warn: true, warnReason: warned.warnReason, warnName: warned.name };
           }
         }
       } else {
@@ -363,7 +366,7 @@ function makeOps(state, ctl) {
         if (s) { value = s.value; s.lastUsed = new Date().toISOString(); state.dirtySecrets = true; }
       }
       await writeAudit({ secret: inner, mode: 'resolve', agent: o.agent, tool: o.tool, decision: value === null ? 'deny' : 'allow', reason: value === null ? 'not_found' : (o.destination || 'unspecified') });
-      // withPolicy: {value, policy, deny?, warn?, warnReason?} instead of the bare value.
+      // withPolicy: {value, policy, deny?, warn?, warnReason?, warnName?} instead of the bare value.
       return o.withPolicy === true ? Object.assign({ value, policy: RESOLVE_POLICY_VERSION }, value === null ? null : org) : value;
     },
 

@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-15.14';
+const POLICY_RULES_VERSION = '2026-10-15.15';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -820,18 +820,26 @@ function hasNetworkSignals(cmd) {
 }
 
 // The program is zn, zn-gate (also with a version: npx -y zn-gate@1.6.0, pnpm dlx zn-gate@latest) or the bin file.
-const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall)|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
+const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall)|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
 
 function adminCommand(cmd) {
   const m = ZN_ADMIN_RE.exec(String(cmd || ''));
   return m ? m[4].replace(/\s+/g, ' ') : null;
 }
 
+// Shell, PowerShell and Monitor commands longer than this are refused before
+// any parsing, like the 1 MB limit for MCP calls: checking them could take
+// longer than the agent waits for the hook, and a hook that times out lets the
+// command run unchecked.
+const SHELL_SCAN_CAP = 100 * 1024; // characters
+const TOO_LONG_MESSAGE = 'zn: this command is too long for zn to check (over 100 KB), so it was blocked. Next step: tell the user; do not resend it in parts.';
+
 /**
  * Bash commands that read credential files or touch ~/.zn.
  * Returns null or a deny message.
  */
 function bashDenial(cmd, opts = {}) {
+  if (String(cmd || '').length > SHELL_SCAN_CAP) return TOO_LONG_MESSAGE;
   const admin = adminCommand(cmd);
   if (admin) {
     if (/pins/i.test(admin)) {
@@ -905,4 +913,5 @@ module.exports = {
   hasNetworkSignals,
   adminCommand,
   bashDenial,
+  SHELL_SCAN_CAP,
 };
