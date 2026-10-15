@@ -203,7 +203,10 @@ async function checkAgent(spec, ctx) {
       if (cmd.missing) {
         res.problem = 'its hook cannot start: ' + (fs.existsSync(cmd.node) ? 'its zn-gate files (' + cmd.runner + ')' : 'its Node.js (' + cmd.node + ')') + ' is no longer there';
       } else if (cmd.onPath) {
-        const zn = require('./exe').whichSync(process.platform === 'win32' ? 'zn.cmd' : 'zn', (ctx.env || process.env).PATH);
+        // Only absolute PATH entries: a relative one (node_modules/.bin, .) depends on the folder check runs from.
+        const absPath = String((ctx.env || process.env).PATH || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d)).join(path.delimiter);
+        const found = require('./exe').whichSync(process.platform === 'win32' ? 'zn.cmd' : 'zn', absPath);
+        const zn = found ? path.resolve(found) : null;
         if (!zn) res.problem = 'its hook runs `zn`, and there is no `zn` on your PATH; install zn-gate with `npm i -g zn-gate`';
         else if (process.platform !== 'win32') live = { file: zn, args: ['hook', spec.id], env: {} };
         else res.notes.push('the installed hook runs `zn` from your PATH; zn\'s rules were checked directly');
@@ -220,7 +223,9 @@ async function checkAgent(spec, ctx) {
 
   if (!installed) {
     const proj = spec.project(ctx.cwd);
-    if (path.resolve(proj) !== path.resolve(userFile) && fs.existsSync(proj) && /zn|runner\.js/.test(fs.readFileSync(proj, 'utf8'))) {
+    // The project folder can be anyone's repository: read only a regular file, and only so much of it.
+    const text = path.resolve(proj) !== path.resolve(userFile) ? require('./audit')._internal.readBounded(proj, 256 * 1024, false).text : null;
+    if (text && /zn|runner\.js/.test(text)) {
       res.state = 'project-only';
       res.where = proj;
     }
