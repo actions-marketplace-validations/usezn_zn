@@ -9,6 +9,7 @@ import argparse
 import bisect
 import json
 import os
+import stat
 import re
 import sys
 import time
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .rules import RULES_VERSION, SECRET_PATTERNS, evaluate, redact_secrets
+from .rules import RULES_VERSION, SECRET_PATTERNS, evaluate, mask_token_runs, redact_secrets
 from .client import analyze, is_cloud_enabled, resolve_endpoint
 from .evidence import log_evidence, verify_evidence_ledger, get_evidence_stats, export_evidence_ledger, EVIDENCE_FILE
 
@@ -88,6 +89,7 @@ def cmd_test(args: argparse.Namespace) -> int:
     t0 = time.perf_counter()
     assessment = evaluate(text)
     clean_text, findings = redact_secrets(text)
+    clean_text = mask_token_runs(clean_text)
     latency_us = (time.perf_counter() - t0) * 1_000_000
 
     if args.json:
@@ -141,6 +143,34 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         print(f"Verdict: {res.get('verdict')} | Engine: {res.get('engine')} | Latency: {elapsed_ms:.2f}ms")
 
     return 2 if res.get("verdict") == "block" else 0
+
+
+def _skip_reason(file_path: Path) -> Optional[str]:
+    """Why a file that matches the scan is not read, or None."""
+    try:
+        st = os.lstat(file_path)
+        if not stat.S_ISREG(st.st_mode):
+            return "not a regular file"
+        if st.st_size >= _MAX_SCAN_BYTES:
+            return "2 MiB or larger"
+        with open(file_path, "rb") as f:
+            head = f.read(_BINARY_SNIFF)
+        if file_path.suffix.lower() == ".key" and b"\0" in head:
+            return "binary .key file, not a key"
+    except OSError:
+        return "cannot be read"
+    return None
+
+
+def _gh_property(value: str) -> str:
+    """A value for a GitHub workflow command property (file=, title=)."""
+    return (str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            .replace(":", "%3A").replace(",", "%2C"))
+
+
+def _gh_message(value: str) -> str:
+    """The message of a GitHub workflow command: one line, no command of its own."""
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
@@ -202,7 +232,7 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
         # Snippets are printed to the terminal and, with --format github, to CI
         # logs: always show the line with any detected secret redacted.
         redacted, findings = redact_secrets(line)
-        snippet = "[REDACTED_PRIVATE_KEY]" if i in key_lines else redacted.strip()[:100]
+        snippet = "[REDACTED_PRIVATE_KEY]" if i in key_lines else mask_token_runs(redacted.strip())[:100]
         # A scan reports every match, including the rules that only warn by default.
         res = evaluate(line, strict=True)
         if not res.allowed:
@@ -275,22 +305,41 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     files_to_scan.append(p)
 
     all_violations: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, str]] = []
+    scanned = 0
     for fp in files_to_scan:
+        reason = _skip_reason(fp)
+        if reason:
+            skipped.append({"file": str(fp), "reason": reason})
+            continue
+        scanned += 1
         all_violations.extend(_scan_file(fp))
 
     fmt = getattr(args, "format", "text")
     if fmt == "github":
+        # CI logs are public: rule, reason and location only, never the snippet.
         for v in all_violations:
-            print(f"::error file={v['file']},line={v['line']},title=Security Threat ({v['rule']})::{v['reason']} in: {v['content']}")
-        print(f"\n[zn-gate] Scanned {len(files_to_scan)} files. Found {len(all_violations)} security threats.")
+            title = _gh_property("Security Threat (" + str(v["rule"]) + ")")
+            print(f"::error file={_gh_property(v['file'])},line={int(v['line'])},title={title}::{_gh_message(v['reason'])}")
+        for s in skipped:
+            print(f"::notice file={_gh_property(s['file'])},title=Not scanned::{_gh_message(s['reason'])}")
+        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {len(all_violations)} security threats.")
     elif fmt == "json":
         print(json.dumps({
-            "total_files": len(files_to_scan),
+            "total_files": scanned,
+            "total_skipped": len(skipped),
             "total_threats": len(all_violations),
-            "threats": all_violations
+            "threats": all_violations,
+            "skipped": skipped,
         }, indent=2))
     else:
-        print(f"\n{_icon(SHIELD)} zn-gate Security Scanner — Scanned {len(files_to_scan)} files")
+        print(f"\n{_icon(SHIELD)} zn-gate Security Scanner — Scanned {scanned} files")
+        if skipped:
+            print(f"Not scanned ({len(skipped)}):")
+            for s in skipped[:20]:
+                print(f"  {s['file']} ({s['reason']})")
+            if len(skipped) > 20:
+                print(f"  ... and {len(skipped) - 20} more")
         if not all_violations:
             print(f"{_icon(CHECK)} All scanned prompts, tool definitions, and files are clean!\n")
             return 0
@@ -348,6 +397,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stats(args) -> int:
+    from . import stats as _stats
+    if not (isinstance(args.days, int) and 1 <= args.days <= _stats.KEEP_DAYS):
+        sys.stderr.write("zn-gate stats: --days must be between 1 and {}\n".format(_stats.KEEP_DAYS))
+        return 2
+    days = args.days
+    s = _stats.summary(days=days)
+    if args.json:
+        print(json.dumps(s, indent=2))
+    else:
+        sys.stdout.write(_stats.render(s))
+    return 0
+
+
 def main() -> int:
     _configure_output_streams()
     parser = argparse.ArgumentParser(
@@ -390,6 +453,11 @@ def main() -> int:
     # status command
     subparsers.add_parser("status", help="Show engine status and configuration")
 
+    # stats command
+    st_parser = subparsers.add_parser("stats", help="What zn-gate did on this machine (local counts only)")
+    st_parser.add_argument("--days", type=int, default=30, help="Days to count (1-90, default 30)")
+    st_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
     if args.command == "test":
         return cmd_test(args)
@@ -401,6 +469,8 @@ def main() -> int:
         return cmd_evidence(args)
     elif args.command == "status":
         return cmd_status(args)
+    elif args.command == "stats":
+        return cmd_stats(args)
     else:
         parser.print_help()
         return 0

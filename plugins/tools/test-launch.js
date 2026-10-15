@@ -49,6 +49,13 @@ const SOURCES = {
     "  if (s.includes('throw')) throw new Error('runner exploded');",
     "  if (s.includes('echo-exit1')) { process.stdout.write(s); process.exit(1); }",
     "  if (s.includes('reject')) { Promise.reject(new Error('stray rejection')); await new Promise((r) => setTimeout(r, 50)); }",
+    "  if (s.includes('escape')) { const o = await import('outside-dep'); process.stdout.write('LOADED ' + o.name); return; }",
+    "  if (s.includes('dataurl')) { await import('data:text/javascript,export const x = 1'); process.stdout.write('LOADED data'); return; }",
+    "  if (s.includes('tamper')) {",
+    "    // Change the ES module on disk after the check: the verified bytes must still be the ones that run.",
+    "    require('fs').writeFileSync(require('path').join(__dirname, '..', '..', 'node_modules', 'esm-dep', 'index.js'), \"export const name = 'TAMPERED';\\n\");",
+    "    const t = await import('esm-dep'); process.stdout.write('esm-dep is ' + t.name); return;",
+    "  }",
     "  const esm = await import('esm-dep');",
     "  process.stdout.write(['ran', a[0], policy.name, dep.name, data.name, esm.name, s.trim()].join(' '));",
     '};',
@@ -56,12 +63,22 @@ const SOURCES = {
   ].join('\n'),
   'lib/hooks/policy.js': "exports.name = 'policy';\n",
   'lib/data.json': '{"name": "data"}\n',
-  'lib/broker/mcp.js': "exports.startSecretsMcp = () => process.stdout.write('mcp');\n",
-  'lib/mcp.js': "exports.startMcpServer = (o) => process.stdout.write(['zn-gate-mcp', process.env.ZN_LOCAL_ONLY, o && o.localOnly].join(' '));\n",
+  'lib/broker/mcp.js': [
+    'exports.startSecretsMcp = async () => {',
+    "  if (!process.env.ZN_TEST_IMPORT) return process.stdout.write('mcp');",
+    "  try { const m = await import(process.env.ZN_TEST_IMPORT); process.stdout.write('LOADED ' + m.name); }",
+    "  catch (err) { process.stdout.write('REFUSED ' + err.message); }",
+    '};',
+    '',
+  ].join('\n'),
+  'lib/mcp.js': "exports.startMcpServer = (o) => process.stdout.write(['zn-gate-mcp', process.env.ZN_LOCAL_ONLY, o && o.localOnly, process.env.ZN_CLOUD || '-', process.env.ZN_API_KEY || '-', process.env.ZN_API_URL || '-', process.env.ZN_PLUGIN_API_KEY || '-'].join(' '));\n",
   'node_modules/dep/package.json': '{"name": "dep", "main": "main.js"}\n',
   'node_modules/dep/main.js': "exports.name = 'dep';\n",
   'node_modules/esm-dep/package.json': '{"name": "esm-dep", "type": "module", "exports": "./index.js"}\n',
   'node_modules/esm-dep/index.js': "export const name = 'esm';\n",
+  // A CommonJS package that requires a package outside zn-gate (planted by a test).
+  'node_modules/cjs-dep/package.json': '{"name": "cjs-dep", "main": "index.js"}\n',
+  'node_modules/cjs-dep/index.js': "exports.name = require('outside-cjs').name;\n",
 };
 
 function installPackage() {
@@ -327,10 +344,164 @@ try {
     assert.match(r.stdout, /^ran codex/);
   });
 
-  test('zn-gate-mcp starts the MCP server with local rules only', () => {
-    const r = run(['zn-gate-mcp'], undefined, { env: { ZN_CLOUD: '1', ZN_API_KEY: 'zn_test_key', ZN_LOCAL_ONLY: 'false' } });
+  test('zn-gate-mcp ignores ZN_CLOUD and ZN_API_KEY from the environment: local rules only', () => {
+    const r = run(['zn-gate-mcp'], undefined, { env: { ZN_CLOUD: '1', ZN_API_KEY: 'zn_fakekeyfakekeyfake1', ZN_LOCAL_ONLY: 'false' } });
     assert.strictEqual(r.status, 0, r.stderr);
-    assert.strictEqual(r.stdout, 'zn-gate-mcp true true');
+    assert.strictEqual(r.stdout, 'zn-gate-mcp true true - - - -');
+  });
+
+  test('zn-gate-mcp stays local when the plugin key option is empty or not expanded', () => {
+    for (const v of ['', '   ', '${user_config.api_key}', 'short']) {
+      const r = run(['zn-gate-mcp'], undefined, { env: { ZN_PLUGIN_API_KEY: v } });
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.strictEqual(r.stdout, 'zn-gate-mcp true true - - - -', JSON.stringify(v));
+    }
+  });
+
+  test('zn-gate-mcp uses the plugin key option for the cloud, on the default endpoint only', () => {
+    const r = run(['zn-gate-mcp', 'claude-code'], undefined, { env: { ZN_PLUGIN_API_KEY: 'zn_pluginkeypluginkey1', ZN_API_KEY: 'zn_envkeyenvkeyenvkey1', ZN_API_URL: 'https://example.invalid/x', ZN_STAGE: 'dev', ZN_LOCAL_ONLY: 'true', NODE_TLS_REJECT_UNAUTHORIZED: '0' } });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout, 'zn-gate-mcp  false 1 zn_pluginkeypluginkey1 - -');
+  });
+
+  test('zn-gate-mcp ignores ZN_PLUGIN_API_KEY unless started for Claude Code', () => {
+    for (const args of [['zn-gate-mcp'], ['zn-gate-mcp', 'cursor']]) {
+      const r = run(args, undefined, { env: { ZN_PLUGIN_API_KEY: 'zn_pluginkeypluginkey1' } });
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.strictEqual(r.stdout, 'zn-gate-mcp true true - - - -', args.join(' '));
+    }
+  });
+
+  test('a bundled plugin uses only its own vendor/zn-gate copy', () => {
+    const vendor = path.join(tmp, 'plugin-test', 'vendor', 'zn-gate');
+    for (const [rel, text] of Object.entries(SOURCES)) write(path.join(vendor, ...rel.split('/')), text);
+    setLock({ package: 'zn-gate', version: '9.9.9', files, bundled: 'vendor/zn-gate' });
+    try {
+      // packageDir in ~/.zn/config.json and zn-gate on PATH are ignored.
+      setConfig({ plugin: { packageDir: path.join(tmp, 'nowhere') } });
+      const r = run(['hook', 'codex'], '{"x":3}', { path: path.join(tmp, 'empty-bin') });
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.match(r.stdout, /^ran codex/);
+      // A changed file in the bundled copy is refused, even with a good copy on PATH.
+      setConfig({});
+      fs.appendFileSync(path.join(vendor, 'lib', 'hooks', 'policy.js'), '// changed\n');
+      const changed = run(['hook', 'codex'], '{}');
+      refused(changed, /was changed/);
+      assert.doesNotMatch(changed.stderr, /npm/);
+      assert.match(changed.stderr, /Reinstall the zn-gate plugin/);
+      // A missing bundled copy is refused with the same hint.
+      fs.rmSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true, force: true });
+      refused(run(['hook', 'codex'], '{}'), /vendor\/zn-gate\) is missing\. Reinstall the zn-gate plugin/);
+      // No fallback to another copy: a good copy in the plugin's node_modules and in packageDir is not used.
+      const own = path.join(tmp, 'plugin-test', 'node_modules', 'zn-gate');
+      for (const [rel, text] of Object.entries(SOURCES)) write(path.join(own, ...rel.split('/')), text);
+      setConfig({ plugin: { packageDir: pkgDir } });
+      refused(run(['hook', 'codex'], '{}'), /is missing/);
+      fs.rmSync(path.join(tmp, 'plugin-test', 'node_modules'), { recursive: true, force: true });
+      setConfig({});
+      // A bundled folder that is a link (a junction on Windows) is refused.
+      fs.mkdirSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true });
+      fs.symlinkSync(pkgDir, vendor, WIN ? 'junction' : 'dir');
+      refused(run(['hook', 'codex'], '{}'), /vendor\/zn-gate folder is a symbolic link/);
+      fs.rmSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true, force: true });
+      // A folder without zn-gate's package.json is refused with the plugin hint.
+      fs.mkdirSync(vendor, { recursive: true });
+      refused(run(['hook', 'codex'], '{}'), /does not hold zn-gate\. Reinstall the zn-gate plugin/);
+    } finally {
+      fs.rmSync(path.join(tmp, 'plugin-test', 'vendor'), { recursive: true, force: true });
+      setConfig({});
+      setLock({ package: 'zn-gate', version: '9.9.9', files });
+    }
+  });
+
+  test('a lock file with another bundled path is invalid', () => {
+    try {
+      for (const bundled of ['node_modules/zn-gate', 'vendor\\zn-gate', './vendor/zn-gate', null]) {
+        setLock({ package: 'zn-gate', version: '9.9.9', files, bundled });
+        refused(run(['hook', 'codex'], '{}'), /lock file/);
+        const mcp = run(['secrets-mcp']);
+        assert.strictEqual(mcp.status, 1, mcp.stdout);
+        assert.match(mcp.stderr, /lock file/);
+      }
+    } finally {
+      setLock({ package: 'zn-gate', version: '9.9.9', files });
+    }
+  });
+
+  test('an ES module outside the verified package is never loaded', () => {
+    // A package next to zn-gate in node_modules: Node would find it by walking up from the package.
+    const outside = path.join(path.dirname(pkgDir), 'outside-dep');
+    write(path.join(outside, 'package.json'), '{"name": "outside-dep", "type": "module", "exports": "./index.js"}\n');
+    write(path.join(outside, 'index.js'), "export const name = 'outside';\n");
+    try {
+      const r = run(['hook', 'codex'], '{"escape":1}');
+      if (typeof require('module').registerHooks === 'function') {
+        refused(r, /refusing to load .*outside-dep.*not one of the verified zn-gate files/);
+        assert.doesNotMatch(r.stdout, /LOADED/);
+        // The verified ES module of the package still loads.
+        const ok = run(['hook', 'codex'], '{"x":4}');
+        assert.strictEqual(ok.status, 0, ok.stderr);
+        assert.match(ok.stdout, / esm \{"x":4\}$/);
+      } else {
+        // Node.js before 22.15: hooks rely on the release build's import check.
+        process.stdout.write('# skip: module.registerHooks is not available on ' + process.version + '\n');
+      }
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('modules Node loads stay inside the verified files, in both guard modes', () => {
+    const nm = path.dirname(pkgDir);
+    write(path.join(nm, 'outside-dep', 'package.json'), '{"name": "outside-dep", "type": "module", "exports": "./index.js"}\n');
+    write(path.join(nm, 'outside-dep', 'index.js'), "export const name = 'outside';\n");
+    write(path.join(nm, 'outside-cjs', 'package.json'), '{"name": "outside-cjs", "main": "index.js"}\n');
+    write(path.join(nm, 'outside-cjs', 'index.js'), "exports.name = 'outside-cjs';\n");
+    // Without module.registerHooks, as on Node.js before 22.15: the MCP servers use module.register.
+    const preload = path.join(tmp, 'no-register-hooks.js');
+    write(preload, "require('module').registerHooks = undefined;\n");
+    const modes = [['default', {}], ['thread', { NODE_OPTIONS: '--require ' + JSON.stringify(preload) }]];
+    try {
+      for (const [mode, env] of modes) {
+        if (mode === 'default' && typeof require('module').registerHooks !== 'function') continue;
+        for (const name of ['outside-dep', 'cjs-dep']) {
+          const r = run(['secrets-mcp'], undefined, { env: { ...env, ZN_TEST_IMPORT: name } });
+          assert.strictEqual(r.status, 0, r.stderr);
+          assert.match(r.stdout, /^REFUSED zn plugin: refusing to load .*outside-(dep|cjs).*not one of the verified zn-gate files/, mode + ' ' + name);
+        }
+        const ok = run(['secrets-mcp'], undefined, { env: { ...env, ZN_TEST_IMPORT: 'esm-dep' } });
+        assert.strictEqual(ok.stdout, 'LOADED esm', mode);
+      }
+    } finally {
+      for (const d of ['outside-dep', 'outside-cjs']) fs.rmSync(path.join(nm, d), { recursive: true, force: true });
+    }
+  });
+
+  test('a module changed after the check runs as checked; data: URLs are refused', () => {
+    if (typeof require('module').registerHooks !== 'function') {
+      process.stdout.write('# skip: module.registerHooks is not available on ' + process.version + '\n');
+      return;
+    }
+    try {
+      const r = run(['hook', 'codex'], '{"tamper":1}');
+      assert.strictEqual(r.status, 0, r.stderr);
+      assert.strictEqual(r.stdout, 'esm-dep is esm');
+      write(path.join(pkgDir, 'node_modules', 'esm-dep', 'index.js'), SOURCES['node_modules/esm-dep/index.js']);
+      refused(run(['hook', 'codex'], '{"dataurl":1}'), /refusing to load data:/);
+    } finally {
+      write(path.join(pkgDir, 'node_modules', 'esm-dep', 'index.js'), SOURCES['node_modules/esm-dep/index.js']);
+    }
+  });
+
+  test('plugin options exported to hooks never reach zn-gate', () => {
+    const code = 'require(' + JSON.stringify(LAUNCHER) + ');' +
+      'process.stdout.write(Object.keys(process.env).filter((k) => /^CLAUDE_PLUGIN_OPTION_/i.test(k)).join(",") || "none")';
+    const r = spawnSync(process.execPath, ['-e', code], {
+      encoding: 'utf8',
+      env: { PATH: binDir, HOME: home, USERPROFILE: home, SystemRoot: process.env.SystemRoot || '', CLAUDE_PLUGIN_OPTION_API_KEY: 'zn_pluginkeypluginkey1', claude_plugin_option_other: 'x' },
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout, 'none');
   });
 
   test('the copy in the plugin folder is used, and checked like any other', () => {
