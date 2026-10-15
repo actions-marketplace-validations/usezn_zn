@@ -19,11 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release tooling: `plugins/tools/pin-release.js` also moves the plugin manifests, the MCP Registry entry of the plugin and the version named in the plugin docs, in the same commit as the pin. The Plugin repository workflow reads the version from the pin and stops with a message when the plugin manifest names another version.
 
 ### Security
-- `zn-gate scan` for Node.js no longer prints matched values in any output format (the Python package already redacted them): the line shown with a finding also goes through the scrubber's secret patterns. `scan` now accepts `--format json` and `--format github` like the Python CLI (the GitHub annotations show rule, reason, file and line only). Before, Node.js ignored `--format`; an unknown format now exits with code 2.
-- Glob matching, brace expansion and path resolution in the agent hooks run in linear time, and a bracket expression in a glob never matches a path separator, as in the shell (`POLICY_RULES_VERSION` is now `2026-10-15.10`).
 - The Rust gateway's lockfile uses wasmtime 48.0.6, which fixes RUSTSEC-2026-0353, 0358, 0359, 0361, 0362, 0363 and 0364 in 48.0.5. The gateway runs WebAssembly rules through the synchronous module API, without the component model or async calls where most of these issues are. The npm and PyPI packages do not contain the Rust gateway.
 - When an event cannot be read or part of zn-gate is missing, the message the agent reads no longer says how to let actions pass unchecked (`hooks.whenUnavailable`). That setting is still documented and is shown only to you (as the hook's message to the user in Claude Code).
 - When an agent event is not valid JSON, the refusal no longer quotes the part of it that Node's parser shows, which could be tool output.
+
+## [1.7.1] - 2026-10-15
+
+**If you use the zn-gate agent hooks, update.** This release makes the hooks' glob matching and path resolution run in linear time, and `zn-gate scan` for Node.js never prints matched values.
+
+### Security
+- `zn-gate scan` for Node.js no longer prints matched values in any output format (the Python package already redacted them): the line shown with a finding also goes through the scrubber's secret patterns. `scan` now accepts `--format json` and `--format github` like the Python CLI (the GitHub annotations show rule, reason, file and line only). Before, Node.js ignored `--format`; an unknown format now exits with code 2.
+- Glob matching, brace expansion and path resolution in the agent hooks run in linear time, and a bracket expression in a glob never matches a path separator, as in the shell (`POLICY_RULES_VERSION` is now `2026-10-15.11`).
 
 ## [1.7.0] - 2026-10-15
 
