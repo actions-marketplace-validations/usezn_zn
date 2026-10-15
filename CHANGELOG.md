@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.8.1] - 2026-10-15
 
-**If you use the zn-gate agent hooks with Codex CLI, Claude Code or Cursor, update.** This release reads Codex and OpenCode patches the way those agents read them, and makes the secret scrubber and several other checks run in linear time. Update with `npm install -g zn-gate@1.8.1`; the Python package has no code changes and moves to 1.8.1 to keep the versions in step.
+**If you use the zn-gate agent hooks with Claude Code, Codex CLI, Cursor or OpenCode, update.** This release reads Codex and OpenCode patches the way those agents read them, and makes the secret scrubber and several other checks run in linear time. Update with `npm install -g zn-gate@1.8.1`; the Python package has no code changes and moves to 1.8.1 to keep the versions in step.
 
 ### Fixed
 - The vault audit log no longer slows down when the end of the file holds a long run of blank lines before a large record. Reading the last record used a regular expression that took seconds in that case, on every new audit record.
@@ -401,6 +401,10 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - Bidirectional inspection for prompt inputs and tool returns.
 
 [Unreleased]: https://github.com/usezn/zn/compare/v1.8.1...next
+[1.8.1]: https://github.com/usezn/zn/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/usezn/zn/compare/v1.7.1...v1.8.0
+[1.7.1]: https://github.com/usezn/zn/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/usezn/zn/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/usezn/zn/compare/v1.5.1...v1.6.0
 [1.6.0-beta.1]: https://github.com/usezn/zn/compare/v1.5.1...v1.6.0-beta.1
 [1.5.1]: https://github.com/usezn/zn/compare/v1.5.0...v1.5.1
