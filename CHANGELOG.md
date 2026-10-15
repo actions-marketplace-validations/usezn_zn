@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-10-15
+
+**If you use the zn-gate agent hooks with Claude Code, Codex CLI, Cursor or OpenCode, update.** This release reads Codex and OpenCode patches the way those agents read them, and makes the secret scrubber and several other checks run in linear time. Update with `npm install -g zn-gate@1.8.1`; the Python package has no code changes and moves to 1.8.1 to keep the versions in step.
+
+### Fixed
+- The vault audit log no longer slows down when the end of the file holds a long run of blank lines before a large record. Reading the last record used a regular expression that took seconds in that case, on every new audit record.
+- File names in a Codex or OpenCode patch (`apply_patch`), values in `.env`, `.npmrc` and `.znrules` files, and a few `zn audit` checks are now read in linear time. Long runs of blank lines, spaces, `*` or `=` used to make them take seconds. `SCRUB_RULES_VERSION` is now `2026-10-15.2` and `AUDIT_RULES_VERSION` `2026-10-15.1`.
+- File names in a Codex or OpenCode patch (`apply_patch`) are read the way each agent reads them: lines split only at line feeds, and names in every form Codex or OpenCode could use. A patch with a name zn cannot read safely, or with a line that looks like a file marker but is not one, is blocked.
+
+### Changed
+- In Codex and OpenCode, a patch (`apply_patch`) longer than 100 KB is blocked, like shell commands over 100 KB, because zn could not check it within the time the agent waits for the hook.
+
 ## [1.8.0] - 2026-10-15
 
 zn-gate 1.8.0 adds Warn rules for zn Team: an organization can have a secret use go ahead with a notice and an audit record instead of blocking it. Organization policy now also applies to `secrets_render_file` and to marker restores in the agent hooks. `zn-gate shield` pins the tools of the MCP servers it wraps, and block messages are written in plain words.
@@ -388,7 +400,11 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.6.0...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.8.1...next
+[1.8.1]: https://github.com/usezn/zn/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/usezn/zn/compare/v1.7.1...v1.8.0
+[1.7.1]: https://github.com/usezn/zn/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/usezn/zn/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/usezn/zn/compare/v1.5.1...v1.6.0
 [1.6.0-beta.1]: https://github.com/usezn/zn/compare/v1.5.1...v1.6.0-beta.1
 [1.5.1]: https://github.com/usezn/zn/compare/v1.5.0...v1.5.1

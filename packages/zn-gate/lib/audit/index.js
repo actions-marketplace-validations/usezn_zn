@@ -12,6 +12,7 @@
  */
 
 const fs = require('fs');
+const { LINE_BREAKS } = require('../linear-text');
 const os = require('os');
 const path = require('path');
 const { parseJsonc, parseToml } = require('./parse');
@@ -746,7 +747,7 @@ function checkWorkflow(ctx) {
   if (!triggers.length) return;
   const text = ctx.lines.filter((l) => !/^\s*#/.test(l)).join('\n');
   const prt = triggers.includes('pull_request_target');
-  const write = /permissions\s*:\s*write-all\b/.test(text) || /^\s*(?:contents|pull-requests|issues|actions|packages|id-token|deployments|statuses|checks)\s*:\s*write\b/m.test(text);
+  const write = /permissions\s*:\s*write-all\b/.test(text) || grantsWrite(text);
   const interpolated = /\$\{\{\s*github\.event\.(?:issue|comment|pull_request|review|discussion)\.(?:body|title)\b/.test(text);
   const authorFilter = /author_association|github\.actor\s*==|github\.event\.(?:comment|issue|sender)\.user\.login\s*==/.test(text);
   // Opened to any author on purpose (claude-code-action otherwise requires
@@ -1109,11 +1110,42 @@ const RISKY_KINDS = new Set(['claude-settings', 'claude-user-json', 'mcp-json', 
 const RISKY_JSON_KEY = /"(hooks|command|args|mcpServers|servers|mcp|env|apiKeyHelper|awsAuthRefresh|awsCredentialExport|otelHeadersHelper|statusLine|enableAllProjectMcpServers|enabledMcpjsonServers|enabledPlugins|extraKnownMarketplaces|permissions?|plugin|provider|runOn|allowedTools|chat\.tools\.(?:global\.)?autoApprove)"\s*:/;
 const RISKY_TOML_KEY = /^\s*(?:\[\s*(?:mcp_servers|model_providers|shell_environment_policy|profiles)\b|(?:notify|approval_policy|sandbox_mode|openai_base_url|chatgpt_base_url|command|args)\s*=)/;
 
+const WRITE_SCOPES = /contents|pull-requests|issues|actions|packages|id-token|deployments|statuses|checks/g;
+const SCOPE_TAIL = /\s*:\s*write\b/y;
+
+/**
+ * A workflow permission line like "contents: write" (was
+ * /^\s*(?:contents|...|checks)\s*:\s*write\b/m). Each scope name is checked
+ * once: only whitespace back to a line start before it, then ": write" after
+ * it. Linear, so a workflow full of blank lines cannot stall `zn audit`.
+ */
+function grantsWrite(text) {
+  WRITE_SCOPES.lastIndex = 0;
+  let m;
+  while ((m = WRITE_SCOPES.exec(text)) !== null) {
+    let i = m.index - 1;
+    let lineStart = false;
+    while (i >= 0 && /\s/.test(text[i])) {
+      if (LINE_BREAKS.has(text[i])) lineStart = true;
+      i--;
+    }
+    if (i >= 0 && !lineStart) continue;
+    SCOPE_TAIL.lastIndex = m.index + m[0].length;
+    if (SCOPE_TAIL.test(text)) return true;
+  }
+  return false;
+}
+
+/** s without a trailing '=' and the whitespace before it (was s.replace(/\s*=$/, '')). */
+function withoutTrailingEquals(s) {
+  return s.endsWith('=') ? s.slice(0, -1).trimEnd() : s;
+}
+
 function unparsable(ctx, err, what) {
   const keys = new Set();
   ctx.lines.forEach((l, i) => {
     const m = RISKY_JSON_KEY.exec(l) || RISKY_TOML_KEY.exec(l);
-    if (m) keys.add((m[1] || m[0]).trim().replace(/\s*=$/, ''));
+    if (m) keys.add(withoutTrailingEquals((m[1] || m[0]).trim()));
     checkDownloadRun(ctx, l, i + 1, 'A line of this file');
     if (ctx.rec.kind === 'vscode-tasks' && /"runOn"\s*:\s*"folderOpen"/.test(l)) {
       ctx.add('ZNA001', 'high', i + 1, 'A task runs when the folder is opened (runOn: folderOpen); the file could not be parsed to show the command.');
@@ -1291,4 +1323,4 @@ function audit(opts) {
   return { root, files: scanned, findings, truncated: Boolean(truncated) || timedOut, entries, agents: Array.from(selected) };
 }
 
-module.exports = { audit, classify, redact, AGENTS, _internal: { hookCommands, isOurHook, isOurMcp, gitIgnored, readBounded } };
+module.exports = { audit, classify, redact, AGENTS, _internal: { hookCommands, isOurHook, isOurMcp, gitIgnored, readBounded, grantsWrite, withoutTrailingEquals } };
