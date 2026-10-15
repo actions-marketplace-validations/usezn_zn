@@ -28,6 +28,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const markers = require('./markers');
+const { warnNotice, WARN_REASON } = require('../team/effective');
 const exe = require('../exe');
 const { createMasker } = require('./mask');
 const { approvalStore } = require('./approvals');
@@ -149,7 +150,7 @@ function batchInvocation(resolved, args, original) {
   const cmdExe = systemCmdExe();
   if (!cmdExe) {
     throw znError('ZN_POLICY_DENIED', path.basename(resolved) +
-      ' is a batch file and zn could not find the system cmd.exe; it was not started.');
+      ' is a batch file and zn could not find the system cmd.exe; it was not started. Next step: run a program file (.exe) instead of the batch file.');
   }
   // /d: no AutoRun commands; /v:off: no !VAR! expansion; /s /c "...": cmd.exe
   // runs the line between the outer quotes as is.
@@ -217,16 +218,16 @@ async function prepare(parsed, opts) {
     if (!m) {
       await deny(name, null, 'secret ' + name + ' is not in the vault. Add it from your own terminal: zn secret set ' + name, 'ZN_NOT_FOUND');
     }
-    if (m.deny) await deny(name, m.mode, 'secret ' + name + ' is blocked for this agent by your organization policy.', 'ZN_POLICY_DENIED');
+    if (m.deny) await deny(name, m.mode, 'secret ' + name + ' is blocked for this agent by your organization policy. Next step: do not use this secret here. If the task needs it, review the organization policy, or, if you are an agent, ask the user.', 'ZN_POLICY_DENIED');
     if (m.mode !== 'env') {
       await deny(name, m.mode, 'secret ' + name + ' is in ' + (m.mode || 'proxy') + ' mode, so zn run never puts it in a process. ' +
         'For HTTP APIs use the secrets_http_request tool of the zn "secrets" MCP server.');
     }
     const entry = markers.matchAllowCommands(m.allowCommands, parsed.command);
     if (!entry) {
-      await deny(name, m.mode, '`' + exeName + '` is not in allowCommands for ' + name + '. ' +
-        'For HTTP APIs use the secrets_http_request tool of the zn "secrets" MCP server. ' +
-        'To allow this command, run in your own terminal: zn secret allow ' + name + ' --command ' + exeName);
+      await deny(name, m.mode, '`' + exeName + '` is not allowed to use ' + name + ' yet. ' +
+        'The user can allow it from their own terminal: zn secret allow ' + name + ' --command ' + exeName + ' ' +
+        '(for HTTP APIs, the secrets_http_request tool of the zn "secrets" MCP server needs no command allowed).');
     }
     if (planted) await deny(name, m.mode, '`' + argv0 + '` ' + planted + '; zn run will not give it ' + name);
     if (!opened) await deny(name, m.mode, '`' + argv0 + '` could not be opened for checking; zn run will not give it ' + name);
@@ -256,14 +257,14 @@ async function prepare(parsed, opts) {
       await approvals.recordApproval(c.name, c.command, ctx);
     } catch (err) {
       const why = err && err.code === 'ZN_POLICY_DENIED' ? err.message : (err && err.message) || 'not approved';
-      await deny(c.name, c.mode, 'first use of ' + c.name + ' with `' + c.command + '` was not approved (' + why + ')');
+      await deny(c.name, c.mode, 'first use of ' + c.name + ' with `' + c.command + '` was not approved (' + why + '). Nothing was run or sent. Do not retry the same request; finish the task another way.');
     }
   }
 
   const values = new Map();
   for (const c of chosen) {
     const v = await vault.resolve(project, markers.markerFor(c.name));
-    if (v == null) await deny(c.name, c.mode, 'secret ' + c.name + ' has no value in the vault', 'ZN_NOT_FOUND');
+    if (v == null) await deny(c.name, c.mode, 'secret ' + c.name + ' has no value in the vault. Next step: save its value with zn secret set ' + c.name + ' in your own terminal, or, if you are an agent, ask the user to do it.', 'ZN_NOT_FOUND');
     values.set(c.name, String(v));
   }
 
@@ -290,7 +291,14 @@ async function prepare(parsed, opts) {
   const argv = parsed.command.map((a) => markers.substitute(a, values));
 
   for (const c of chosen) {
-    await audit({ secret: c.name, mode: c.mode, agent, tool: 'zn run', argv0: exeName, host: null, decision: 'allow', reason: 'allowCommands: ' + c.command });
+    // A `warn` rule of the organization policy: allowed, recorded as "warn", and said.
+    const m = meta.get(c.name);
+    if (m && m.warn === true) {
+      await audit({ secret: c.name, mode: c.mode, agent, tool: 'zn run', argv0: exeName, host: null, decision: 'warn', reason: WARN_REASON });
+      if (opts.stderr !== false) (opts.stderr || process.stderr).write(warnNotice(c.name, m.warnReason) + '\n');
+    } else {
+      await audit({ secret: c.name, mode: c.mode, agent, tool: 'zn run', argv0: exeName, host: null, decision: 'allow', reason: 'allowCommands: ' + c.command });
+    }
   }
   return { argv, env: childEnv, secrets: chosen.map((c) => ({ ...c, value: values.get(c.name) })), project, resolved: found ? found.real : null };
   }
@@ -324,7 +332,7 @@ function spawnChecked(prep, opts) {
   if (prep.secrets.length) {
     // Values are about to be handed over: start exactly the file that was
     // checked, after checking it once more.
-    if (!prep.exe || !prep.exe.opened) return Promise.reject(znError('ZN_POLICY_DENIED', 'the program was not checked; nothing was started'));
+    if (!prep.exe || !prep.exe.opened) return Promise.reject(znError('ZN_POLICY_DENIED', 'the program was not checked; nothing was started. Next step: run the command again.'));
     const why = exe.verifyOpen(prep.exe.opened, prep.exe.real, prep.exe.fp);
     if (why) {
       return Promise.reject(znError('ZN_POLICY_DENIED', '`' + prep.argv[0] + '`: ' + why + ' (' + prep.exe.real + '); it was not started. ' +
@@ -371,7 +379,7 @@ function spawnChecked(prep, opts) {
     };
     child.on('error', (err) => {
       cleanup();
-      reject(err.code === 'ENOENT' ? znError('ZN_NOT_FOUND', '`' + prep.argv[0] + '` is not installed, or it is not on your PATH') : err);
+      reject(err.code === 'ENOENT' ? znError('ZN_NOT_FOUND', '`' + prep.argv[0] + '` is not installed, or it is not on your PATH. Next step: check that the program is installed and on your PATH.') : err);
     });
     child.on('close', (code, signal) => {
       cleanup();

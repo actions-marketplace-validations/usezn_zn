@@ -19,6 +19,10 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
 | Windows | Yes, including the PowerShell tool | The hook command was run by hand from PowerShell and from cmd.exe (not in CI) | Not tested | Not tested (wrapping is written for bash) |
 | End-to-end run, 0 values sent to the provider | **Yes** | **Yes** | Not run (no CLI with hooks to drive) | **Yes** |
 
+In every agent, a shell command longer than 100 KB (counted in characters; this
+includes PowerShell and Claude Code's Monitor tool) is blocked, because zn
+could not check it within the time the agent waits for the hook.
+
 ## Why the differences
 
 - **Claude Code**: `PostToolUse` can replace the output of any tool
@@ -82,6 +86,19 @@ documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e
   - On Windows, the `zn run` wrapping is written for bash: with PowerShell as
     OpenCode's shell, a command with a marker fails instead of running (no
     value is exposed).
+
+## zn Team policy choices by zn-gate version
+
+The organization policy sets one choice per rule: Not blocked, Warn or Block
+(details in [team.md](team.md#the-three-choices-not-blocked-warn-block)).
+
+| zn-gate version | Block (`deny`) | Warn (`warn`) |
+|---|---|---|
+| 1.6.0 to 1.7.x | Yes | No. The zn service removes the `warn` field: the rule's other limits still apply, but there is no notice and no `warn` record. |
+| 1.8.0 and later | Yes | Yes |
+
+zn-gate tells the server on each policy download which policy features it
+understands, so `warn` rules are sent only to 1.8.0 and later.
 
 ## Files a `--project` install writes
 

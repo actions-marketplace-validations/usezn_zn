@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-15.11';
+const POLICY_RULES_VERSION = '2026-10-15.15';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -534,8 +534,13 @@ function readDenial(p, opts = {}) {
       znCommand('env shadow ' + path.basename(abs)) + '` in their terminal: it moves the values to the local vault and leaves __ZN_<NAME>__ markers you can read and use.';
   }
   if (c.kind === 'zn_state') return 'zn: ~/.zn is the local secret vault; agents may not read or change it.';
-  return 'zn: reading ' + c.reason + ' (' + p + ') is blocked so secret values never reach the model. ' +
-    'If a command needs it, ask the user to add the value with `' + znCommand('secret set <NAME>') + '` and use the __ZN_<NAME>__ marker.';
+  return credentialDenial(p, c);
+}
+
+/* Reads of credential files: what was refused, why, and how to use a value instead. */
+function credentialDenial(p, c) {
+  return 'zn: ' + p + ' was not read because zn treats it as holding secrets (' + c.reason + '), and secret values never go to the model. ' +
+    'If a command needs a value, ask the user to run `' + znCommand('secret set NAME') + '`, then write __ZN_NAME__ where the value goes.';
 }
 
 function agentConfigDenial(p, c) {
@@ -671,19 +676,20 @@ function wrapWithZnRun(cmd, znRunPrefix) {
   if (named.length === 0) return { ok: true, command: s, wrapped: false };
   const scan = scanFirstCommand(s);
   const tail = s.slice(scan.end);
-  const guidance = ' Put the command that uses the secret first, as a single simple command ' +
-    '(for example: psql "postgres://app:__ZN_DB_PASSWORD__@db/app" -c "select 1"), in its own Bash call.';
-  if (scan.unterminated) return { ok: false, reason: 'zn: could not parse the command (unterminated quote).' };
+  const guidance = ' zn fills in secrets only in the first command of a Bash call: run that command on its own, ' +
+    'with __ZN_NAME__ where the value goes (for example: psql "postgres://app:__ZN_DB_PASSWORD__@db/app" -c "select 1").';
+  if (scan.unterminated) return { ok: false, reason: 'zn: this command has a quote that is not closed, so zn cannot read it. Close the quote and try again.' };
   if (markers.findNamedMarkers(tail).length > 0) {
-    return { ok: false, reason: 'zn: secret markers are only supported in the first command of a Bash call.' + guidance };
+    return { ok: false, reason: 'zn: this command uses a secret after its first command.' + guidance };
   }
   if (scan.substitution) {
-    return { ok: false, reason: 'zn: secret markers cannot be combined with $( ) or backtick substitution in the same command.' + guidance };
+    return { ok: false, reason: 'zn: a secret cannot be used in a command that also has $( ) or backticks.' + guidance };
   }
   let k = 0;
   while (k < scan.words.length && ASSIGNMENT_RE.test(scan.words[k].text)) k++;
   if (k >= scan.words.length) {
-    return { ok: false, reason: 'zn: a secret marker in a plain variable assignment would only store the marker.' + guidance };
+    return { ok: false, reason: 'zn: putting a secret in a shell variable would store only its placeholder, not the value. ' +
+      'To give a program a secret as an environment variable, use `' + znCommand('run --secrets NAME -- <command>') + '`.' };
   }
   for (let j = 0; j < k; j++) {
     if (markers.findNamedMarkers(scan.words[j].text).length) {
@@ -692,7 +698,7 @@ function wrapWithZnRun(cmd, znRunPrefix) {
   }
   const first = scan.words[k];
   if (RESERVED_WORDS.has(first.text)) {
-    return { ok: false, reason: 'zn: `' + first.text + '` cannot be wrapped for secret injection.' + guidance };
+    return { ok: false, reason: 'zn: a secret cannot be used with `' + first.text + '`.' + guidance };
   }
   // Already wrapped by the agent or a previous hook: leave it alone, zn run applies policy.
   if (/(^|[\\/])(zn|zn-gate)(\.js|\.cmd)?$/.test(first.text) && scan.words[k + 1] && scan.words[k + 1].text === 'run') {
@@ -779,23 +785,22 @@ function wrapPowerShell(cmd, opts) {
   const s = String(cmd);
   const named = markers.findNamedMarkers(s);
   if (named.length === 0) return { ok: true, command: s, wrapped: false };
-  const guidance = ' In PowerShell, put the secret in a single native command with plain arguments ' +
-    "(for example: psql 'postgres://app:__ZN_DB_PASSWORD__@db/app' -c 'select 1'). " +
-    'For HTTP APIs use the secrets_http_request tool of the zn "secrets" MCP server instead of Invoke-WebRequest or curl.';
+  const guidance = ' Next step: start the command with the program name and put the secret in its arguments, for example: ' +
+    "psql 'postgres://app:__ZN_DB_PASSWORD__@db/app' -c 'select 1'. For web requests, use the secrets_http_request tool of the zn \"secrets\" MCP server instead.";
   const scan = scanPowerShell(s);
   if (!scan.simple || scan.words.length === 0) {
-    return { ok: false, reason: 'zn: this PowerShell command cannot be rewritten safely for secret injection (pipelines, variables, script blocks and expanding strings are not supported).' + guidance };
+    return { ok: false, reason: 'zn: this PowerShell command uses a pipeline, a variable or a script block, so zn cannot safely put a secret into it.' + guidance };
   }
   const first = scan.words[0].text;
   const base = path.basename(first.replace(/\\/g, '/')).toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '');
   if (/^[a-z]+-[a-z]+$/i.test(first) || PS_ALIASES.has(first.toLowerCase())) {
-    return { ok: false, reason: 'zn: `' + first + '` is a PowerShell cmdlet or alias; zn can only pass secrets to native programs.' + guidance };
+    return { ok: false, reason: 'zn: "' + first + '" is a PowerShell command, not a program, so zn cannot pass a secret to it.' + guidance };
   }
   if (/\.ps1$/i.test(first)) {
-    return { ok: false, reason: 'zn: PowerShell scripts (.ps1) cannot receive secrets through zn run.' + guidance };
+    return { ok: false, reason: 'zn: this runs a PowerShell script (.ps1), and zn cannot pass secrets into scripts.' + guidance };
   }
   if (!/^[A-Za-z0-9_.\-\\/:]+$/.test(first)) {
-    return { ok: false, reason: 'zn: could not identify the program in this command.' + guidance };
+    return { ok: false, reason: 'zn: this command does not start with a plain program name, so zn cannot tell which program to run.' + guidance };
   }
   if ((base === 'zn' || base === 'zn-gate') && scan.words[1] && scan.words[1].text === 'run') {
     return { ok: true, command: s, wrapped: false };
@@ -815,20 +820,31 @@ function hasNetworkSignals(cmd) {
 }
 
 // The program is zn, zn-gate (also with a version: npx -y zn-gate@1.6.0, pnpm dlx zn-gate@latest) or the bin file.
-const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall)|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on)\b/i;
+const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall)|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
 
 function adminCommand(cmd) {
   const m = ZN_ADMIN_RE.exec(String(cmd || ''));
   return m ? m[4].replace(/\s+/g, ' ') : null;
 }
 
+// Shell, PowerShell and Monitor commands longer than this are refused before
+// any parsing, like the 1 MB limit for MCP calls: checking them could take
+// longer than the agent waits for the hook, and a hook that times out lets the
+// command run unchecked.
+const SHELL_SCAN_CAP = 100 * 1024; // characters
+const TOO_LONG_MESSAGE = 'zn: this command is too long for zn to check (over 100 KB), so it was blocked. Next step: tell the user; do not resend it in parts.';
+
 /**
  * Bash commands that read credential files or touch ~/.zn.
  * Returns null or a deny message.
  */
 function bashDenial(cmd, opts = {}) {
+  if (String(cmd || '').length > SHELL_SCAN_CAP) return TOO_LONG_MESSAGE;
   const admin = adminCommand(cmd);
   if (admin) {
+    if (/pins/i.test(admin)) {
+      return 'zn: approving MCP tool changes (`zn-gate pins approve`) is the user\'s decision and must be run by the user in their own terminal, not by an agent. Ask the user to run it.';
+    }
     return 'zn: `zn ' + admin + '` manages secret values and must be run by the user in their own terminal, not by an agent. ' +
       'Ask the user to run it.';
   }
@@ -876,8 +892,7 @@ function bashDenial(cmd, opts = {}) {
 function denialOf(c, text, opts) {
   if (c.kind === 'zn_state') return 'zn: ~/.zn is the local secret vault; agents may not read or change it.';
   if (c.kind === 'dotenv') return readDenial(text, opts);
-  return 'zn: reading ' + c.reason + ' (' + text + ') is blocked so secret values never reach the model. ' +
-    'If a command needs it, ask the user to add the value with `' + znCommand('secret set <NAME>') + '` and use the __ZN_<NAME>__ marker.';
+  return credentialDenial(text, c);
 }
 
 module.exports = {
@@ -898,4 +913,5 @@ module.exports = {
   hasNetworkSignals,
   adminCommand,
   bashDenial,
+  SHELL_SCAN_CAP,
 };
