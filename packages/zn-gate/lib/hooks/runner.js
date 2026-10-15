@@ -349,6 +349,7 @@ function decideMonitor(ev, pathOpts, opts) {
     return { decision: 'deny', message: 'zn: a WebSocket monitor sends its data to the model without the secret check. Next step: use a monitor that runs a command instead, because zn checks the output of commands.' };
   }
   const original = String(ev.input.command || '');
+  if (original.length > policy.SHELL_SCAN_CAP) return { decision: 'deny', message: policy.bashDenial(original, pathOpts) };
   if (!original.trim()) return { decision: 'allow' };
   const deny = policy.bashDenial(original, pathOpts);
   if (deny) return { decision: 'deny', message: deny };
@@ -416,7 +417,7 @@ function mcpServerLabel(server) {
 async function decideMcp(ev, d, agentId) {
   const text = mcpArgumentText(ev.input.args);
   if (text === null) {
-    return { decision: 'deny', message: 'zn: this MCP call is too large for zn to check (its arguments are over 1 MB). Next step: send less text in one call, for example by splitting it into several smaller calls.' };
+    return { decision: 'deny', message: 'zn: this MCP call is too large for zn to check (its arguments are over 1 MB). Next step: tell the user; do not resend this content in parts.' };
   }
   if (!text) return { decision: 'allow' }; // nothing to check, so the vault is not loaded
   const server = ev.mcp && ev.mcp.server ? String(ev.mcp.server) : '';
