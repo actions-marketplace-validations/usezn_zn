@@ -43,6 +43,11 @@ jobs:
           version: "29.3"
           repo-token: ${{ github.token }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Each Rust cache is 1.5 to 3 GB, so only main saves one. next and pull requests
+          # restore the cache of main (same key prefix) and save nothing, which keeps the
+          # repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
