@@ -22,6 +22,12 @@ const path = require('path');
 const dotenv = require('../broker/dotenv');
 const markers = require('../broker/markers');
 const { realTargetOf } = require('../broker/files');
+const { powershellQuote, portablePath } = require('../shell-quote');
+const { znCommand } = require('../zn-command');
+
+// Version of the policy rules (credential paths, zn home, secret commands,
+// command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
+const POLICY_RULES_VERSION = '2026-10-15.13';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -230,7 +236,8 @@ function classifyPath(p, opts = {}) {
 /* ---------------------------- globs, braces ---------------------------- */
 
 const GLOB_RE = /[*?[\]{}]/;
-const BRACE_RE = /\{([^{}]*,[^{}]*)\}/;
+// The first comma is matched by [^{},]*, so the pattern has one way to match and cannot backtrack.
+const BRACE_RE = /\{([^{},]*,[^{}]*)\}/;
 
 /** Alternatives of a word with brace lists (`a{b,c}` -> ab, ac); null when there are too many. */
 function expandBraces(s, limit = 64) {
@@ -248,20 +255,161 @@ function expandBraces(s, limit = 64) {
   return out;
 }
 
-/** Shell glob to a regular expression over a whole path (* and ? stop at a separator). */
+// POSIX character classes inside a bracket expression ("[[:alpha:]]").
+const GLOB_POSIX_CLASSES = {
+  alpha: [['a', 'z'], ['A', 'Z']],
+  digit: [['0', '9']],
+  alnum: [['a', 'z'], ['A', 'Z'], ['0', '9']],
+  lower: [['a', 'z']],
+  upper: [['A', 'Z']],
+  xdigit: [['0', '9'], ['a', 'f'], ['A', 'F']],
+  space: [[' ', ' '], ['\t', '\r']],
+  blank: [[' ', ' '], ['\t', '\t']],
+  punct: [['!', '/'], [':', '@'], ['[', '`'], ['{', '~']],
+};
+
+/**
+ * Index of the "]" that closes the bracket expression opened at `open`, read
+ * as the shell reads it: after an optional "!" or "^", a "]" is a member, and
+ * "[:name:]" is one item. Returns -1 when the expression is not closed (the
+ * "[" is then a literal character).
+ */
+function globClassEnd(pattern, open, ends = globClassEnds(pattern)) {
+  let k = open + 1;
+  if (pattern[k] === '!' || pattern[k] === '^') k++;
+  if (pattern[k] === ']') k++;
+  return k < pattern.length ? ends[k] : -1;
+}
+
+/*
+ * For every position k, where the scan of globClassEnd that reaches k stops:
+ * the index of the closing "]", or -1. Computed once per pattern from right to
+ * left, so a pattern with many "[" or "[:" costs one pass, not one per "[".
+ */
+function globClassEnds(pattern) {
+  const n = pattern.length;
+  const nextColonClose = new Int32Array(n + 2).fill(-1);
+  for (let i = n - 2; i >= 0; i--) {
+    nextColonClose[i] = pattern[i] === ':' && pattern[i + 1] === ']' ? i : nextColonClose[i + 1];
+  }
+  const ends = new Int32Array(n + 1).fill(-1);
+  for (let k = n - 1; k >= 0; k--) {
+    const colon = pattern[k] === '[' && pattern[k + 1] === ':' ? nextColonClose[k + 2] : -1;
+    if (colon !== -1) ends[k] = colon + 2 <= n ? ends[colon + 2] : -1;
+    else ends[k] = pattern[k] === ']' ? k : ends[k + 1];
+  }
+  return ends;
+}
+
+/**
+ * A glob bracket expression ("[abc]", "[a-z]", "[!.]", "[]x]", "[[:alpha:]]")
+ * as a regular expression that always compiles. Every character is written as
+ * a \uXXXX escape (so "\", "]" and "^" are literal); a range written backwards
+ * matches nothing, as in the shell; a negated class never matches "/"; an
+ * unknown "[:name:]" class matches any character but "/" (matching more is the
+ * safe side for a policy check). Characters outside the BMP are read as two
+ * UTF-16 units, as before; no protected path name uses them.
+ */
+function globClassSource(body) {
+  const esc = (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+  let neg = false;
+  if (body[0] === '!' || body[0] === '^') { neg = true; body = body.slice(1); }
+  let out = '';
+  let any = false;
+  // A "[:" with no ":]" after it is literal: look for ":]" only when one is left.
+  const lastColonClose = body.lastIndexOf(':]');
+  for (let k = 0; k < body.length; k++) {
+    if (body.startsWith('[:', k) && k + 2 <= lastColonClose) {
+      const end = body.indexOf(':]', k + 2);
+      if (end !== -1) {
+        const ranges = GLOB_POSIX_CLASSES[body.slice(k + 2, end)];
+        if (ranges) for (const [a, b] of ranges) out += a === b ? esc(a) : esc(a) + '-' + esc(b);
+        else any = true;
+        k = end + 1;
+        continue;
+      }
+    }
+    if (body[k + 1] === '-' && k + 2 < body.length) {
+      if (body[k] <= body[k + 2]) out += esc(body[k]) + '-' + esc(body[k + 2]);
+      k += 2;
+    } else out += esc(body[k]);
+  }
+  if (any) return '[^/]';
+  if (neg) return '[^/' + out + ']';
+  return out ? '[' + out + ']' : '(?!)';
+}
+
+const GLOB_STAR = Symbol('*');
+const GLOB_ONE = Symbol('?');
+
+/** One pattern token against one character: a literal, "?", or a bracket expression. */
+function globOne(tok, ch) {
+  if (tok === GLOB_ONE) return ch !== '/';
+  if (typeof tok === 'string') return tok === ch;
+  return tok.test(ch);
+}
+
+/*
+ * Wildcard match of one path segment (no "/" in it) in O(pattern x text) time:
+ * on a mismatch the last "*" takes one more character, so no input can make it
+ * backtrack exponentially, whatever the number of "*".
+ */
+function globSegment(toks, s) {
+  let p = 0;
+  let t = 0;
+  let star = -1;
+  let mark = 0;
+  while (t < s.length) {
+    if (p < toks.length && toks[p] === GLOB_STAR) {
+      star = p++;
+      mark = t;
+    } else if (p < toks.length && globOne(toks[p], s[t])) {
+      p++;
+      t++;
+    } else if (star !== -1) {
+      p = star + 1;
+      t = ++mark;
+    } else return false;
+  }
+  while (p < toks.length && toks[p] === GLOB_STAR) p++;
+  return p === toks.length;
+}
+
+/**
+ * Shell glob matcher over a whole path: "*", "?" and bracket expressions stop
+ * at a separator, so the pattern and the path are matched segment by segment.
+ * Returns an object with test(path), like a regular expression. A bracket
+ * expression is a one-character regular expression (globClassSource), which
+ * cannot backtrack.
+ */
 function globRegExp(pattern) {
-  let re = '';
+  const segs = [[]];
+  const ends = pattern.includes('[') ? globClassEnds(pattern) : null;
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i];
-    if (c === '*') re += '[^/]*';
-    else if (c === '?') re += '[^/]';
-    else if (c === '[' && pattern.indexOf(']', i + 1) > i) {
-      const j = pattern.indexOf(']', i + 1);
-      re += '[' + pattern.slice(i + 1, j).replace(/^!/, '^') + ']';
-      i = j;
-    } else re += c.replace(/[.+^${}()|\\[\]]/g, '\\$&');
+    const end = c === '[' ? globClassEnd(pattern, i, ends) : -1;
+    const cur = segs[segs.length - 1];
+    if (c === '/') segs.push([]);
+    else if (c === '*') { if (cur[cur.length - 1] !== GLOB_STAR) cur.push(GLOB_STAR); }
+    else if (c === '?') cur.push(GLOB_ONE);
+    else if (end !== -1) {
+      cur.push(new RegExp('^' + globClassSource(pattern.slice(i + 1, end)) + '$'));
+      i = end;
+    } else cur.push(c);
   }
-  return new RegExp('^' + re + '$');
+  // A name has at most 255 characters (NAME_MAX), so a segment that needs more
+  // characters than that, not counting "*", cannot name any file.
+  const impossible = segs.some((seg) => seg.filter((t) => t !== GLOB_STAR).length > 255);
+  return {
+    impossible,
+    test(s) {
+      if (impossible) return false;
+      const parts = String(s).split('/');
+      if (parts.length !== segs.length) return false;
+      for (let k = 0; k < parts.length; k++) if (!globSegment(segs[k], parts[k])) return false;
+      return true;
+    },
+  };
 }
 
 // Representative paths a glob could name: a glob that matches one of them
@@ -280,11 +428,24 @@ const PROJECT_EXAMPLES = ['.env', '.env.local', '.claude/settings.json', 'openco
  * A word with glob or brace characters that could name a protected path.
  * Returns the classification of the path it matches, or null.
  */
+// Most "[" a glob word may have: each one is read up to its "]", so more than
+// this is refused as too broad to check instead of being read.
+const GLOB_BRACKETS_MAX = 1000;
+// Most characters times brace alternatives a glob word may need to check.
+const GLOB_WORK_MAX = 2000000;
+
 function globClass(word, opts = {}) {
   if (!GLOB_RE.test(word)) return null;
+  let brackets = 0;
+  for (let k = word.indexOf('['); k !== -1; k = word.indexOf('[', k + 1)) {
+    if (++brackets > GLOB_BRACKETS_MAX) return { kind: 'credential', reason: 'a pattern too broad to check' };
+  }
   const ctx = contextOf(opts);
   const alts = expandBraces(word);
   if (alts === null) return { kind: 'credential', reason: 'a brace pattern too broad to check' };
+  // Each alternative is resolved and matched in full: past this much work the
+  // pattern is refused as too broad instead of being checked.
+  if (alts.length * word.length > GLOB_WORK_MAX) return { kind: 'credential', reason: 'a pattern too broad to check' };
   const examples = [...GLOB_EXAMPLES.map((e) => path.join(ctx.home, e)), ...PROJECT_EXAMPLES.map((e) => path.join(ctx.cwd, e))];
   for (const alt of alts) {
     const e = expandEnv(expandHome(alt, ctx.home), ctx.env);
@@ -294,6 +455,7 @@ function globClass(word, opts = {}) {
     // Any pattern whose last name starts with .env names a .env file.
     if (keyOf(path.posix.basename(abs)).startsWith('.env')) return { kind: 'credential', reason: 'a pattern that matches a .env file' };
     const re = globRegExp(keyOf(abs));
+    if (re.impossible) continue;
     for (const ex of examples) {
       const c = classifyResolved(ex, ctx);
       if (c && re.test(keyOf(slash(ex)))) {
@@ -368,12 +530,17 @@ function readDenial(p, opts = {}) {
       return null; // missing file: nothing to protect
     }
     if (dotenv.isShadowed(text)) return null;
-    return 'zn: ' + path.basename(abs) + ' holds plain-text secrets. Ask the user to run `zn env shadow ' +
-      path.basename(abs) + '` in their terminal: it moves the values to the local vault and leaves __ZN_<NAME>__ markers you can read and use.';
+    return 'zn: ' + path.basename(abs) + ' holds plain-text secrets. Ask the user to run `' +
+      znCommand('env shadow ' + path.basename(abs)) + '` in their terminal: it moves the values to the local vault and leaves __ZN_<NAME>__ markers you can read and use.';
   }
   if (c.kind === 'zn_state') return 'zn: ~/.zn is the local secret vault; agents may not read or change it.';
-  return 'zn: reading ' + c.reason + ' (' + p + ') is blocked so secret values never reach the model. ' +
-    'If a command needs it, ask the user to add the value with `zn secret set <NAME>` and use the __ZN_<NAME>__ marker.';
+  return credentialDenial(p, c);
+}
+
+/* Reads of credential files: what was refused, why, and how to use a value instead. */
+function credentialDenial(p, c) {
+  return 'zn: ' + p + ' was not read because zn treats it as holding secrets (' + c.reason + '), and secret values never go to the model. ' +
+    'If a command needs a value, ask the user to run `' + znCommand('secret set NAME') + '`, then write __ZN_NAME__ where the value goes.';
 }
 
 function agentConfigDenial(p, c) {
@@ -509,19 +676,20 @@ function wrapWithZnRun(cmd, znRunPrefix) {
   if (named.length === 0) return { ok: true, command: s, wrapped: false };
   const scan = scanFirstCommand(s);
   const tail = s.slice(scan.end);
-  const guidance = ' Put the command that uses the secret first, as a single simple command ' +
-    '(for example: psql "postgres://app:__ZN_DB_PASSWORD__@db/app" -c "select 1"), in its own Bash call.';
-  if (scan.unterminated) return { ok: false, reason: 'zn: could not parse the command (unterminated quote).' };
+  const guidance = ' zn fills in secrets only in the first command of a Bash call: run that command on its own, ' +
+    'with __ZN_NAME__ where the value goes (for example: psql "postgres://app:__ZN_DB_PASSWORD__@db/app" -c "select 1").';
+  if (scan.unterminated) return { ok: false, reason: 'zn: this command has a quote that is not closed, so zn cannot read it. Close the quote and try again.' };
   if (markers.findNamedMarkers(tail).length > 0) {
-    return { ok: false, reason: 'zn: secret markers are only supported in the first command of a Bash call.' + guidance };
+    return { ok: false, reason: 'zn: this command uses a secret after its first command.' + guidance };
   }
   if (scan.substitution) {
-    return { ok: false, reason: 'zn: secret markers cannot be combined with $( ) or backtick substitution in the same command.' + guidance };
+    return { ok: false, reason: 'zn: a secret cannot be used in a command that also has $( ) or backticks.' + guidance };
   }
   let k = 0;
   while (k < scan.words.length && ASSIGNMENT_RE.test(scan.words[k].text)) k++;
   if (k >= scan.words.length) {
-    return { ok: false, reason: 'zn: a secret marker in a plain variable assignment would only store the marker.' + guidance };
+    return { ok: false, reason: 'zn: putting a secret in a shell variable would store only its placeholder, not the value. ' +
+      'To give a program a secret as an environment variable, use `' + znCommand('run --secrets NAME -- <command>') + '`.' };
   }
   for (let j = 0; j < k; j++) {
     if (markers.findNamedMarkers(scan.words[j].text).length) {
@@ -530,7 +698,7 @@ function wrapWithZnRun(cmd, znRunPrefix) {
   }
   const first = scan.words[k];
   if (RESERVED_WORDS.has(first.text)) {
-    return { ok: false, reason: 'zn: `' + first.text + '` cannot be wrapped for secret injection.' + guidance };
+    return { ok: false, reason: 'zn: a secret cannot be used with `' + first.text + '`.' + guidance };
   }
   // Already wrapped by the agent or a previous hook: leave it alone, zn run applies policy.
   if (/(^|[\\/])(zn|zn-gate)(\.js|\.cmd)?$/.test(first.text) && scan.words[k + 1] && scan.words[k + 1].text === 'run') {
@@ -603,7 +771,7 @@ function scanPowerShell(cmd) {
 }
 
 function psQuote(s) {
-  return "'" + String(s).replace(/\\/g, '/').replace(/'/g, "''") + "'";
+  return powershellQuote(portablePath(s));
 }
 
 /**
@@ -652,7 +820,8 @@ function hasNetworkSignals(cmd) {
   try { return require('../scrub/engine').isNetworkCommand(s); } catch (_) { return false; }
 }
 
-const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\/])(zn|zn-gate|cli\.js)(\.cmd|\.js)?["']?\s+(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall))\b/i;
+// The program is zn, zn-gate (also with a version: npx -y zn-gate@1.6.0, pnpm dlx zn-gate@latest) or the bin file.
+const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall)|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
 
 function adminCommand(cmd) {
   const m = ZN_ADMIN_RE.exec(String(cmd || ''));
@@ -666,6 +835,9 @@ function adminCommand(cmd) {
 function bashDenial(cmd, opts = {}) {
   const admin = adminCommand(cmd);
   if (admin) {
+    if (/pins/i.test(admin)) {
+      return 'zn: approving MCP tool changes (`zn-gate pins approve`) is the user\'s decision and must be run by the user in their own terminal, not by an agent. Ask the user to run it.';
+    }
     return 'zn: `zn ' + admin + '` manages secret values and must be run by the user in their own terminal, not by an agent. ' +
       'Ask the user to run it.';
   }
@@ -713,14 +885,17 @@ function bashDenial(cmd, opts = {}) {
 function denialOf(c, text, opts) {
   if (c.kind === 'zn_state') return 'zn: ~/.zn is the local secret vault; agents may not read or change it.';
   if (c.kind === 'dotenv') return readDenial(text, opts);
-  return 'zn: reading ' + c.reason + ' (' + text + ') is blocked so secret values never reach the model. ' +
-    'If a command needs it, ask the user to add the value with `zn secret set <NAME>` and use the __ZN_<NAME>__ marker.';
+  return credentialDenial(text, c);
 }
 
 module.exports = {
+  POLICY_RULES_VERSION,
   classifyPath,
   classifyWord,
   globClass,
+  globRegExp,
+  _globClassEnd: globClassEnd,
+  _globClassSource: globClassSource,
   expandBraces,
   readDenial,
   writeDenial,

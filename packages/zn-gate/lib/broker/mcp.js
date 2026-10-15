@@ -31,6 +31,7 @@ const { createMasker } = require('./mask');
 const { gitStatusOf, realTargetOf } = require('./files');
 const policy = require('../hooks/policy');
 const deps = require('../deps');
+const { pickOpening, warnNotice, WARN_REASON } = require('../team/effective');
 
 // Not available on Windows: 0 there, and the path checks still run.
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
@@ -109,6 +110,10 @@ function createSecretsServer(opts = {}) {
   const home = opts.home || os.homedir();
   const project = deps.findProjectRoot(cwd);
   const agent = opts.agent || process.env.ZN_AGENT || 'mcp';
+  // Only an id from the MCP configuration zn wrote (`secrets-mcp --agent`)
+  // decides which new hosts the organization policy may offer for approval;
+  // ZN_AGENT is self-reported. No id ever lifts a restriction.
+  const agentTrusted = Boolean(opts.agent);
   const doFetch = opts.fetch || globalThis.fetch;
   let vault = opts.vault;
   let engine = opts.engine;
@@ -120,8 +125,10 @@ function createSecretsServer(opts = {}) {
     try { await (await getVault()).audit({ agent, ...ev }); } catch (_) { /* never let audit change a decision */ }
   }
 
+  /* Settings to enforce: the local ones with the organization policy
+   * applied for this agent (zn Team). */
   async function metaMap() {
-    const list = await (await getVault()).listSecrets();
+    const list = await (await getVault()).listSecrets({ effective: true, agent, agentTrusted });
     return new Map((list || []).map((s) => [s.name, s]));
   }
 
@@ -183,7 +190,22 @@ function createSecretsServer(opts = {}) {
         'Ask the user to store it with `zn secret adopt ' + detected[0].name + ' --name <NAME> --host ' + host + '`.');
     }
     const named = [...found.values()];
-    const meta = named.length ? await metaMap() : new Map();
+    let meta = named.length ? await metaMap() : new Map();
+    // A host the organization policy opens but this machine never allowed:
+    // the user approves it once, on the vault's own channel. The settings
+    // are then read again, so a change made while the dialog was open counts.
+    let asked = false;
+    for (const m of named) {
+      const s = meta.get(m.name);
+      if (!s || s.deny || markers.hostAllowed(s.allowHosts, host)) continue;
+      const open = pickOpening(s.orgPending, 'host', (v) => markers.hostAllowed([v], host));
+      const v = await getVault();
+      if (open && typeof v.confirmOrgOpening === 'function') {
+        asked = true;
+        try { await v.confirmOrgOpening(m.name, 'host', open.value, agent, agentTrusted); } catch (_) { /* declined or no channel: denied below */ }
+      }
+    }
+    if (asked) meta = await metaMap();
     const values = new Map();
     for (const m of named) {
       const s = meta.get(m.name);
@@ -191,11 +213,16 @@ function createSecretsServer(opts = {}) {
         await audit({ secret: m.name, mode: null, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'deny', reason: 'not found' });
         return textResult({ error: 'ZN_NOT_FOUND', message: 'secret ' + m.name + ' is not in the vault; use secrets_request to ask the user for it' }, true);
       }
+      if (s.deny) {
+        await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'deny', reason: 'policy:org_deny' });
+        return denied(m.marker + ' is blocked for this agent by your organization policy. No request was made.');
+      }
       if (!markers.hostAllowed(s.allowHosts, host)) {
         await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'deny', reason: 'host not in allowHosts' });
         return denied(m.marker + ' may not be sent to ' + host + ' (allowed: ' + ((s.allowHosts || []).join(', ') || 'none') + '). No request was made.');
       }
-      const allowIn = Array.isArray(s.allowIn) && s.allowIn.length ? s.allowIn : ['header'];
+      // An empty list (cut down by the organization policy) allows nowhere.
+      const allowIn = Array.isArray(s.allowIn) ? s.allowIn : ['header'];
       const outside = placements(m.name).filter((p) => !allowIn.includes(p));
       if (outside.length) {
         await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'deny', reason: 'placement not allowed: ' + outside.join(',') });
@@ -205,6 +232,12 @@ function createSecretsServer(opts = {}) {
       }
     }
     getEngine(); // fail before sending if the response cannot be scrubbed
+    // `warn` rules of the organization policy: the request goes ahead, the
+    // use is recorded as "warn" and the user and the agent are told.
+    const warned = (m) => meta.get(m.name).warn === true;
+    const notices = named.filter(warned).map((m) => warnNotice(m.name, meta.get(m.name).warnReason));
+    const notice = notices.length ? notices.join(' ') : undefined;
+    const used = (m, why) => (warned(m) ? { decision: 'warn', reason: WARN_REASON } : { decision: 'allow', reason: why });
     for (const m of named) {
       const v = await (await getVault()).resolve(project, m.marker);
       if (v == null) return textResult({ error: 'ZN_NOT_FOUND', message: 'secret ' + m.name + ' has no value' }, true);
@@ -226,10 +259,12 @@ function createSecretsServer(opts = {}) {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
-      for (const m of named) await audit({ secret: m.name, mode: meta.get(m.name).mode, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'allow', reason: 'request failed' });
-      return textResult({ error: 'ZN_HTTP_ERROR', message: await scrub(String(err && err.message || err), masker) }, true);
+      for (const m of named) await audit({ secret: m.name, mode: meta.get(m.name).mode, tool: 'mcp:secrets_http_request', argv0: null, host, ...used(m, 'request failed') });
+      for (const n of notices) notify(n);
+      return textResult({ error: 'ZN_HTTP_ERROR', message: await scrub(String(err && err.message || err), masker), notice }, true);
     }
-    for (const m of named) await audit({ secret: m.name, mode: meta.get(m.name).mode, tool: 'mcp:secrets_http_request', argv0: null, host, decision: 'allow', reason: method + ' ' + res.status });
+    for (const m of named) await audit({ secret: m.name, mode: meta.get(m.name).mode, tool: 'mcp:secrets_http_request', argv0: null, host, ...used(m, method + ' ' + res.status) });
+    for (const n of notices) notify(n);
 
     const buf = Buffer.from(await res.arrayBuffer());
     const truncated = buf.length > MAX_RESPONSE_BYTES;
@@ -244,6 +279,7 @@ function createSecretsServer(opts = {}) {
       body: await scrub(text, masker),
       truncated,
       note: redirectNote(res.status),
+      notice,
     });
   }
 
@@ -367,6 +403,10 @@ function createSecretsServer(opts = {}) {
     for (const m of named) {
       const s = meta.get(m.name);
       if (!s) return textResult({ error: 'ZN_NOT_FOUND', message: 'secret ' + m.name + ' is not in the vault' }, true);
+      if (s.deny) {
+        await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'deny', reason: 'policy:org_deny' });
+        return denied(m.marker + ' is blocked for this agent by your organization policy. Nothing was written.');
+      }
       if (s.mode !== 'file') {
         await audit({ secret: m.name, mode: s.mode, tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'deny', reason: 'mode is not file' });
         return denied(m.name + ' is in ' + (s.mode || 'proxy') + ' mode; only "file" mode secrets can be written to disk');
@@ -413,12 +453,23 @@ function createSecretsServer(opts = {}) {
     } finally {
       fs.closeSync(opened.fd);
     }
-    for (const m of named) await audit({ secret: m.name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'allow', reason: 'rendered to a ' + opened.where + ' path' });
+    const renderNotices = [];
+    for (const m of named) {
+      const s = meta.get(m.name);
+      if (s.warn === true) {
+        await audit({ secret: m.name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'warn', reason: WARN_REASON });
+        renderNotices.push(warnNotice(m.name, s.warnReason));
+      } else {
+        await audit({ secret: m.name, mode: 'file', tool: 'mcp:secrets_render_file', argv0: null, host: null, decision: 'allow', reason: 'rendered to a ' + opened.where + ' path' });
+      }
+    }
+    for (const n of renderNotices) notify(n);
     return textResult({
       written: out,
       secrets: named.map((m) => m.name),
       unresolved: found.filter((m) => m.detected).map((m) => m.marker),
       note: 'The file holds real values; reading it back returns markers.',
+      notice: renderNotices.length ? renderNotices.join(' ') : undefined,
     });
   }
 

@@ -3,7 +3,8 @@ name: Action self-test
 # Runs the GitHub Action from this checkout (uses: ./) against fixtures.
 on:
   pull_request:
-    branches: [ main, next ]
+    branches: [ main, next, 'release/**' ]
+    types: [ opened, synchronize, reopened, labeled ]
     paths:
       - 'action.yml'
       - '.github/workflows/action-selftest.yml'
@@ -25,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: action-selftest-${{ github.event.pull_request.number || github.ref }}
+  group: action-selftest-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -36,13 +37,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Clean fixture passes
+        id: clean
         uses: ./
         with:
           mode: scan
@@ -58,6 +60,7 @@ jobs:
           format: text
 
       - name: fail-on-threat false reports without failing
+        id: nofail
         uses: ./
         with:
           mode: scan
@@ -74,6 +77,30 @@ jobs:
           path: .github/action-selftest/clean
           format: text
 
+      # The same command line the action runs, on the virtualenv it just installed,
+      # to check why it fails and what each format prints.
+      - name: Scan output by format
+        shell: bash
+        env:
+          VENV: ${{ runner.temp }}/zn-gate-venv
+          FIXTURE: packages/zn-gate/test/fixtures/rules_parity_samples.json
+        run: |
+          set -euo pipefail
+          py="$VENV/bin/python"; [ -x "$py" ] || py="$VENV/Scripts/python.exe"
+          out="$RUNNER_TEMP/zn-selftest-out"; mkdir -p "$out"
+          for fmt in github text json; do
+            rc=0
+            "$py" -I -X utf8 -m zn_gate.cli scan --format "$fmt" -- "$FIXTURE" > "$out/out-$fmt.txt" 2> "$out/err-$fmt.txt" || rc=$?
+            echo "format=$fmt rc=$rc"
+            test "$rc" = 1
+            if grep -q Traceback "$out/err-$fmt.txt"; then cat "$out/err-$fmt.txt"; exit 1; fi
+          done
+          test "$(grep -c '^::error file=' "$out/out-github.txt")" -gt 0
+          grep -q 'security threats' "$out/out-github.txt"
+          grep -q 'threat vectors' "$out/out-text.txt"
+          "$py" -I -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); assert d['total_threats'] > 0, d" "$out/out-json.txt"
+          rm -rf "$out"
+
       - name: Wrong package-sha256 is refused
         id: badhash
         continue-on-error: true
@@ -83,6 +110,16 @@ jobs:
           version: '1.4.1'
           package-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
           path: .github/action-selftest/clean
+
+      - name: The wrong hash stopped the install
+        shell: bash
+        env:
+          VENV: ${{ runner.temp }}/zn-gate-venv
+        run: |
+          py="$VENV/bin/python"; [ -x "$py" ] || py="$VENV/Scripts/python.exe"
+          if "$py" -I -c 'import zn_gate' 2>/dev/null; then
+            echo "zn_gate is installed although the hash was wrong"; exit 1
+          fi
 
       - name: Non-exact version is refused
         id: badversion
@@ -137,9 +174,15 @@ jobs:
           SARIF_SCAN_RC: ${{ steps.sarif.outputs.scan-exit-code }}
           BOTHOLD_SCAN_RC: ${{ steps.bothold.outputs.scan-exit-code }}
           BOTHOLD_AUDIT_RC: ${{ steps.bothold.outputs.audit-exit-code }}
+          CLEAN_RC: ${{ steps.clean.outputs.scan-exit-code }}
+          FINDINGS_RC: ${{ steps.findings.outputs.scan-exit-code }}
+          NOFAIL_RC: ${{ steps.nofail.outputs.scan-exit-code }}
+          BADHASH_RC: ${{ steps.badhash.outputs.scan-exit-code }}
+          BADVERSION_RC: ${{ steps.badversion.outputs.scan-exit-code }}
         run: |
           set -euo pipefail
           echo "findings=$FINDINGS badhash=$BADHASH badversion=$BADVERSION auditold=$AUDITOLD"
+          echo "scan exit codes: clean=$CLEAN_RC findings=$FINDINGS_RC nofail=$NOFAIL_RC badhash=$BADHASH_RC badversion=$BADVERSION_RC"
           test "$FINDINGS" = failure
           test "$BADHASH" = failure
           test "$BADVERSION" = failure
@@ -148,6 +191,13 @@ jobs:
           test "$SARIF_SCAN_RC" = 0
           test "$BOTHOLD_SCAN_RC" = 0
           test -z "$BOTHOLD_AUDIT_RC"
+          # Findings fail with exit code 1 from the scan, not a crash or a usage error.
+          test "$CLEAN_RC" = 0
+          test "$FINDINGS_RC" = 1
+          test "$NOFAIL_RC" = 0
+          # A refused hash or version stops the action before the scan runs.
+          test -z "$BADHASH_RC"
+          test -z "$BADVERSION_RC"
           python - "$SARIF_FILE" <<'PY'
           import json, sys
           d = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -167,7 +217,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 

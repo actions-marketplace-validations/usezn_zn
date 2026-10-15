@@ -17,6 +17,8 @@
  *     exactFiles   false to read the environment only (no credential files)
  *     exactValues  [{name, type, value|values}] extra exact values (scan uses these)
  *     pii          false to disable PII, or {email, phone, iban, card, dni, ssn, ipv4}
+ *     detectors    compiled custom formats (lib/team/detectors.js compile()), from
+ *                  a zn Team policy; they run with the secret patterns
  *
  * Layers run in this order and, on overlap, the earlier layer wins:
  *   1. exact values (known secrets; zero false positives by construction)
@@ -39,7 +41,12 @@ const fs = require('fs');
 const path = require('path');
 const { findPatterns, findPii, hintsIn, SECRET_TYPES, PII_TYPES } = require('./patterns');
 const { collectSources, buildMatcher } = require('./exact');
+const { find: findCustom } = require('../team/detectors');
 const { CODES } = require('../errors');
+const { warnNotice, WARN_REASON } = require('../team/effective');
+/* The vault's resolve-policy answer version this engine understands. */
+const RESOLVE_POLICY = 1;
+const { invisibleView } = require('../rules');
 
 const TOKEN_SOURCE = '__ZN_([A-Z0-9](?:[A-Z0-9_]*[A-Z0-9])?)__';
 const TOKEN_RE = new RegExp(TOKEN_SOURCE, 'g');
@@ -148,11 +155,28 @@ function scan(text, ctx) {
   if (typeof text !== 'string') throw new TypeError('scan(text, ctx): text must be a string');
   if (text.length === 0) return [];
   const c = ctx || {};
+  // Invisible characters (zero-width, variation selectors, tag characters) can
+  // split a value or a token. The text is scanned as it is and without them;
+  // the spans of the second scan are mapped back to the original text, and the
+  // union is resolved as one set of spans.
+  const direct = scanText(text, c);
+  const view = invisibleView(text);
+  if (!view) return direct;
+  const viaView = scanText(view.clean, c).map((s) => ({
+    ...s,
+    start: view.map[s.start],
+    end: s.end > s.start ? view.map[s.end - 1] + 1 : view.map[s.start],
+  }));
+  return resolveOverlaps(direct.concat(viaView));
+}
+
+function scanText(text, c) {
   let spans = [];
   const matcher = matcherFor(c);
   if (matcher) spans = spans.concat(matcher.find(text));
   const opts = { pii: c.pii, _hints: hintsIn(text) };
   spans = spans.concat(findPatterns(text, opts));
+  if (Array.isArray(c.detectors) && c.detectors.length) spans = spans.concat(findCustom(text, c.detectors));
   if (c.pii !== false) spans = spans.concat(findPii(text, opts));
   if (spans.length === 0) return spans;
   const ranges = tokenRanges(text, namesOf(c));
@@ -255,7 +279,10 @@ function isToken(s) {
   return typeof s === 'string' && new RegExp('^' + TOKEN_SOURCE + '$').test(s);
 }
 
-const LOCKED_WARNING = 'vault locked: values were redacted irreversibly; run `zn unlock` to enable exact-value redaction and restore';
+const { znCommand } = require('../zn-command');
+
+const LOCKED_WARNING = 'Your secret vault is locked, so the hidden secret values cannot be put back afterwards. ' +
+  'To keep them restorable next time, unlock it in your terminal with: ' + znCommand('unlock');
 
 function expectedToken(type) {
   return new RegExp('^__ZN_' + normalizeType(type) + '_[1-9][0-9]{0,8}__$');
@@ -349,6 +376,8 @@ const ACTIONS = Object.freeze({
   not_restorable: 'keep',
   locked: 'keep',
   vault_error: 'keep',
+  org_deny: 'keep',            // the organization policy blocks this secret
+  vault_outdated: 'keep',      // the vault process predates the organization policy check
 });
 
 const NET_COMMANDS = new RegExp('(?:^|[\\s;&|()`$\'"])(?:' + [
@@ -424,13 +453,31 @@ async function detokenize(text, ctx) {
     const trackedCheck = reason === 'tracked_file' && typeof c.trackedContent === 'string' && c.trackedContent.length > 0;
     if (trackedCheck) reason = null;
     let value = null;
+    let warn = null;
     if (!reason) {
       if (!vault || typeof vault.resolve !== 'function') {
         reason = 'locked';
       } else {
         try {
-          value = await vault.resolve(project, f.token, { destination: dest, agent: c.agent, tool: c.tool });
-          if (value === null || value === undefined) reason = 'unknown_token';
+          // withPolicy: the vault applies the organization policy and says so
+          // ({value, policy: 1, ...}). A vault that answers with the bare value
+          // (a daemon started before an update) cannot have checked the policy:
+          // nothing is restored (fail closed, vault_outdated) until it is restarted.
+          value = await vault.resolve(project, f.token, { destination: dest, agent: c.agent, tool: c.tool, withPolicy: true });
+          if (typeof value === 'string' || (value !== null && typeof value === 'object' && value.policy === undefined)) {
+            reason = 'vault_outdated';
+            value = null;
+          } else if (value !== null && typeof value === 'object' && value.policy !== RESOLVE_POLICY) {
+            reason = 'vault_error';
+            value = null;
+          } else if (value !== null && typeof value === 'object') {
+            const got = value;
+            value = got.deny === true ? null : got.value;
+            if (got.deny === true) reason = 'org_deny';
+            else if (got.warn === true && kind === 'named') warn = { reason: typeof got.warnReason === 'string' ? got.warnReason : undefined };
+          }
+          if (reason) value = null;
+          else if (value === null || value === undefined) reason = 'unknown_token';
           else if (typeof value !== 'string') { reason = 'vault_error'; value = null; }
         } catch (err) {
           reason = err && err.code === CODES.LOCKED ? 'locked' : 'vault_error';
@@ -439,14 +486,15 @@ async function detokenize(text, ctx) {
       if (trackedCheck && !reason && !c.trackedContent.includes(value)) { reason = 'tracked_file'; value = null; }
       if (trackedCheck && reason && reason !== 'tracked_file') reason = 'tracked_file';
     }
-    decisions.set(f.token, reason ? { reason } : { value });
+    if (reason) warn = null;
+    decisions.set(f.token, reason ? { reason } : { value, warn });
     await safeAudit(vault, {
       secret: f.inner,
       mode: kind === 'named' ? 'named' : 'detected',
       agent: c.agent,
       tool: c.tool,
-      decision: reason ? (ACTIONS[reason] === 'ask' ? 'ask' : 'withhold') : 'restore',
-      reason: reason || dest,
+      decision: reason ? (ACTIONS[reason] === 'ask' ? 'ask' : 'withhold') : (warn ? 'warn' : 'restore'),
+      reason: reason || (warn ? WARN_REASON : dest),
     });
   }
 
@@ -454,6 +502,7 @@ async function detokenize(text, ctx) {
   let last = 0;
   const seenRestored = new Set();
   const seenWithheld = new Set();
+  const notices = [];
   for (const f of found) {
     const d = decisions.get(f.token);
     out += text.slice(last, f.start);
@@ -465,12 +514,17 @@ async function detokenize(text, ctx) {
       }
     } else {
       out += d.value;
-      if (!seenRestored.has(f.token)) { seenRestored.add(f.token); restored.push(f.token); }
+      if (!seenRestored.has(f.token)) {
+        seenRestored.add(f.token);
+        restored.push(f.token);
+        if (d.warn) notices.push(warnNotice(f.inner, d.warn.reason));
+      }
     }
     last = f.end;
   }
   out += text.slice(last);
-  return { text: out, restored, withheld };
+  // notices: lines for the user and the agent (a `warn` rule of the organization policy).
+  return notices.length ? { text: out, restored, withheld, notices } : { text: out, restored, withheld };
 }
 
 module.exports = {

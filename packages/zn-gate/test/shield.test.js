@@ -1,5 +1,8 @@
 'use strict';
 
+// zn-gate stats: these tests must never count into the real ~/.zn/stats.json.
+process.env.ZN_STATS = 'off';
+
 const assert = require('assert');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -99,9 +102,12 @@ async function runTest() {
   const dummyPath = path.join(__dirname, 'dummy_mcp_server.js');
   fs.writeFileSync(dummyPath, dummyServerScript);
 
+  // A home folder of its own: the shield keeps MCP tool pins and the evidence log under ~/.zn.
+  const testHome = require('fs').mkdtempSync(path.join(require('os').tmpdir(), 'zn-shield-test-'));
+  process.on('exit', () => require('fs').rmSync(testHome, { recursive: true, force: true }));
   const shieldProc = spawn(process.execPath, [shieldCli, 'shield', '--', process.execPath, dummyPath], {
     stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, NODE_PATH: path.join(__dirname, '..') }
+    env: { ...process.env, NODE_PATH: path.join(__dirname, '..'), HOME: testHome, USERPROFILE: testHome, ZN_HOME: '' }
   });
 
   const responses = [];

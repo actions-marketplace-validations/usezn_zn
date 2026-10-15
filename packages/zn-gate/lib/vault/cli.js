@@ -7,6 +7,8 @@
  *   zn vault status
  *   zn vault forget [<project dir>]     (vault must be locked)
  *   zn vault verify                     (audit log: chain, MACs, truncation)
+ *   zn vault log [--since 1h]           (audit log: who used which secret; alias: zn secret log)
+ *   zn vault log export --otlp          (the same log as OpenTelemetry logs; lib/team/cli.js)
  *
  * The first `zn unlock` creates the vault: a new age identity stored in the
  * OS keychain, or behind a passphrase when no keychain is available.
@@ -43,15 +45,43 @@ function flag(args, name) {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-function promptHidden(question) {
-  return new Promise((resolve, reject) => {
-    if (!process.stdin.isTTY) { reject(new Error('no terminal for the passphrase prompt; use --passphrase-stdin')); return; }
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-    let muted = false;
-    rl._writeToOutput = (s) => { if (!muted) rl.output.write(s); };
-    rl.question(question, (answer) => { rl.close(); process.stderr.write('\n'); resolve(answer); });
-    muted = true;
+// One line reader for all the passphrase prompts of a command. A reader per
+// prompt loses what was typed or pasted before the second prompt appeared:
+// the first reader had already buffered it, and closing it dropped the rest,
+// so `zn unlock` waited for ever on "Repeat passphrase".
+function createHiddenPrompter(opts) {
+  const o = opts || {};
+  const input = o.input || process.stdin;
+  const output = o.output || process.stderr;
+  if (!input.isTTY) throw new Error('zn needs a terminal to ask for the passphrase. Run this command in your terminal, or pass it with --passphrase-stdin.');
+  const rl = readline.createInterface({ input, output, terminal: true });
+  rl._writeToOutput = () => {}; // never echo what is typed
+  const lines = [];
+  const waiters = [];
+  let closed = false;
+  rl.on('line', (line) => {
+    const w = waiters.shift();
+    if (w) w.resolve(line);
+    else lines.push(line);
   });
+  const cancelled = () => new Error('Cancelled: no passphrase was entered.');
+  rl.on('close', () => {
+    closed = true;
+    if (waiters.length) output.write('\n');
+    while (waiters.length) waiters.shift().reject(cancelled());
+  });
+  return {
+    ask(question) {
+      output.write(question);
+      return new Promise((resolve, reject) => {
+        const done = (line) => { output.write('\n'); resolve(line); };
+        if (lines.length) done(lines.shift());
+        else if (closed) { output.write('\n'); reject(cancelled()); }
+        else waiters.push({ resolve: done, reject });
+      });
+    },
+    close() { rl.close(); },
+  };
 }
 
 async function readStdin() {
@@ -61,17 +91,77 @@ async function readStdin() {
   return data.replace(/\r?\n$/, '');
 }
 
-async function getPassphrase(args, creating) {
+async function getPassphrase(args, creating, prompterOpts) {
   if (args.includes('--passphrase-stdin')) return readStdin();
-  const p1 = await promptHidden(creating ? 'New vault passphrase (min ' + keychain.MIN_PASSPHRASE + ' chars): ' : 'Vault passphrase: ');
-  if (creating) {
-    const p2 = await promptHidden('Repeat passphrase: ');
-    if (p1 !== p2) throw new Error('passphrases do not match');
+  const prompter = createHiddenPrompter(prompterOpts);
+  try {
+    const p1 = await prompter.ask(creating ? 'New vault passphrase (min ' + keychain.MIN_PASSPHRASE + ' chars): ' : 'Vault passphrase: ');
+    if (creating) {
+      const p2 = await prompter.ask('Repeat passphrase: ');
+      if (p1 !== p2) throw new Error('The two passphrases do not match. Nothing was created; run zn unlock again.');
+    }
+    return p1;
+  } finally {
+    prompter.close();
   }
-  return p1;
 }
 
 function out(s) { process.stdout.write(s + '\n'); }
+
+const RESOLVE_POLICY_FEATURE = 'resolve-policy';
+
+/** The running vault's status, or null when none answers. */
+async function runningStatus(clientFactory) {
+  const c = (clientFactory || createClient)({});
+  try { return await c.status(); } catch (err) { return null; } finally { c.close(); }
+}
+
+/** A running vault started by an older zn-gate (it does not check the organization policy on restores). */
+function isOutdatedVault(s) {
+  return Boolean(s) && !(Array.isArray(s.features) && s.features.includes(RESOLVE_POLICY_FEATURE));
+}
+
+/* Is the process still there? EPERM means it exists but is not ours to signal. */
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (err) { return Boolean(err && err.code === 'EPERM'); }
+}
+
+const OLD_VAULT_STUCK = 'The old vault did not stop; run `zn lock`, wait a moment, then `zn unlock`.';
+
+/**
+ * zn unlock with an older vault still running: lock it so this version can
+ * start. Only from `zn unlock`, which a person runs in their own terminal;
+ * never from a hook.
+ *
+ * The identity is checked first (deps.verify), so a mistyped passphrase
+ * leaves the old vault running. lock() answers before the old process has
+ * exited (it still writes its files and then removes its socket and session
+ * key), so this waits until its pid is gone before a new vault may start.
+ */
+async function restartIfOutdated(deps) {
+  const d = deps || {};
+  const s = await runningStatus(d.clientFactory);
+  if (!isOutdatedVault(s)) return false;
+  if (d.verify) await d.verify();
+  (d.out || out)('The running vault is from an older zn-gate; restarting it.');
+  const pid = Number.isSafeInteger(s.pid) && s.pid > 0 ? s.pid : null;
+  await (d.lock || daemon.lock)({});
+  const alive = d.isAlive || pidAlive;
+  const sleep = d.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const deadline = (d.timeoutMs == null ? 5000 : d.timeoutMs);
+  if (pid === null) throw new Error(OLD_VAULT_STUCK);
+  for (let waited = 0; alive(pid); waited += 100) {
+    if (waited >= deadline) throw new Error(OLD_VAULT_STUCK);
+    await sleep(100);
+  }
+  return true;
+}
+
+/** The `zn vault status` line for an unlocked vault. */
+function unlockedLine(meta, s) {
+  const line = 'Vault: unlocked (backend ' + meta.backend + ', expires ' + s.expiresAt + (s.version ? ', zn-gate ' + s.version : '') + ')';
+  return isOutdatedVault(s) ? line + ', outdated: restart with `zn lock`, then `zn unlock`' : line;
+}
 
 async function unlockCmd(args) {
   const agent = agentEnvDetected(process.env);
@@ -85,6 +175,9 @@ async function unlockCmd(args) {
   if (!keychain.BACKENDS.includes(backend)) throw new Error('unknown backend ' + backend);
   opts.backend = backend;
   if (backend === 'passphrase') opts.passphrase = await getPassphrase(args, !meta);
+  // An older vault still running: check the identity (passphrase or keychain)
+  // before stopping it, then wait for it to exit.
+  await restartIfOutdated({ verify: meta ? () => keychain.loadIdentity(opts).then(() => undefined) : null });
   if (args.includes('--foreground')) return unlockForegroundCmd(opts, backend);
   const res = await daemon.unlock(opts);
   if (res.created) out('Created a new vault (' + backend + ') in ' + store.paths().vaultDir);
@@ -124,7 +217,7 @@ async function statusCmd() {
   const c = createClient({});
   try {
     const s = await c.status();
-    out('Vault: unlocked (backend ' + meta.backend + ', expires ' + s.expiresAt + ')');
+    out(unlockedLine(meta, s));
   } catch (err) {
     out('Vault: locked (backend ' + meta.backend + ')');
   } finally {
@@ -165,7 +258,14 @@ async function runVaultCommand(args) {
     if (cmd === 'vault' && (sub === 'status' || sub === undefined)) return await statusCmd();
     if (cmd === 'vault' && sub === 'forget') return await forgetCmd(args);
     if (cmd === 'vault' && sub === 'verify') return await auditVerifyCmd();
-    process.stderr.write('usage: zn unlock | zn lock | zn vault status | zn vault verify | zn vault forget [dir]\n');
+    if (cmd === 'vault' && sub === 'log') return await require('../broker/cli').dispatch('vault', args.slice(1));
+    if (cmd === 'vault' && sub === 'team') {
+      require('../stats').recordEvent('team-vault-request');
+      process.stdout.write('A shared vault for teams is planned, not available yet. Today the vault is personal: each person keeps their own secrets on their own machine.\n' +
+        'Your request was counted on this machine only (see `zn-gate stats`). Nothing was sent.\n');
+      return 0;
+    }
+    process.stderr.write('usage: zn unlock | zn lock | zn vault status | zn vault verify | zn vault log [--since 1h] | zn vault forget [dir]\n');
     return 2;
   } catch (err) {
     const hint = err && err.code === CODES.LOCKED ? ' (vault locked: run `zn unlock`)' : '';
@@ -174,4 +274,4 @@ async function runVaultCommand(args) {
   }
 }
 
-module.exports = { runVaultCommand, parseDuration };
+module.exports = { runVaultCommand, parseDuration, getPassphrase, createHiddenPrompter, restartIfOutdated, isOutdatedVault, unlockedLine, OLD_VAULT_STUCK };

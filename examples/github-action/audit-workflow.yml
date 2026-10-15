@@ -30,7 +30,7 @@ jobs:
         # Pin to the full commit SHA of a release with audit (1.6.0 or later).
         uses: usezn/zn@<commit-sha> # v1.6.0
         with:
-          version: '1.6.0'
+          version: '1.7.1'
           mode: 'both'
           format: 'sarif'
           severity-threshold: 'medium'   # stricter than the default (high)
