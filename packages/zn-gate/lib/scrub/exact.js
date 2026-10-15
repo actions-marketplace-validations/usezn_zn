@@ -506,7 +506,6 @@ function buildMatcher(entries) {
 
 module.exports = {
   MIN_LENGTH,
-  unquote,
   AC_PREFIX,
   collectSources,
   variants,

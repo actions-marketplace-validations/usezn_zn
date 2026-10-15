@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const { trimTrailing, stripInlineComment } = require('../lib/linear-text');
 const codex = require('../lib/agents/codex');
 const opencode = require('../lib/agents/opencode');
-const { unquote } = require('../lib/scrub/exact');
+const { parseDotenv } = require('../lib/scrub/exact');
 const { normalizeProject } = require('../lib/vault/store');
 const { claudePermission } = require('../lib/audit/patterns');
 const { _internal: audit } = require('../lib/audit');
@@ -51,14 +51,12 @@ test('patchFiles gives the same files as the old regex', () => {
   for (const s of randomStrings(pieces, 20000, 12)) assert.deepEqual(codex.patchFiles(s), oldPatchFiles(s), JSON.stringify(s));
 });
 
-test('stripInlineComment and unquote give the same value as the old regex', () => {
+test('stripInlineComment gives the same value as the old regex, and .env values use it', () => {
   const pieces = [' ', '\t', '#', 'a', 'b', '\n', '\r', '\u2028', '##', ' #', '"', "'"];
   for (const s of randomStrings(pieces, 20000, 12)) {
     assert.equal(stripInlineComment(s), s.replace(/\s+#.*$/, ''), JSON.stringify(s));
   }
-  assert.equal(unquote('abc  # comment'), 'abc');
-  assert.equal(unquote('"a # b"'), 'a # b');
-  assert.equal(unquote('a#b'), 'a#b');
+  assert.deepEqual(parseDotenv('A=abc  # comment\nB="a # b"\nC=a#b'), [['A', 'abc'], ['B', 'a # b'], ['C', 'a#b']]);
 });
 
 test('trimTrailing, the audit helpers and normalizeProject match the old regexes', () => {
@@ -79,8 +77,8 @@ test('the inputs that made those regexes backtrack now take milliseconds', () =>
   const nl = '\n'.repeat(BIG);
   const cases = {
     'patchFiles on newlines': () => codex.patchFiles(nl + '*** Add File: x'),
-    'unquote on spaces': () => unquote('a' + ' '.repeat(BIG) + 'b'),
-    'unquote on spaces then #': () => unquote('a' + ' '.repeat(BIG) + '#'),
+    '.env value on spaces': () => parseDotenv('A=a' + ' '.repeat(BIG) + 'b'),
+    '.env value on spaces then #': () => parseDotenv('A=a' + ' '.repeat(BIG) + '#'),
     'grantsWrite on newlines': () => audit.grantsWrite('contents' + nl + 'x'),
     'grantsWrite on spaces': () => audit.grantsWrite(('checks' + ' '.repeat(50)).repeat(BIG / 60)),
     'withoutTrailingEquals on spaces': () => audit.withoutTrailingEquals('[' + ' '.repeat(BIG) + 'x'),
