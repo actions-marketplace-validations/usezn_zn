@@ -248,3 +248,37 @@ test('Monitor notices: WebSocket, placeholders and the allowed monitor', async (
   assert.equal(ok.decision, 'ask');
   assert.match(ok.message, /^zn: this monitor's output is checked on this computer before the model sees it\. Secret values are replaced with placeholders such as __ZN_AWS_KEY_1__\.$/);
 });
+
+/* Third batch: zn commands only the user may run, the vault folder, shell keywords. */
+test('admin commands: each kind says what it does and the exact command for the user', () => {
+  const policy = require('../lib/hooks/policy');
+  const cases = [
+    ['zn hooks uninstall codex', /turns zn's protection on or off/],
+    ['zn unlock', /locking or unlocking the secret vault/],
+    ['zn stats share on', /sharing of zn's usage statistics/],
+    ['zn secret reveal DB', /reads or changes secret values/],
+    ['zn-gate pins approve --all', /approving changed MCP tools/],
+    ['npx -y zn-gate init', /turns zn's protection on for coding agents/],
+  ];
+  for (const [cmd, re] of cases) {
+    const m = policy.bashDenial(cmd);
+    assert.match(m, re, cmd);
+    assert.match(m, /^zn blocked this: /, cmd);
+    assert.match(m, /Next step: ask the user to run .* in their own terminal/, cmd);
+    assert.doesNotMatch(m, /manages secret values/, cmd);
+  }
+});
+
+test('the vault folder: says why and how a command can still use a secret', () => {
+  const policy = require('../lib/hooks/policy');
+  const m = policy.bashDenial('cat ~/.zn/vault.age');
+  assert.match(m, /where zn keeps your secrets/);
+  assert.match(m, /Next step: .*__ZN_NAME__/);
+});
+
+test('a secret after a shell keyword says why it cannot be filled in', () => {
+  const policy = require('../lib/hooks/policy');
+  const r = policy.wrapWithZnRun('if __ZN_DB_PASSWORD__; then echo; fi', 'zn run --');
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /shell keyword, not a program/);
+});
