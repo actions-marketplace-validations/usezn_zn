@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-10-15
+
+zn-gate 1.8.2 adds MCP tool annotations. Nothing else changes; the Python package moves to 1.8.2 to keep the versions in step. Update with `npm install -g zn-gate@1.8.2`.
+
+### Added
+- MCP tool annotations: every tool of the zn-gate and secrets MCP servers now has a title and says whether it is read-only, destructive, idempotent and reaches the outside world (readOnlyHint, destructiveHint, idempotentHint, openWorldHint), so MCP clients can show it and ask before the tools that change things. analyze_prompt reaches the outside world only with the optional cloud check on. No change in what the tools do.
+
 ## [1.8.1] - 2026-10-15
 
 **If you use the zn-gate agent hooks with Claude Code, Codex CLI, Cursor or OpenCode, update.** This release reads Codex and OpenCode patches the way those agents read them, and makes the secret scrubber and several other checks run in linear time. Update with `npm install -g zn-gate@1.8.1`; the Python package has no code changes and moves to 1.8.1 to keep the versions in step.
@@ -400,7 +407,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.8.1...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.8.2...next
+[1.8.2]: https://github.com/usezn/zn/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/usezn/zn/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/usezn/zn/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/usezn/zn/compare/v1.7.0...v1.7.1
