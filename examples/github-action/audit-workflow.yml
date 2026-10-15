@@ -22,13 +22,14 @@ jobs:
       contents: read
       security-events: write   # only for the SARIF upload
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Audit agent configs
         id: zn
-        # Pin to the full commit SHA of a release with audit (1.6.0 or later).
-        uses: usezn/zn@<commit-sha> # v1.6.0
+        # Pin to the full commit SHA of the first Action release that has the
+        # mode input. The zn-gate package version is set by version below.
+        uses: usezn/zn@<commit-sha> # <first Action release with mode>
         with:
           version: '1.7.1'
           mode: 'both'

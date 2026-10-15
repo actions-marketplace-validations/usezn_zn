@@ -198,9 +198,9 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 The action installs the published zn-gate packages at an exact version and runs on the runner only; it sends nothing anywhere. It has two checks, chosen with `mode`:
 
-- `scan`: `zn-gate scan` looks for prompt-injection traps and leaked secrets in prompts, tool definitions and config files (Python package from PyPI). This is what earlier releases of the action did.
+- `scan` (default): `zn-gate scan` looks for prompt-injection traps and leaked secrets in prompts, tool definitions and config files (Python package from PyPI). This is what earlier releases of the action did.
 - `audit`: `zn audit` reviews what your coding agents are configured to trust: `.claude/`, `.mcp.json`, `.codex/`, `.cursor/`, hooks, `AGENTS.md` / `CLAUDE.md`, plugins and skills (npm package; needs version 1.6.0 or later).
-- `both` (default): runs the two. With a `version` older than 1.6.0 it runs the scan only and prints a warning.
+- `both`: runs the two. With a `version` older than 1.6.0 it runs the scan only and prints a warning.
 
 Scan prompts on pull requests:
 
@@ -222,7 +222,7 @@ jobs:
   zn-gate-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Scan AI agent prompts and tools
@@ -263,13 +263,14 @@ jobs:
       contents: read
       security-events: write   # only for the SARIF upload
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Audit agent configs
         id: zn
-        # Pin to the full commit SHA of a release with audit (1.6.0 or later).
-        uses: usezn/zn@<commit-sha> # v1.6.0
+        # Pin to the full commit SHA of the first Action release that has the
+        # mode input. The zn-gate package version is set by version below.
+        uses: usezn/zn@<commit-sha> # <first Action release with mode>
         with:
           version: '1.7.1'
           mode: 'both'
@@ -285,8 +286,8 @@ jobs:
 | Input | Default | Description |
 |---|---|---|
 | `version` | current stable release | Exact zn-gate version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
-| `mode` | `both` | `scan`, `audit` or `both`. |
-| `path` | `.` | File or directory to scan and audit. |
+| `mode` | `scan` | `scan`, `audit` or `both`. |
+| `path` | `.` | File or directory to scan. `audit` needs a directory: with `both` a file skips the audit with a warning; with `audit` the step fails. |
 | `fail-on-threat` | `true` | Fail the step on findings. For `scan`, any finding; for `audit`, findings at or above `severity-threshold`. Set `false` to report only. |
 | `severity-threshold` | `high` | Audit only: lowest severity that fails the step when `fail-on-threat` is `true`: `high` (high and critical), `medium` or `low`. The scan has no severities, so any scan finding fails. |
 | `fail-on` | empty | Audit only: lowest severity that fails the step (`low`, `medium`, `high`, `critical`, `none`), passed as is to `zn audit --fail-on`. When set, it overrides `fail-on-threat` and `severity-threshold` for the audit. |

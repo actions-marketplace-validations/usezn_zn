@@ -18,7 +18,7 @@ inputs:
   mode:
     description: 'scan (prompt-injection and secret scan of files, the behaviour of earlier releases), audit (audit of agent configs, hooks, MCP servers, plugins and skills), or both'
     required: false
-    default: 'both'
+    default: 'scan'
   package-sha256:
     description: 'Optional SHA-256 of the zn-gate wheel on PyPI for `version`. When set, pip refuses a file with a different hash.'
     required: false
@@ -90,8 +90,6 @@ runs:
           || fail "'version' must be an exact zn-gate version such as 1.6.0"
         major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
         pre=${BASH_REMATCH[5]}; pren=${BASH_REMATCH[6]}
-        [[ "$ZN_VERSION" =~ \.post ]] && [ "$ZN_MODE" != scan ] \
-          && fail "'version' with .post is a PyPI-only version; use it with mode: scan"
         case "$ZN_MODE" in scan|audit|both) ;; *) fail "'mode' must be scan, audit or both" ;; esac
         case "$ZN_FORMAT" in github|text|json|sarif) ;; *) fail "'format' must be github, text, json or sarif" ;; esac
         case "$ZN_FAIL_ON" in ''|low|medium|high|critical|none) ;; *) fail "'fail-on' must be low, medium, high, critical or none" ;; esac
@@ -110,6 +108,9 @@ runs:
           else
             echo "::warning title=zn-gate::zn-gate $ZN_VERSION has no audit; running the scan only. Set version to 1.6.0 or later to audit agent configs, or mode: scan to silence this warning."
           fi
+        fi
+        if [[ "$ZN_VERSION" =~ \.post ]] && [ "$run_audit" = true ]; then
+          fail "'version' with .post is a PyPI-only version and cannot be audited; use mode: scan"
         fi
         # npm spells pre-releases 1.6.0-beta.1 where PyPI has 1.6.0b1.
         npm_version="$major.$minor.$patch"
@@ -167,7 +168,7 @@ runs:
 
     - name: Set up Node.js
       if: steps.plan.outputs.run-audit == 'true'
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '22'
 
@@ -212,6 +213,7 @@ runs:
       env:
         ZN_RUN_SCAN: ${{ steps.plan.outputs.run-scan }}
         ZN_RUN_AUDIT: ${{ steps.plan.outputs.run-audit }}
+        ZN_MODE: ${{ inputs.mode }}
         ZN_PYTHON: ${{ steps.install-py.outputs.python }}
         ZN_CLI: ${{ steps.install-npm.outputs.cli }}
         ZN_VERSION: ${{ inputs.version }}
@@ -230,6 +232,15 @@ runs:
         set -uo pipefail
         rm -rf "$ZN_WORK"
         mkdir -p "$ZN_WORK"
+        # zn audit reads directories only.
+        if [ "$ZN_RUN_AUDIT" = true ] && [ ! -d "$ZN_PATH" ]; then
+          if [ "$ZN_MODE" = audit ]; then
+            echo "::error title=zn-gate::'path' must be a directory for mode: audit (zn audit does not read single files)"
+            exit 2
+          fi
+          echo "::warning title=zn-gate::'path' is a file; zn audit only reads directories, so the audit is skipped."
+          ZN_RUN_AUDIT=false
+        fi
         # Helper for SARIF: convert scan JSON, merge runs, print annotations.
         cat > "$ZN_WORK/sarif.py" <<'PY'
         import json, os, sys
@@ -340,7 +351,7 @@ runs:
           if [ -n "$ZN_AGENTS" ]; then audit_args+=(--agents "$ZN_AGENTS"); fi
           # The audit report quotes repository content: keep it from being read
           # as workflow commands.
-          stop_token="zn-$RANDOM$RANDOM$RANDOM"
+          stop_token="zn-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
           case "$ZN_FORMAT" in
             sarif|github)
               audit_sarif="$ZN_WORK/audit.sarif"

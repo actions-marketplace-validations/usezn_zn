@@ -138,11 +138,12 @@ jobs:
           fail-on-threat: 'false'
           format: sarif
 
-      - name: Default mode before 1.6.0 runs the scan only
+      - name: mode both before 1.6.0 runs the scan only
         id: bothold
         uses: ./
         with:
           version: '1.4.1'
+          mode: both
           path: .github/action-selftest/agent-config
 
       - name: mode audit before 1.6.0 is refused
@@ -209,8 +210,7 @@ jobs:
           print(f"SARIF OK: {len(results)} results")
           PY
 
-  # Runs once zn-gate 1.6.0 (with zn audit) is published: start the workflow by hand
-  # with audit-version set. Make it run on every pull request after the release.
+  # Runs only when started by hand with audit-version set (workflow_dispatch).
   audit:
     name: action audit (ubuntu-latest)
     if: github.event_name == 'workflow_dispatch' && inputs.audit-version != ''
@@ -251,16 +251,40 @@ jobs:
           fail-on-threat: 'false'
           format: json
 
+      - name: mode both skips the audit for a file path
+        id: filepath
+        uses: ./
+        with:
+          version: ${{ inputs.audit-version }}
+          mode: both
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          fail-on-threat: 'false'
+          format: text
+
+      - name: mode audit refuses a file path
+        id: fileaudit
+        continue-on-error: true
+        uses: ./
+        with:
+          version: ${{ inputs.audit-version }}
+          mode: audit
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          format: text
+
       - name: Check results
         shell: bash
         env:
           SARIF_FILE: ${{ steps.both.outputs.sarif-file }}
           SCAN_RC: ${{ steps.both.outputs.scan-exit-code }}
           AUDIT_RC: ${{ steps.both.outputs.audit-exit-code }}
+          FILE_AUDIT_RC: ${{ steps.filepath.outputs.audit-exit-code }}
+          FILE_AUDIT: ${{ steps.fileaudit.outcome }}
         run: |
           set -euo pipefail
           test "$SCAN_RC" = 0
           test "$AUDIT_RC" = 0
+          test -z "$FILE_AUDIT_RC"
+          test "$FILE_AUDIT" = failure
           python - "$SARIF_FILE" <<'PY'
           import json, sys
           d = json.load(open(sys.argv[1], encoding="utf-8"))
