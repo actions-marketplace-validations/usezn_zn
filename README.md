@@ -104,6 +104,12 @@ It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.
 ## Check that it works
 
 ```bash
+npx -y zn-gate check
+```
+
+For each agent you set up, zn-gate sends its hook the request your agent would send to read a `.env` file with a fake key, in a temporary folder, and shows what your agent would be told. A line that says **NOT protected** says how to fix it. Nothing is sent over the network and no setting changes. [What the output means](docs/check.md).
+
+```bash
 npx -y zn-gate test
 ```
 
