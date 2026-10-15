@@ -93,6 +93,8 @@ async function plan(opts = {}) {
   let temporary = opts.temporary !== undefined ? opts.temporary : fromTemporaryCopy();
   const glob = opts.global || globalInstall(env);
   if (opts.temporary === undefined && !temporary && glob.pkgDir && !samePath(PKG_ROOT, glob.pkgDir)) temporary = true;
+  // Without npm, an install inside node_modules (a project dependency) is not used for hooks either.
+  if (opts.temporary === undefined && !temporary && !glob.pkgDir && /[\\/]node_modules[\\/]/.test(PKG_ROOT + path.sep)) temporary = true;
   const items = [];
   let needsZn = false;
   for (const r of res.results) {

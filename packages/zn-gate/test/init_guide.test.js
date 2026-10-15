@@ -221,10 +221,11 @@ test('plan: an install that is not the global one (a project dependency, a check
 
 test('agent guard: the options that allow init must be whole words of the same command', () => {
   for (const cmd of ['zn-gate init --wrap-mcp-x', 'zn-gate init --dry-run=1', 'zn-gate init --shadow.', 'zn-gate init # --dry-run',
-    "zn-gate init 'x --revert'", 'zn-gate init $(: --dry-run)', 'zn-gate init `: --dry-run`', 'zn-gate init --wrap-mcp && zn-gate init']) {
+    "zn-gate init 'x --revert'", 'zn-gate init > --dry-run', 'zn-gate init 2> --shadow', 'zn-gate init < --revert', 'zn-gate init $(: --dry-run)', 'zn-gate init `: --dry-run`', 'zn-gate init --wrap-mcp && zn-gate init']) {
     assert.ok(policy.bashDenial(cmd), 'expected a denial for: ' + cmd);
   }
   assert.equal(policy.bashDenial('zn-gate init --dry-run --shadow'), null);
+  assert.equal(policy.bashDenial('zn-gate init --dry-run > out.txt'), null);
 });
 
 test('agent guard: many init words with an option at the end stay fast', () => {
