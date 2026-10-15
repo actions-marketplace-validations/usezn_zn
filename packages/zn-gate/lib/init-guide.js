@@ -32,7 +32,7 @@ const isWin = process.platform === 'win32';
 
 /* zn-gate runs from a temporary copy (npx, pnpm dlx, yarn dlx, bunx) rather than an install that stays. */
 function fromTemporaryCopy(dir = __dirname) {
-  return /[\\/](?:_npx|dlx-[^\\/]*|xfs-[^\\/]*|\.bun[\\/]install[\\/]cache|bunx-[^\\/]*)[\\/]/.test(dir);
+  return /[\\/](?:_npx|dlx(?:-[^\\/]*)?|xfs-[^\\/]*|\.bun[\\/]install[\\/]cache|bunx-[^\\/]*)[\\/]/.test(dir);
 }
 
 /* Absolute path of a program, searched only in absolute PATH entries; null when not found. */
@@ -43,25 +43,44 @@ function findProgram(name, env) {
   return found ? path.resolve(found) : null;
 }
 
+function samePath(a, b) {
+  const norm = (p) => { let r = path.resolve(p); try { r = fs.realpathSync(r); } catch (err) { /* keep it */ } return isWin ? r.toLowerCase() : r; };
+  return norm(a) === norm(b);
+}
+
 function cmp(a, b) {
   const pa = String(a).split(/[.-]/).map((x) => parseInt(x, 10) || 0);
   const pb = String(b).split(/[.-]/).map((x) => parseInt(x, 10) || 0);
   for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
-  return 0;
+  // 1.9.0-rc.1 comes before 1.9.0.
+  const preA = /-/.test(String(a));
+  const preB = /-/.test(String(b));
+  return preA === preB ? 0 : (preA ? -1 : 1);
 }
 
-/* {prefix, version, zn} of the global npm install of zn-gate, or {} when npm is not found. */
+/* Run a program found by findProgram, with fixed arguments. */
+function spawnProgram(file, args, env, extra = {}) {
+  const childEnv = { ...env };
+  if (isWin) childEnv.NoDefaultCurrentDirectoryInExePath = '1';
+  // A .cmd file (npm, claude, zn on Windows) only starts through cmd.exe; its path is absolute and quoted.
+  if (isWin && /\.cmd$/i.test(file)) {
+    return spawnSync('"' + file + '"', args, { ...extra, env: childEnv, shell: true, windowsHide: true });
+  }
+  return spawnSync(file, args, { ...extra, env: childEnv, windowsHide: true });
+}
+
+/* {npm, prefix, pkgDir, version, zn} of the global npm install of zn-gate, or {} when npm is not found. */
 function globalInstall(env) {
   const npm = findProgram('npm', env);
   if (!npm) return {};
-  const r = spawnSync(npm, ['prefix', '-g'], { encoding: 'utf8', env, shell: isWin, windowsHide: true, timeout: 30000 });
+  const r = spawnProgram(npm, ['prefix', '-g'], env, { encoding: 'utf8', timeout: 30000 });
   const prefix = r.status === 0 ? String(r.stdout || '').trim() : '';
   if (!prefix || !path.isAbsolute(prefix)) return { npm };
   const pkgDir = isWin ? path.join(prefix, 'node_modules', 'zn-gate') : path.join(prefix, 'lib', 'node_modules', 'zn-gate');
   let version = null;
   try { version = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).version || null; } catch (err) { version = null; }
   const zn = isWin ? path.join(prefix, 'zn.cmd') : path.join(prefix, 'bin', 'zn');
-  return { npm, prefix, version, zn };
+  return { npm, prefix, pkgDir, version, zn };
 }
 
 /* The plan: {items: [{id, name, found, state, problem, steps}], setup: [step]} ; a step is {label, run: [file, args] | null, manual}. */
@@ -71,8 +90,9 @@ async function plan(opts = {}) {
   const env = opts.env || process.env;
   const home = opts.home;
   const res = await check({ home, env, cwd: opts.cwd });
-  const temporary = opts.temporary !== undefined ? opts.temporary : fromTemporaryCopy();
-  const glob = opts.global || (temporary ? globalInstall(env) : {});
+  let temporary = opts.temporary !== undefined ? opts.temporary : fromTemporaryCopy();
+  const glob = opts.global || globalInstall(env);
+  if (opts.temporary === undefined && !temporary && glob.pkgDir && !samePath(PKG_ROOT, glob.pkgDir)) temporary = true;
   const items = [];
   let needsZn = false;
   for (const r of res.results) {
@@ -113,13 +133,7 @@ async function plan(opts = {}) {
 /* Run one step in the user's terminal (inherits stdio). Absolute program path and fixed arguments only. */
 function runStep(step, env) {
   const [file, args] = step.run;
-  const childEnv = { ...env };
-  if (isWin) childEnv.NoDefaultCurrentDirectoryInExePath = '1';
-  // A .cmd file (npm, claude, zn on Windows) only starts through cmd.exe; its path is absolute and quoted.
-  const viaShell = isWin && /\.cmd$/i.test(file);
-  const r = viaShell
-    ? spawnSync('"' + file + '"', args, { stdio: 'inherit', env: childEnv, shell: true, windowsHide: true })
-    : spawnSync(file, args, { stdio: 'inherit', env: childEnv, windowsHide: true });
+  const r = spawnProgram(file, args, env, { stdio: 'inherit' });
   return !r.error && r.status === 0;
 }
 
@@ -199,4 +213,4 @@ async function guide(opts = {}) {
   return skipped ? 1 : code;
 }
 
-module.exports = { guide, plan, fromTemporaryCopy, _internal: { findProgram, globalInstall, cmp, runStep } };
+module.exports = { guide, plan, fromTemporaryCopy, _internal: { findProgram, globalInstall, cmp, runStep, spawnProgram } };

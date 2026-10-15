@@ -86,6 +86,7 @@ test('fromTemporaryCopy: npx, pnpm dlx, yarn dlx and bunx caches; not a global i
   assert.equal(fromTemporaryCopy('/home/u/.npm/_npx/abc/node_modules/zn-gate/lib'), true);
   assert.equal(fromTemporaryCopy('C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\abc\\node_modules\\zn-gate\\lib'), true);
   assert.equal(fromTemporaryCopy('/home/u/.cache/pnpm/dlx-1a2b/node_modules/zn-gate/lib'), true);
+  assert.equal(fromTemporaryCopy('/home/u/.cache/pnpm/dlx/5f3c/node_modules/.pnpm/zn-gate@1.9.0/node_modules/zn-gate/lib'), true);
   assert.equal(fromTemporaryCopy('/home/u/.bun/install/cache/zn-gate@1.9.0/lib'), true);
   assert.equal(fromTemporaryCopy('/usr/lib/node_modules/zn-gate/lib'), false);
 });
@@ -201,4 +202,34 @@ test('agent guard: the guided init is refused to agents; init --wrap-mcp and its
     'npx -y zn-gate check', 'git init', 'npm init -y']) {
     assert.equal(policy.bashDenial(cmd), null, 'expected no denial for: ' + cmd);
   }
+});
+
+test('cmp: a prerelease is older than the release', () => {
+  assert.ok(_internal.cmp('1.9.0-rc.1', '1.9.0') < 0);
+  assert.ok(_internal.cmp('1.9.0', '1.9.0-rc.1') > 0);
+  assert.equal(_internal.cmp('1.9.0', '1.9.0'), 0);
+  assert.ok(_internal.cmp('1.10.0', '1.9.0') > 0);
+});
+
+test('plan: an install that is not the global one (a project dependency, a checkout) uses the global install', async (t) => {
+  const m = machine(t, ['codex']);
+  const elsewhere = tempDir(t, 'zn-init-global-');
+  const { items, setup } = await plan({ ...m, global: { npm: NPM, pkgDir: elsewhere, version: '99.0.0', zn: ZN } });
+  assert.equal(setup.length, 0);
+  assert.deepEqual(items.find((i) => i.id === 'codex').steps[0].run, [ZN, ['hooks', 'install', 'codex']]);
+});
+
+test('agent guard: the options that allow init must be whole words of the same command', () => {
+  for (const cmd of ['zn-gate init --wrap-mcp-x', 'zn-gate init --dry-run=1', 'zn-gate init --shadow.', 'zn-gate init # --dry-run',
+    "zn-gate init 'x --revert'", 'zn-gate init $(: --dry-run)', 'zn-gate init `: --dry-run`', 'zn-gate init --wrap-mcp && zn-gate init']) {
+    assert.ok(policy.bashDenial(cmd), 'expected a denial for: ' + cmd);
+  }
+  assert.equal(policy.bashDenial('zn-gate init --dry-run --shadow'), null);
+});
+
+test('agent guard: many init words with an option at the end stay fast', () => {
+  const cmd = 'zn init '.repeat(Math.floor(99 * 1024 / 8)) + ' --dry-run';
+  const t0 = Date.now();
+  policy.bashDenial(cmd);
+  assert.ok(Date.now() - t0 < 500, 'took ' + (Date.now() - t0) + ' ms');
 });
