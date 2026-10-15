@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-15
+
+zn-gate 1.8.0 adds Warn rules for zn Team: an organization can have a secret use go ahead with a notice and an audit record instead of blocking it. Organization policy now also applies to `secrets_render_file` and to marker restores in the agent hooks. `zn-gate shield` pins the tools of the MCP servers it wraps, and block messages are written in plain words.
+
 ### Added
 - Codex plugin layout: `plugins/tools/check-plugins.js` now checks the root manifest's `extensions.com.openai.hooks` path and the repository marketplace entry against OpenAI's Codex plugin documentation.
 - MCP tool pinning: `zn-gate shield` records a hash of each tool of a wrapped server (the whole tool definition) from the first tool list it sees for that server (all its pages), and compares every later list with it. By default a tool that is new or changed since gets a notice at the start of its description that tells the model to ask you first, and the shield writes a warning; tools with a duplicated or invalid name are refused. With `"mcpPinning": "block"` in `~/.zn/config.json` (or `ZN_MCP_PINNING=block`) such tools are removed and calls to any tool that is not approved are refused. Only your own `~/.zn/config.json` can make the mode weaker than `warn`; the environment of an MCP server can only make it stricter. `zn-gate pins` lists the servers and what changed; `zn-gate pins approve <server>` accepts the changes, only in an interactive terminal, and the agent hooks refuse it from an agent. Pins are kept in `~/.zn/mcp-pins/` (the program, its arguments with secrets redacted, tool names and hashes). Limits: pinning covers tool definitions, not the server's code; the first list of a server is trusted, and so is the first list after its command line changes (for example a new package version); approving accepts the tools as they are listed then (the pins hold names and hashes, not the tool text); an agent that can run code on your machine can edit the pins or start a server without the shield, and the hooks only stop the commands they recognise (`POLICY_RULES_VERSION` is now `2026-10-15.13`).
@@ -21,12 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - zn Team: `secrets_render_file` now applies an organization `deny`. Before, a `file` mode secret blocked by the organization policy could still be written to a file through this tool.
 - Plugin repository checks: the Verify workflow no longer stops without a message on a release pull request (the comparison of the two trees ended the step under `pipefail`).
-- Release tooling: `plugins/tools/pin-release.js` also moves the plugin manifests, the MCP Registry entry of the plugin and the version named in the plugin docs, in the same commit as the pin. The Plugin repository workflow reads the version from the pin and stops with a message when the plugin manifest names another version.
 
 ### Security
 - A value the scrubber replaced with a token is not put back when it is also a stored secret that the organization's policy blocks. When the vault process was started by an older zn-gate, the hooks keep tokens as they are instead of restoring them and say so to you and the agent; `zn unlock` now restarts such a vault, and `zn vault status` shows the running vault's zn-gate version and flags an outdated one.
 - Marker restores in the agent hooks now apply the organization's policy. When an agent writes a `__ZN_NAME__` marker into a git-ignored file, a secret the zn Team policy blocks stays a marker and the hook says why; a secret under a `warn` rule is restored, recorded with the decision `warn`, and the hook's message shows the warning.
-- The Rust gateway's lockfile uses wasmtime 48.0.6, which fixes RUSTSEC-2026-0353, 0358, 0359, 0361, 0362, 0363 and 0364 in 48.0.5. The gateway runs WebAssembly rules through the synchronous module API, without the component model or async calls where most of these issues are. The npm and PyPI packages do not contain the Rust gateway.
 - When an event cannot be read or part of zn-gate is missing, the message the agent reads no longer says how to let actions pass unchecked (`hooks.whenUnavailable`). That setting is still documented and is shown only to you (as the hook's message to the user in Claude Code).
 - When an agent event is not valid JSON, the refusal no longer quotes the part of it that Node's parser shows, which could be tool output.
 
