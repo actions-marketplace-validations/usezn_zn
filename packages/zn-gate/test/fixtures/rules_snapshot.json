@@ -48,7 +48,7 @@
     },
     "scrub": {
       "version_const": "SCRUB_RULES_VERSION",
-      "version": "2026-10-15.1",
+      "version": "2026-10-15.2",
       "ids": [
         "ANTHROPIC_KEY",
         "AWS_KEY",
@@ -113,8 +113,8 @@
         "exact.variants"
       ],
       "sha256": {
-        "lib/scrub/patterns.js": "76a40dedfe60f0b0fea9681152bdda9d2751e05fd57a4088248a5f4e7057b97a",
-        "lib/scrub/exact.js": "1c70b3200698e1245cbec7c7c561ce145526cc2cb0a5482b77601a0151172c9e"
+        "lib/scrub/patterns.js": "e290d8666c8d07f9085793d0caff5937246f9a49d85336f431f09577f038c776",
+        "lib/scrub/exact.js": "d104e85ec6a25e7d6d4b6c428bd0bf8b25d43c3ead313f6872f508b65793bf6b"
       }
     },
     "audit": {

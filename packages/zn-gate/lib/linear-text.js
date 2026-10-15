@@ -38,4 +38,53 @@ function lines(s) {
   return s.split(/[\n\r\u2028\u2029]/);
 }
 
-module.exports = { LINE_BREAKS, trimTrailing, stripInlineComment, lines };
+const NPM_AUTH_KEYS = ['_authToken', '_auth', '_password'];
+
+/**
+ * [key, value] of an npm auth line (trimmed), or null. Same result as
+ * /(?:^|:)(_authToken|_auth|_password)\s*=\s*(\S+)\s*$/ in linear time: the key
+ * starts the line or follows a ':' (leftmost first), and the value is the rest
+ * of the line after '=', with no whitespace in it.
+ */
+function npmAuth(line) {
+  let lastSpace = -1;
+  for (let i = line.length - 1; i >= 0; i--) {
+    if (/\s/.test(line[i])) {
+      lastSpace = i;
+      break;
+    }
+  }
+  const skipSpace = (i) => {
+    while (i < line.length && /\s/.test(line[i])) i++;
+    return i;
+  };
+  for (let start = 0; start <= line.length; start = line.indexOf(':', start) + 1) {
+    for (const key of NPM_AUTH_KEYS) {
+      if (!line.startsWith(key, start)) continue;
+      const eq = skipSpace(start + key.length);
+      if (line[eq] !== '=') continue;
+      const v = skipSpace(eq + 1);
+      if (v < line.length && v > lastSpace) return [key, line.slice(v)];
+    }
+    if (line.indexOf(':', start) < 0) break;
+  }
+  return null;
+}
+
+/**
+ * The value after "secret:" on a .znrules line, or null. Same result as
+ * /^\s*secret:\s*(.+?)\s*$/.exec(raw)?.[1] in linear time (the lazy group with a
+ * trailing \s* backtracked over long runs of spaces).
+ */
+function znrulesValue(raw) {
+  const head = /^\s*secret:/.exec(raw);
+  if (!head) return null;
+  const rest = raw.slice(head[0].length);
+  const t = rest.trim();
+  if (t) return /[\n\r\u2028\u2029]/.test(t) ? null : t;
+  // Only whitespace: the group takes the last character that is not a line break.
+  for (let i = rest.length - 1; i >= 0; i--) if (!LINE_BREAKS.has(rest[i])) return rest[i];
+  return null;
+}
+
+module.exports = { LINE_BREAKS, trimTrailing, stripInlineComment, lines, npmAuth, znrulesValue };

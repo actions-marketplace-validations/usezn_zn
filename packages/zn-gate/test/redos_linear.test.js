@@ -10,6 +10,7 @@ const { trimTrailing, stripInlineComment } = require('../lib/linear-text');
 const codex = require('../lib/agents/codex');
 const opencode = require('../lib/agents/opencode');
 const { parseDotenv } = require('../lib/scrub/exact');
+const exact = require('../lib/linear-text');
 const { normalizeProject } = require('../lib/vault/store');
 const { claudePermission } = require('../lib/audit/patterns');
 const { _internal: audit } = require('../lib/audit');
@@ -47,7 +48,7 @@ function oldPatchFiles(patch) {
 
 test('patchFiles gives the same files as the old regex', () => {
   const pieces = ['*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: ', '*** Add File:', '** Add File: ',
-    ' ', '\t', '\n', '\r', '\r\n', '\u2028', 'a', 'b.js', ' x ', '*', '#'];
+    ' ', '\t', '\n', '\r', '\r\n', '\u2028', '\v', '\f', '\u00a0', '\ufeff', '\u0085', 'a', 'b.js', ' x ', '*', '#'];
   for (const s of randomStrings(pieces, 20000, 12)) assert.deepEqual(codex.patchFiles(s), oldPatchFiles(s), JSON.stringify(s));
 });
 
@@ -57,6 +58,22 @@ test('stripInlineComment gives the same value as the old regex, and .env values 
     assert.equal(stripInlineComment(s), s.replace(/\s+#.*$/, ''), JSON.stringify(s));
   }
   assert.deepEqual(parseDotenv('A=abc  # comment\nB="a # b"\nC=a#b'), [['A', 'abc'], ['B', 'a # b'], ['C', 'a#b']]);
+});
+
+test('the .npmrc and .znrules readers give the same result as the old regexes', () => {
+  const oldNpm = /(?:^|:)(_authToken|_auth|_password)\s*=\s*(\S+)\s*$/;
+  const npmPieces = ['_authToken', '_auth', '_password', '_authT', ':', '=', ' ', '\t', '\v', '\u00a0', '\ufeff', '\u0085', '\r', 'a', 'b', '${X}', '//r/'];
+  for (const s of randomStrings(npmPieces, 30000, 10)) {
+    const line = s.trim();
+    const m = oldNpm.exec(line);
+    assert.deepEqual(exact.npmAuth(line), m ? [m[1], m[2]] : null, JSON.stringify(line));
+  }
+  const oldZn = /^\s*secret:\s*(.+?)\s*$/;
+  const znPieces = ['secret:', 'secret', ':', ' ', '\t', '\r', '\u2028', '\u00a0', '\ufeff', '\u0085', 'A=', 'x', 'B_C=v', '#'];
+  for (const s of randomStrings(znPieces, 30000, 10)) {
+    const m = oldZn.exec(s);
+    assert.equal(exact.znrulesValue(s), m ? m[1] : null, JSON.stringify(s));
+  }
 });
 
 test('trimTrailing, the audit helpers and normalizeProject match the old regexes', () => {
@@ -85,6 +102,10 @@ test('the inputs that made those regexes backtrack now take milliseconds', () =>
     'claudePermission on stars': () => claudePermission('Bash(' + '*'.repeat(BIG) + 'x)'),
     'normalizeProject on slashes': () => normalizeProject('/' + '\\'.repeat(BIG) + 'x'),
     'trimTrailing on equals': () => trimTrailing('='.repeat(BIG) + 'x', '='),
+    '.npmrc line of auth keys': () => exact.npmAuth(':_auth='.repeat(BIG / 7) + ' x'),
+    '.npmrc line of spaces': () => exact.npmAuth('_auth=' + ' '.repeat(BIG) + 'x y'),
+    '.znrules line of spaces': () => exact.znrulesValue('secret: a' + ' '.repeat(BIG) + 'b'),
+    '.znrules line of spaces only': () => exact.znrulesValue('secret:' + ' '.repeat(BIG)),
   };
   for (const [name, fn] of Object.entries(cases)) {
     const t = Math.min(ms(fn), ms(fn));
@@ -102,6 +123,15 @@ test('Codex and OpenCode refuse a patch over 100 KB before parsing it', () => {
   const small = codex.normalize({ hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { command: '*** Add File: a.txt\n+x' }, cwd: '/w' });
   assert.equal(small.input.tooLong, false);
   assert.deepEqual(small.input.paths, ['a.txt']);
+});
+
+test('the OpenCode hook denies a patch over 100 KB too', async () => {
+  const runner = require('../lib/hooks/runner');
+  const big = '*** Begin Patch\n' + '\n'.repeat(codex.PATCH_SCAN_CAP) + '*** Add File: a.txt\n+x\n*** End Patch';
+  const raw = { hook: 'tool.execute.before', tool: 'apply_patch', args: { patchText: big }, cwd: process.cwd() };
+  const { decision } = await runner.handle(opencode, raw, {});
+  assert.equal(decision.decision, 'deny');
+  assert.match(decision.message, /too long for zn to check/);
 });
 
 test('the Codex hook denies a patch over 100 KB with a clear message', async () => {
