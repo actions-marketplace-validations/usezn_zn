@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-15.20';
+const POLICY_RULES_VERSION = '2026-10-15.21';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -892,11 +892,19 @@ function bashDenial(cmd, opts = {}) {
 function adminDenial(admin, opts = {}, cmd = '') {
   const run = (args) => 'Next step: ask the user to run `' + znCommand(args, opts) + '` in their own terminal.';
   const m = ZN_ADMIN_RE.exec(String(cmd));
-  const next = m ? (String(cmd).slice(m.index + m[0].length).trim().split(/\s+/)[0] || '').replace(/^["']|["']$/g, '') : '';
+  const words = m ? String(cmd).slice(m.index + m[0].length).trim().split(/[\s;&|]+/).slice(0, 8).map((w) => w.replace(/^["']|["']$/g, '')) : [];
+  const next = words.find((w) => !w.startsWith('-')) || '';
   let arg = '';
-  if (/^hooks/i.test(admin)) arg = /^(claude-code|codex|cursor|opencode)$/.test(next) ? next : '<agent>';
-  else if (/^secret (set|get|rm|remove|reveal|allow|approve|link)$/i.test(admin)) arg = /^[A-Z_][A-Z0-9_]{0,127}$/.test(next) ? next : 'NAME';
-  else if (/^env/i.test(admin)) arg = /^[\w.-]{1,128}$/.test(path.basename(next)) && next ? path.basename(next) : '.env';
+  if (/^hooks/i.test(admin)) {
+    arg = /^(claude-code|codex|cursor|opencode)$/.test(next) ? next : '<agent>';
+    // The fixed options of zn hooks install, so the user installs in the same place the agent asked for.
+    for (const o of ['--project', '--no-mcp']) if (words.includes(o)) arg += ' ' + o;
+  } else if (/^secret (set|get|rm|remove|reveal|allow|approve|link)$/i.test(admin)) {
+    arg = /^[A-Z_][A-Z0-9_]{0,63}$/.test(next) ? next : 'NAME';
+  } else if (/^env/i.test(admin)) {
+    const base = path.basename(next);
+    arg = /^[\w.-]{1,128}$/.test(base) && !/^\.+$/.test(base) ? base : '.env';
+  }
   const full = arg ? admin + ' ' + arg : admin;
   if (/pins/i.test(admin)) {
     return 'zn blocked this: approving changed MCP tools is the user\'s decision, so an agent may not run `zn-gate pins approve`. ' + run('pins approve');

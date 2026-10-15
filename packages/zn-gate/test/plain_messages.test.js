@@ -274,6 +274,9 @@ test('admin commands: each kind says what it does and the exact command for the 
   assert.match(policy.bashDenial('zn secret set "hunter2-value"'), /secret set NAME`/);
   assert.doesNotMatch(policy.bashDenial('zn secret set "hunter2-value"'), /hunter2/);
   assert.match(policy.bashDenial('zn env shadow ./app/.env.local'), /env shadow \.env\.local`/);
+  assert.match(policy.bashDenial('zn hooks install codex --project'), /hooks install codex --project`/);
+  assert.match(policy.bashDenial('zn env shadow --dry-run .env.dev'), /env shadow \.env\.dev`/);
+  assert.match(policy.bashDenial('zn env shadow ..'), /env shadow \.env`/);
 });
 
 test('the vault folder: says why and how a command can still use a secret', () => {
