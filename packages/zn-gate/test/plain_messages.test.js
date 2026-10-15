@@ -267,6 +267,13 @@ test('admin commands: each kind says what it does and the exact command for the 
     assert.match(m, /Next step: ask the user to run .* in their own terminal/, cmd);
     assert.doesNotMatch(m, /manages secret values/, cmd);
   }
+  // The command for the user keeps a safe argument, and never a value.
+  assert.match(policy.bashDenial('zn hooks uninstall codex'), /run `(zn|npx -y zn-gate@\S+) hooks uninstall codex`/);
+  assert.match(policy.bashDenial('zn hooks install'), /hooks install <agent>`/);
+  assert.match(policy.bashDenial('zn secret set DB_PASSWORD'), /secret set DB_PASSWORD`/);
+  assert.match(policy.bashDenial('zn secret set "hunter2-value"'), /secret set NAME`/);
+  assert.doesNotMatch(policy.bashDenial('zn secret set "hunter2-value"'), /hunter2/);
+  assert.match(policy.bashDenial('zn env shadow ./app/.env.local'), /env shadow \.env\.local`/);
 });
 
 test('the vault folder: says why and how a command can still use a secret', () => {
