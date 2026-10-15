@@ -49,7 +49,31 @@ function oldPatchFiles(patch) {
 test('patchFiles gives the same files as the old regex', () => {
   const pieces = ['*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: ', '*** Add File:', '** Add File: ',
     ' ', '\t', '\n', '\r', '\r\n', '\u2028', '\v', '\f', '\u00a0', '\ufeff', '\u0085', 'a', 'b.js', ' x ', '*', '#'];
-  for (const s of randomStrings(pieces, 20000, 12)) assert.deepEqual(codex.patchFiles(s), oldPatchFiles(s), JSON.stringify(s));
+  for (const s of randomStrings(pieces, 20000, 12)) {
+    // U+0085 is trimmed now (Codex trims it); an empty name after trimming is not a file.
+    if (s.includes('\u0085')) continue;
+    assert.deepEqual(codex.patchFiles(s), oldPatchFiles(s).filter(Boolean), JSON.stringify(s));
+  }
+});
+
+test('patchScan sees every marker Codex reads and flags marker-like lines it cannot read', () => {
+  const decoy = '*** Begin Patch\n*** Add File: ok.txt\n+x\n';
+  const scan = (s) => codex.patchScan(decoy + s + '\n*** End Patch');
+  assert.deepEqual(scan('\u0085*** Update File: ~/.zn/x').files, ['ok.txt', '~/.zn/x'], 'NEL before a marker');
+  assert.deepEqual(scan('*** Update File: ~/.zn/x\u0085').files, ['ok.txt', '~/.zn/x'], 'NEL after the path');
+  for (const s of ['*** Update File:~/.zn/x', '*** update file: ~/.zn/x', '***Update File: x', '*** Rename File: x',
+    '*** Environment ID: other', '*** Add File: ', '*** Move to:x']) {
+    assert.equal(scan(s).suspicious, true, JSON.stringify(s));
+  }
+  for (const s of ['+*** Add File: x', ' context *** Add File: x', '@@ def f():', '-*** Update File: y']) {
+    assert.equal(scan(s).suspicious, false, JSON.stringify(s));
+  }
+  const ev = codex.normalize({ hook_event_name: 'PreToolUse', tool_name: 'apply_patch', cwd: '/w',
+    tool_input: { command: decoy + '*** Environment ID: other\n*** End Patch' } });
+  assert.equal(ev.input.unparsed, true);
+  const oc = opencode.normalize({ hook: 'tool.execute.before', tool: 'apply_patch', cwd: '/w',
+    args: { patchText: decoy + '*** update file: x\n*** End Patch' } });
+  assert.equal(oc.input.unparsed, true);
 });
 
 test('stripInlineComment gives the same value as the old regex, and .env values use it', () => {
