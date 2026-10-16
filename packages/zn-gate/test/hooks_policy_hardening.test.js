@@ -284,3 +284,24 @@ test('a long command that repeats its words is checked quickly, and still blocks
   assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 1500, 'too slow');
   assert.ok(policy.bashDenial('cat ' + 'README.md '.repeat(5000) + '~/.aws/credentials'));
 });
+
+test('a patch sent as a shell command (Codex apply_patch) is refused with the file it writes, not a glob word', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-ap-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const cmd = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: .env\n@@\n+EXAMPLE_DEBUG=1\n*** End Patch\nPATCH";
+  const msg = policy.bashDenial(cmd, { cwd: dir, home: dir });
+  assert.ok(msg, 'still refused');
+  assert.match(msg, /this patch was blocked because it writes to \.env, which zn treats as holding secrets/);
+  assert.doesNotMatch(msg, /\*\*\*/);
+  // An ordinary command that names a glob and a literal secret file names the literal one.
+  const m2 = policy.bashDenial('cat *.txt .env', { cwd: dir, home: dir });
+  assert.match(m2, /\.env/);
+  // A glob alone is still refused as before.
+  assert.ok(policy.bashDenial('cat .e*', { cwd: dir, home: dir }));
+  // A patch to an ordinary file sent as a shell command is still refused (its *** lines read as file patterns),
+  // with a message that says why and what to do instead.
+  const m3 = policy.bashDenial("apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch\nPATCH", { cwd: dir, home: dir });
+  assert.match(m3, /sent as a shell command, which zn cannot check file by file/);
+  assert.match(m3, /use the apply_patch tool/);
+});

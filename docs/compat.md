@@ -46,8 +46,15 @@ limit applies to a patch (`apply_patch`) in Codex and OpenCode.
     an ordinary file, and `PostToolUse` and `UserPromptSubmit` ran as expected.
     New or changed hooks run only after you trust them in `/hooks`
     (`codex exec --dangerously-bypass-hook-trust` skips that for one run, for
-    automation that already checks its hooks). `apply_patch` was not part of
-    that run.
+    automation that already checks its hooks).
+  - `apply_patch` with a local model (Codex CLI 0.163.0, 2026-10-16): Codex offers its
+    `apply_patch` tool only to the models in its own catalog, so a local model cannot use
+    it; zn checks that tool from its payload (`apply_patch` in the hook matcher, file by
+    file). A model that sends `apply_patch` as a shell command reaches zn as `Bash`, and zn
+    refuses it: its `***` lines read as file patterns that can match secret files, and the
+    message names the file when the patch writes to one such as `.env`. Known difference:
+    the `apply_patch` tool may edit `.env` (writes are checked only for `~/.zn` and agent
+    settings), while any patch sent as a shell command is refused.
 - **Cursor** (best effort: its hook documentation leaves the input of some
   tools open, and zn fails closed where it cannot read a path):
   - `beforeReadFile` can only allow or deny. zn sets `failClosed: true` on it

@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-16.6';
+const POLICY_RULES_VERSION = '2026-10-16.7';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -862,7 +862,31 @@ const TOO_LONG_MESSAGE = 'zn: this command is too long for zn to check (over 100
  * Bash commands that read credential files or touch ~/.zn.
  * Returns null or a deny message.
  */
+/*
+ * Codex applies `apply_patch <<'PATCH' ... PATCH` itself when a model sends it as a shell command. When zn refuses
+ * such a command, say which file the patch writes, instead of the first word that looked like a secret file.
+ * Only the message changes: the decision is the one bashDenial made.
+ */
+const SHELL_PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm;
+function shellPatchMessage(cmd, deny, opts) {
+  if (!deny || !/^\s*apply_patch\b/.test(String(cmd))) return deny;
+  for (const m of String(cmd).matchAll(SHELL_PATCH_FILE_RE)) {
+    const f = m[1].trim();
+    const c = classifyPath(f, opts);
+    if (!c || c.kind === 'agent_config' || c.kind === 'zn_state') continue;
+    return 'zn: this patch was blocked because it writes to ' + f + ', which zn treats as holding secrets (' + c.reason + '). ' +
+      'Next step: ask the user to make this change in that file.';
+  }
+  // Its *** lines read as file patterns that can match secret files, so zn refuses any patch in this form.
+  return 'zn: this patch was blocked because it was sent as a shell command, which zn cannot check file by file ' +
+    '(its *** lines look like file patterns that can match secret files). Next step: use the apply_patch tool, or write the file another way.';
+}
+
 function bashDenial(cmd, opts = {}) {
+  return shellPatchMessage(cmd, bashDenialOf(cmd, opts), opts);
+}
+
+function bashDenialOf(cmd, opts = {}) {
   if (String(cmd || '').length > SHELL_SCAN_CAP) return TOO_LONG_MESSAGE;
   const admin = adminCommand(cmd);
   if (admin) return adminDenial(admin, opts, cmd);
@@ -880,6 +904,8 @@ function bashDenial(cmd, opts = {}) {
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
   const classified = new Map();
+  // A word with * ? or [ can match a secret file; the message names a literal file when the command has one too.
+  let globDeny = null;
   for (const w of words) {
     // --flag=value carries a path too (--kubeconfig=~/.kube/config).
     let text = w.text;
@@ -905,9 +931,10 @@ function bashDenial(cmd, opts = {}) {
     }
     if (w.redirectTarget) continue; // appending to .env is a write, not a read
     const deny = denialOf(c, text, opts);
+    if (deny && /[*?[]/.test(text)) { globDeny = globDeny || deny; continue; }
     if (deny) return deny;
   }
-  return null;
+  return globDeny;
 }
 
 /* zn commands only the user may run: what the command does, why an agent may not, and the next step. */
