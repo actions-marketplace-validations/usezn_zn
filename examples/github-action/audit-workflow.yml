@@ -2,15 +2,6 @@ name: AI agent config audit
 
 on:
   pull_request:
-    paths:
-      - '.claude/**'
-      - '.mcp.json'
-      - '.codex/**'
-      - '.cursor/**'
-      - '**/AGENTS.md'
-      - '**/CLAUDE.md'
-      - '**/SKILL.md'
-      - '**/.claude-plugin/**'
 
 permissions:
   contents: read
@@ -21,6 +12,7 @@ jobs:
     permissions:
       contents: read
       security-events: write   # only for the SARIF upload
+      actions: read            # private repositories only, for upload-sarif
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,7 +23,7 @@ jobs:
         # mode input. The zn-gate package version is set by version below.
         uses: usezn/zn@<commit-sha> # <first Action release with mode>
         with:
-          version: '1.7.1'
+          version: '1.9.0'
           mode: 'both'
           format: 'sarif'
           severity-threshold: 'medium'   # stricter than the default (high)
