@@ -72,9 +72,9 @@ function hookEntries(tree) {
   for (const [event, list] of Object.entries(hooks)) {
     for (const g of Array.isArray(list) ? list : []) {
       if (!g || typeof g !== 'object') continue;
-      if (typeof g.command === 'string') out.push({ event, matcher: g.matcher, command: g.command });
+      if (typeof g.command === 'string') out.push({ event, matcher: g.matcher, command: g.command, onFailure: g.onFailure });
       for (const h of Array.isArray(g.hooks) ? g.hooks : []) {
-        if (h && typeof h.command === 'string') out.push({ event, matcher: g.matcher, command: h.command });
+        if (h && typeof h.command === 'string') out.push({ event, matcher: g.matcher, command: h.command, onFailure: h.onFailure });
       }
     }
   }
@@ -195,6 +195,8 @@ async function checkAgent(spec, ctx) {
     const entries = hookEntries(readJson(userFile)).filter((e) => parseCommand(e.command, spec.id));
     installed = entries.length > 0;
     res.where = userFile;
+    // Set up with `zn hooks install`, so that is also how to repair it (not the plugin: both would run).
+    if (installed) res.fix = 'run `zn hooks install ' + spec.id + '` in your own terminal';
     const read = entries.find((e) => e.event === spec.event && matcherCovers(e.matcher, spec.tool));
     if (installed && !read) {
       res.problem = 'zn\'s hooks are there, but not the one that checks reading files (' + spec.event + ')';
@@ -202,6 +204,8 @@ async function checkAgent(spec, ctx) {
       const cmd = parseCommand(read.command, spec.id);
       if (cmd.missing) {
         res.problem = 'its hook cannot start: ' + (fs.existsSync(cmd.node) ? 'its zn-gate files (' + cmd.runner + ')' : 'its Node.js (' + cmd.node + ')') + ' is no longer there';
+        // Usually a Node.js version removed with nvm (or similar), which takes its global zn-gate with it.
+        res.fix = 'install zn-gate again for the Node.js you use now: run `npm install -g zn-gate`, then `zn hooks install ' + spec.id + '`, in your own terminal';
       } else if (cmd.onPath) {
         // Only absolute PATH entries: a relative one (node_modules/.bin, .) depends on the folder check runs from.
         const absPath = String((ctx.env || process.env).PATH || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d)).join(path.delimiter);
@@ -214,6 +218,11 @@ async function checkAgent(spec, ctx) {
         live = { file: cmd.node, args: [cmd.runner, spec.id], env: {} };
       }
     }
+  }
+  if (spec.id === 'claude-code' && installed && res.where === userFile) {
+    // Without onFailure "block", a prompt hook that cannot run lets every prompt through (Claude Code 2.1.295 and later read it).
+    const prompt = hookEntries(readJson(userFile)).find((e) => e.event === 'UserPromptSubmit' && parseCommand(e.command, spec.id));
+    if (prompt && prompt.onFailure !== 'block') res.notes.push('its prompt hook lets prompts through when it cannot run; run `zn hooks install claude-code` again to have them blocked instead');
   }
   if (spec.id === 'claude-code' && installed && !res.problem) {
     const p = claudePolicy(ctx.home, ctx.env);

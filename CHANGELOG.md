@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `zn-gate check`: when a hook cannot start because its Node.js is gone (for example after `nvm uninstall`), the fix it gives is a fresh `npm install -g zn-gate` and then `zn hooks install <agent>`, since the old Node.js took its `zn` with it. Claude Code set up with `zn hooks install` is told to run that again rather than to install the plugin, which would run a second set of hooks. A Claude Code prompt hook without `onFailure: "block"` gets a note.
+
 ## [1.9.0] - 2026-10-16
 
 zn-gate 1.9.0 makes `npx -y zn-gate init` the one command that sets up zn for the coding agents on your machine, and adds `zn-gate check` to show that zn stops your agent from reading a secret. Block messages for commands only you may run now give the exact command. Update with `npm install -g zn-gate@1.9.0`; the Python package has no code changes and moves to 1.9.0 to keep the versions in step.

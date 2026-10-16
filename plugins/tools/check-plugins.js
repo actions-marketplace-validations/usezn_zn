@@ -161,6 +161,12 @@ if (cursorManifest.hooks !== './cursor/hooks.json' || cursorManifest.mcpServers 
 for (const [event, entries] of Object.entries(json(PLUGIN + '/cursor/hooks.json').hooks || {})) {
   for (const e of entries) if (e.failClosed !== true) fail('cursor/hooks.json: ' + event + ' hook is not failClosed');
 }
+// A prompt hook that cannot run must block the prompt, not let it through.
+{
+  const prompt = ((json(PLUGIN + '/hooks/hooks.json').hooks || {}).UserPromptSubmit || []).flatMap((g) => (g && g.hooks) || []);
+  if (!prompt.length) fail('hooks/hooks.json: no UserPromptSubmit hook');
+  for (const h of prompt) if (h.onFailure !== 'block') fail('hooks/hooks.json: UserPromptSubmit hook is not onFailure "block"');
+}
 
 /* ------------------------------- links ------------------------------- */
 
