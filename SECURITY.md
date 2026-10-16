@@ -5,10 +5,10 @@
 Security fixes are released for the latest minor version of `zn-gate` (npm and PyPI).
 Upgrade to it to receive them.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.8.x   | :white_check_mark: |
-| < 1.8.0 | :x:                |
+| Version  | Supported          |
+| -------- | ------------------ |
+| 1.10.x   | :white_check_mark: |
+| < 1.10.0 | :x:                |
 
 Prereleases (`-alpha`, `-beta`, `-rc`) are not supported once the final release is out.
 

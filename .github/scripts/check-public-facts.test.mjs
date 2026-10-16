@@ -68,6 +68,20 @@ test('required and forbidden text', () => {
   assert.match(errs.join('\n'), /says "Hermes"/);
 });
 
+test('{minor} in a text fact follows the release line', () => {
+  const facts = { ...FACTS, text: [{ id: 'supported', files: ['SECURITY.md'], must: ['| {minor}.x | yes |'] }] };
+  const files = { ...GOOD, 'SECURITY.md': '| 2.0.x | yes |\n' };
+  const runWith = (fs) => check(facts, Object.keys(fs), (f) => {
+    if (!(f in fs)) throw new Error('missing');
+    return fs[f];
+  });
+  assert.deepEqual(runWith(files), []);
+  assert.deepEqual(runWith({ ...files, 'SECURITY.md': '|  2.0.x   |\tyes |\n' }), []);
+  const errs = runWith({ ...files, 'SECURITY.md': '| 1.8.x | yes |\n' });
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /does not say "\| 2\.0\.x \| yes \|"/);
+});
+
 test('field values and missing files', () => {
   const files = { ...GOOD, 'pkg/package.json': JSON.stringify({ version: '2.0.0', license: 'ISC' }) };
   assert.match(run(files).join('\n'), /license is ISC, public-facts\.json says MIT/);
