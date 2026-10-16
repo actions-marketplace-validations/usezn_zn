@@ -1,0 +1,34 @@
+name: AI agent config audit
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  zn-gate-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # only for the SARIF upload
+      actions: read            # private repositories only, for upload-sarif
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Audit agent configs
+        id: zn
+        # Pin to the full commit SHA of the first Action release that has the
+        # mode input. The zn-gate package version is set by version below.
+        uses: usezn/zn@<commit-sha> # <first Action release with mode>
+        with:
+          version: '1.9.0'
+          mode: 'both'
+          format: 'sarif'
+          severity-threshold: 'medium'   # stricter than the default (high)
+      - name: Upload SARIF
+        if: ${{ !cancelled() && steps.zn.outputs.sarif-file != '' }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: ${{ steps.zn.outputs.sarif-file }}

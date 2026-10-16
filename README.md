@@ -216,7 +216,13 @@ Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a
 
 ### GitHub Action
 
-The action installs the published `zn-gate` package from PyPI at an exact version and runs `zn-gate scan` on the path you give it. The scan runs entirely on the runner and sends nothing anywhere.
+The action installs the published zn-gate packages at an exact version and runs on the runner only; it sends nothing anywhere. It has two checks, chosen with `mode`:
+
+- `scan` (default): `zn-gate scan` looks for prompt-injection traps and leaked secrets in prompts, tool definitions and config files (Python package from PyPI). This is what earlier releases of the action did.
+- `audit`: `zn audit` reviews what your coding agents are configured to trust: `.claude/`, `.mcp.json`, `.codex/`, `.cursor/`, hooks, `AGENTS.md` / `CLAUDE.md`, plugins and skills (npm package; needs version 1.6.0 or later).
+- `both`: runs the two. With a `version` older than 1.6.0, or a PyPI-only `.post` version, it runs the scan only and prints a warning.
+
+Scan prompts on pull requests:
 
 ```yaml
 name: AI agent security scan
@@ -236,35 +242,88 @@ jobs:
   zn-gate-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Scan AI agent prompts and tools
         # Pin the action to a full commit SHA; the comment names the release.
-        uses: usezn/zn@dca953a154615595848b1367d0fd40b08ef0c7fd # v1.8.0
+        uses: usezn/zn@0d7820184dde287805941dd1aa14b1fa2d923f3c # v1.9.0
         with:
-          version: '1.8.0'
-          package-sha256: '2174e1d9647fb0e8c42922c72363b35c26b0b97065b909eaa7a7d6b7c3950e17'
+          version: '1.9.0'
+          package-sha256: '361fa45e65170dfabbd786a216c994f40e4e990bc4e3a26ae204451a96b74f64'
           path: '.'
           fail-on-threat: 'true'
           format: 'github'
 ```
 
+Audit agent configs and plugins on every pull request, and show the findings in code scanning. The audit takes seconds, so the example has no `paths:` filter: a filter would skip the configs of agents it does not list.
+
+```yaml
+name: AI agent config audit
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  zn-gate-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # only for the SARIF upload
+      actions: read            # private repositories only, for upload-sarif
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Audit agent configs
+        id: zn
+        # Pin to the full commit SHA of the first Action release that has the
+        # mode input. The zn-gate package version is set by version below.
+        uses: usezn/zn@<commit-sha> # <first Action release with mode>
+        with:
+          version: '1.9.0'
+          mode: 'both'
+          format: 'sarif'
+          severity-threshold: 'medium'   # stricter than the default (high)
+      - name: Upload SARIF
+        if: ${{ !cancelled() && steps.zn.outputs.sarif-file != '' }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: ${{ steps.zn.outputs.sarif-file }}
+```
+
 | Input | Default | Description |
 |---|---|---|
-| `version` | current stable release | Exact `zn-gate` version to install from PyPI. Ranges and `latest` are refused. |
-| `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the wheel for `version`, as listed on PyPI. When set, the install fails if the downloaded file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
-| `path` | `.` | File or directory to scan. |
-| `fail-on-threat` | `true` | Fail the step when something is found (an injection trap or a secret). Set `false` to report only. |
-| `format` | `github` | `github` (inline annotations), `text` or `json`. |
+| `version` | `1.9.0` | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
+| `mode` | `scan` | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). `scan`, `audit` or `both`. |
+| `path` | `.` | File or directory to scan. `audit` needs a directory: with `both` a file skips the audit with a warning; with `audit` the step fails. |
+| `fail-on-threat` | `true` | Fail the step on findings. For `scan`, anything found (an injection trap or a secret); for `audit`, findings at or above `severity-threshold`. Set `false` to report only. Any value other than `true` or `false` fails the step. `true` or `false`, in any case; other values fail the step. |
+| `severity-threshold` | `high` | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). Audit only: lowest severity that fails the step when `fail-on-threat` is `true`: `critical`, `high` (high and critical), `medium` or `low`. The scan has no severities, so any scan finding fails. |
+| `fail-on` | empty | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). Audit only: lowest severity that fails the step (`low`, `medium`, `high`, `critical`, `none`), passed as is to `zn audit --fail-on`. When set, it overrides `fail-on-threat` and `severity-threshold` for the audit. |
+| `agents` | empty | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). Audit only: comma-separated agents to audit (`zn audit --agents`). Empty audits all supported agents. |
+| `format` | `github` | `github` (inline annotations), `text`, `json` or `sarif` (`sarif` requires a release of the action that includes audit mode). |
+| `sarif-file` | empty | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). With `format: sarif`, where to write the file: inside the workspace or the runner temp directory, and not a symbolic link or under one. Empty writes `zn-gate.sarif` in a new directory under the runner temp directory. |
+| `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the PyPI wheel for `version`, as listed on PyPI. When set, the install fails if the downloaded file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
+| `npm-integrity` | empty | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). Integrity string (`sha512-...`) of the npm tarball for `version`. When set, the audit fails if the tarball has a different hash. |
 
 | Output | Description |
 |---|---|
+| `sarif-file` | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). Path of the SARIF file (`format: sarif` only). Empty if no check produced a report (for example, the scan ended in an error) or the file could not be written. |
 | `scan-exit-code` | Exit code of the scan: 0 clean (or `fail-on-threat: 'false'`), 1 something found (an injection trap or a secret), 2 error. Empty if the scan did not run. |
+| `audit-exit-code` | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). Exit code of the audit: 0 clean, 1 findings at or above `fail-on`, 2 error. Empty if it did not run. |
 
 The scan finds more secret types with each release (1.9.1 added secrets passed as command-line flags and assigned to names such as `password` or `api_key`), so a job that fails on findings can start failing on files that passed before: pin `version` and read the findings before you update it.
 
-The action needs only `contents: read`. It installs the wheel with `--only-binary=:all: --no-deps` (zn-gate has no dependencies) into a private virtualenv, so no build step runs and your job's own Python packages are not touched. pip still reads the runner's own pip settings (`PIP_*` environment variables and `pip.conf`), so a mirror or proxy you configure there is used; set `package-sha256` so that the wheel is checked whatever index it comes from. The action runs on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow.
+Older releases of the action ignore the inputs they do not have, with only a warning: with one of them, `mode: audit` runs the scan instead.
+
+Which audit findings fail the step: `fail-on` if it is set; otherwise none when `fail-on-threat` is `false`; otherwise `severity-threshold`. For the scan, only `fail-on-threat` applies.
+
+With `mode: both` and `format: sarif`, the file holds one SARIF run per check (`zn-gate scan` and the audit's own run), each with its own category, so code scanning tracks their alerts separately. The step fails with the worse of the two results: an error beats findings.
+
+Permissions: the action itself needs only `contents: read`; add `security-events: write` to the job only when you upload SARIF (and, in private repositories, `actions: read`, which `upload-sarif` needs). Packages are installed without running install scripts or build steps (`--only-binary=:all: --no-deps` for the wheel, `--ignore-scripts` for the npm tarball, whose dependencies are bundled) into private directories under the runner temp directory. pip still reads the runner's own pip settings (`PIP_*` environment variables and `pip.conf`), so a mirror or proxy you configure there is used; set `package-sha256` so that the wheel is checked whatever index it comes from (and `npm-integrity` for the npm tarball). Run it on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow. With `mode: audit` or `both` the action also sets up Node.js 22 for the rest of the job.
 
 ### Repository layout
 
