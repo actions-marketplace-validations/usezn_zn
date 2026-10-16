@@ -64,7 +64,7 @@ def _decode_scan_text(raw: bytes) -> str:
 _SAFE_FILE_ARG = re.compile(r"[A-Za-z0-9._/@+-]+")
 
 
-def _secret_next_step(file: str, rule: str) -> str:
+def _leak_next_step(file: str, rule: str) -> str:
     """What to do about a secret found by the scan, in plain words (never the
     value). The same text as secretNextStep in the Node.js package; the file
     is shown relative to the current directory, as there."""
@@ -290,7 +290,7 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
                 "reason": "Exposed credential detected by DLP filter",
                 "type": "secret_leak",
                 "content": snippet,
-                "next_step": _secret_next_step(str(file_path), finding["rule"]),
+                "next_step": _leak_next_step(str(file_path), finding["rule"]),
             })
     seen = {(v["line"], v["rule"]) for v in violations}
     for name, first, _last, header, reason in blocks:
@@ -305,7 +305,7 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
             "reason": reason,
             "type": "secret_leak",
             "content": header,
-            "next_step": _secret_next_step(str(file_path), name),
+            "next_step": _leak_next_step(str(file_path), name),
         })
     return violations
 
@@ -363,8 +363,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_violations: List[Dict[str, Any]]) -> None:
     """Print the scan report: rule names, fixed text, counts and redacted snippets only."""
-    secret_count = sum(1 for v in all_violations if v.get("type") == "secret_leak")
-    threat_count = len(all_violations) - secret_count
+    leak_count = sum(1 for v in all_violations if v.get("type") == "secret_leak")
+    other_count = len(all_violations) - leak_count
     if fmt == "github":
         # CI logs are public: rule, reason and location only, never the snippet.
         for v in all_violations:
@@ -377,14 +377,14 @@ def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_vio
             print(f"::error file={_gh_property(v['file'])},line={int(v['line'])},title={title}::{_gh_message(message)}")
         for s in skipped:
             print(f"::notice file={_gh_property(s['file'])},title=Not scanned::{_gh_message(s['reason'])}")
-        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {secret_count} secrets and {threat_count} security threats.")
+        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {leak_count} secrets and {other_count} security threats.")
     elif fmt == "json":
         print(json.dumps({
             "total_files": scanned,
             "total_skipped": len(skipped),
             # Every finding, secrets included (as before); total_secrets counts the secrets alone.
             "total_threats": len(all_violations),
-            "total_secrets": secret_count,
+            "total_secrets": leak_count,
             "threats": all_violations,
             "skipped": skipped,
         }, indent=2))
@@ -399,7 +399,7 @@ def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_vio
         if not all_violations:
             print(f"{_icon(CHECK)} All scanned prompts, tool definitions, and files are clean!\n")
             return
-        print(f"{_icon(ALERT)} Found {secret_count} secrets and {threat_count} threat vectors:\n")
+        print(f"{_icon(ALERT)} Found {leak_count} secrets and {other_count} threat vectors:\n")
         for v in all_violations:
             label = "Secret found" if v.get("type") == "secret_leak" else "Threat"
             print(f"  {v['file']}:{v['line']} {label} [{v['rule']}] {v['reason']}")

@@ -170,6 +170,9 @@ test('a flag value longer than 512 characters is redacted to its end', () => {
   let seed = 7, long = 'ZNTESTFAKE';
   while (long.length < 640) { seed = (seed * 1103515245 + 12345) % 2147483648; long += A[seed % A.length]; }
   const { data, stdout } = scanJson({ 'deploy.txt': `deploy --token=${long}\n` });
-  assert.ok(!stdout.includes(long.slice(-40)), 'the end of the value was printed');
-  assert.ok(data.threats.some((t) => t.rule === 'secret:cli_credential_flag'));
+  const hit = data.threats.find((t) => t.rule === 'secret:cli_credential_flag');
+  assert.ok(hit, 'the flag was reported');
+  // The whole value is replaced: nothing of it, beyond 512 characters included, is shown.
+  assert.equal(hit.content, 'deploy --token=[REDACTED_SECRET]');
+  assert.ok(!stdout.includes(long.slice(512, 552)), 'the tail of the value was printed');
 });
