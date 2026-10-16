@@ -14,7 +14,7 @@ zn-gate makes a temporary folder with two files: a `.env` file that holds a fake
 
 - **Claude Code**: zn-gate checks the zn-gate plugin, or the hooks of `zn hooks install claude-code`. It also notices when the plugin is turned off and when a Claude Code setting turns hooks off.
 - **Codex CLI and Cursor**: zn-gate checks the hooks of `zn hooks install`.
-- **What it runs**: for Claude Code, Codex CLI and Cursor it runs the hook that is installed, exactly as your agent would. A hook that cannot start, or that blocks every file because part of zn is missing, is reported as **NOT protected**.
+- **What it runs**: for Claude Code, Codex CLI and Cursor it runs the hook that is installed, exactly as your agent would. On Windows, a hook installed as `zn hook <agent>` is not started; zn-gate checks zn's rules for it instead and says so in the output. A hook that cannot start, or that blocks every file because part of zn is missing, is reported as **NOT protected**.
 - **OpenCode**: zn-gate checks zn's rules. The zn plugin runs inside OpenCode, so it is not started here.
 - **What it leaves alone**: it checks the setup for your user. A setup made for one project only (`--project`) is listed but not run.
 - **Nothing changes**: nothing is sent over the network, no agent is started and no setting changes. The folder is deleted at the end.

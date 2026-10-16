@@ -40,7 +40,19 @@
 
 Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)).
 
-**Claude Code (recommended): the plugin.** You also need Git and Claude Code 2.1.295 or later.
+**One command for the coding agents on your machine:**
+
+```bash
+npx -y zn-gate init
+```
+
+It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal: when an AI agent or a script runs it, it only prints the steps.
+
+**Check that it works.** In a new terminal, run `npx -y zn-gate check`. For each agent set up for your user it shows **OK** when zn blocked a test `.env` file with a fake key and allowed an ordinary file, or says what to fix. Nothing is sent anywhere and no setting changes. [What the output means](docs/check.md).
+
+**Manual install**, one agent at a time (the same steps `init` runs):
+
+**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later.
 
 ```bash
 claude plugin marketplace add usezn/zn
@@ -59,10 +71,6 @@ zn hooks install codex           # or: cursor, opencode
 ```
 
 In Codex, approve the new hooks with `/hooks`. In Cursor, shell output and file contents are not scrubbed. What each agent supports: [docs/compat.md](docs/compat.md).
-
-**Not sure what to run?** `npx -y zn-gate init` finds Claude Code, Codex CLI, Cursor and OpenCode on your machine, shows the route above for each one that is not protected yet, runs each step after you confirm it (in your own terminal; an AI agent only gets the list), and ends with `zn-gate check`.
-
-**Check that it works.** In a new terminal, run `npx -y zn-gate check`. For each agent set up for your user it shows **OK** when zn blocked a test `.env` file with a fake key and allowed an ordinary file, or says what to fix. Nothing is sent anywhere and no setting changes. [What the output means](docs/check.md).
 
 **Other editors** (VS Code, Antigravity, Windsurf, Cline, Zed, JetBrains, Continue): zn-gate works there as an MCP server only. Setup for each one: [usezn.com/docs/integrations/editors](https://usezn.com/docs/integrations/editors/).
 
