@@ -2,7 +2,7 @@
   "layers": {
     "rules": {
       "version_const": "RULES_VERSION",
-      "version": "2026-10-16.1",
+      "version": "2026-10-16.2",
       "ids": [
         "evasion:bidi_override",
         "exfil:credentials",
@@ -45,12 +45,12 @@
         "secret:private_key"
       ],
       "sha256": {
-        "lib/rules.js": "9d03711c208d09f4b4bf5265bfab4474b2614965aa1bad6015c37dd8abd0c0fa"
+        "lib/rules.js": "4dcf4cd34de36a4173fd0563c80700370b35561605df6147e7afc6b3cc2eadae"
       }
     },
     "scrub": {
       "version_const": "SCRUB_RULES_VERSION",
-      "version": "2026-10-16.2",
+      "version": "2026-10-16.3",
       "ids": [
         "ANTHROPIC_KEY",
         "AWS_KEY",
@@ -116,7 +116,7 @@
         "exact.variants"
       ],
       "sha256": {
-        "lib/scrub/patterns.js": "a8b57ca26a74d9409a71d0758cacb68dcefdfe4634465e5d0a26c43f641ae285",
+        "lib/scrub/patterns.js": "e8432674541c66ba9f6578f1185758a315f536c153f1509dc9339fe83b90fd4e",
         "lib/scrub/exact.js": "d104e85ec6a25e7d6d4b6c428bd0bf8b25d43c3ead313f6872f508b65793bf6b"
       }
     },

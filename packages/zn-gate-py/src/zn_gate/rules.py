@@ -1,6 +1,6 @@
 """
 zn deterministic rules engine - Python stdlib implementation.
-RULES_VERSION: 2026-10-14.1
+RULES_VERSION: 2026-10-16.2
 Zero external dependencies. Pure Python stdlib.
 """
 
@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-10-16.1"
+RULES_VERSION = "2026-10-16.2"
 
 # Word boundaries are written as explicit ASCII lookarounds, not \b: Python's \b
 # is Unicode, JavaScript's is ASCII-only. Same patterns as rules.js.
@@ -891,10 +891,11 @@ def _pv_url_password_not_secret(pw: str, prefix: str) -> bool:
     user = prefix[cut + 3:-1]
     if len(pw) < 6 or _pv_placeholder(pw) or pw == user or pw.lower() == scheme:
         return True
-    # A user that is a shell reference ("https://$TOKEN:x-oauth-basic@host") is a template.
     # A password that is only a reference ($NAME, ${NAME}, %NAME%, <name>, {{name}}) is not a
-    # literal secret; one that merely starts with one of those characters still is.
-    if user[:1] in ("$", "%", "<", "{"):
+    # literal secret; one that merely starts with one of those characters still is. GitHub's
+    # fixed "x-oauth-basic" password is not one either (the token is then the user, found by
+    # its own pattern). A reference as the user does not make a literal password safe.
+    if pw.lower() == "x-oauth-basic":
         return True
     if re.fullmatch(r'\$\{?\w+\}?|%\w+%|<[^<>\s]+>|\{\{?\s*[\w.]+\s*\}?\}', pw):
         return True
@@ -904,7 +905,8 @@ def _pv_url_password_not_secret(pw: str, prefix: str) -> bool:
 
 
 def _pv_bearer_not_secret(token: str, prefix: str) -> bool:
-    return _pv_placeholder(token)
+    # zn's own __ZN_<NAME>__ markers are not secrets.
+    return _pv_placeholder(token) or re.fullmatch(r'__ZN_[A-Z0-9_]+__', token) is not None
 
 
 PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
@@ -944,8 +946,8 @@ PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
     # Password segment of scheme://user:password@host (any scheme, as DB_PASSWORD in patterns.js).
     # The scheme does not start inside a longer word, Unicode letters included (a long s is not an s).
     ("secret:url_password", re.compile(r"((?<!\w)[a-zA-Z][a-zA-Z0-9+.-]{1,24}://[^\s:@/?#'\"`<>]{0,128}:)([^\s@/?#'\"`<>]{1,256})(@(?:[A-Za-z0-9.-]+|\[[0-9a-fA-F:]+\]))"), r'\1[REDACTED_URL_PASSWORD]\3'),
-    # Authorization header with a bearer token (not in patterns.js). zn's own
-    # __ZN_ markers are not secrets.
+    # Authorization header with a bearer token (BEARER_TOKEN in patterns.js). zn's
+    # own __ZN_<NAME>__ markers are not secrets (_pv_bearer_not_secret).
     ("secret:bearer_token", re.compile(r'(Authorization[ \t]*:[ \t]*Bearer[ \t]+)([A-Za-z0-9._~+/=-]{20,})', re.IGNORECASE | re.ASCII), r'\1[REDACTED_BEARER_TOKEN]'),
 ]
 

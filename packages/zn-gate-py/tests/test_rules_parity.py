@@ -318,10 +318,13 @@ class TestPrefixedCredentialNames(unittest.TestCase):
             with self.subTest(text=text[:20]):
                 self.assertRedacted(text, RANDOM_24)
         # "$NAME:" is a shell reference followed by text, and "${NAME}" a reference.
-        for text in ("echo $DB_PASSWORD:" + "x7" * 8, "echo ${DB_PASSWORD}" + "x7" * 8,
-                     'URL="https://$API_TOKEN:' + "x7" * 8 + '@example.com"'):
+        for text in ("echo $DB_PASSWORD:" + "x7" * 8, "echo ${DB_PASSWORD}" + "x7" * 8):
             with self.subTest(text=text[:20]):
                 self.assertEqual(R.redact_secrets(text)[1], [])
+        # In a URL the credential rules leave "$API_TOKEN:" alone too, but a literal
+        # password after a reference user is still a URL password.
+        found = R.redact_secrets('URL="https://$API_TOKEN:' + "x7" * 8 + '@example.com"')[1]
+        self.assertEqual([d["rule"] for d in found], ["secret:url_password"])
 
     def test_machine_generated_values_with_code_like_shapes(self):
         cases = {

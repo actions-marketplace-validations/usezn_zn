@@ -75,8 +75,8 @@ class TestSecretOutput(_ScanDir):
         self.assertEqual(code, 1)
         self.assertIn("Found 2 secrets and 0 threat vectors", out)
         self.assertIn("Secret found [secret:", out)
-        self.assertIn('Next: move the values into the local vault with "npx -y zn-gate env shadow ', out)
-        self.assertIn('Next: store the value in the local vault with "npx -y zn-gate secret set NAME"', out)
+        self.assertIn("Next: run npx -y zn-gate env shadow ", out)
+        self.assertIn("Next: run npx -y zn-gate secret set NAME to store the value in the local vault", out)
         self.assertNotIn("ZNTESTFAKE", out)
 
     def test_github_titles_and_summary(self):
@@ -105,6 +105,50 @@ class TestSecretOutput(_ScanDir):
         self.assertTrue(data["threats"])
         for t in data["threats"]:
             self.assertNotIn("next_step", t)
+
+
+class TestNextStepFileName(_ScanDir):
+    """A file name is put in the suggested command only when it is plain."""
+
+    def _step(self, name):
+        for f in os.listdir(self.dir):
+            p = os.path.join(self.dir, f)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+        self._write(name, "AWS_ACCESS_KEY_ID=" + FAKE_AWS + "\n")
+        cwd = os.getcwd()
+        os.chdir(self.dir)
+        try:
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                cmd_scan(argparse.Namespace(path=".", exclude=None, include=None, format="json", no_fail=True))
+        finally:
+            os.chdir(cwd)
+        steps = [t["next_step"] for t in json.loads(out.getvalue())["threats"] if t["type"] == "secret_leak"]
+        self.assertEqual(len(steps), 1, name)
+        return steps[0]
+
+    def test_plain_and_hostile_names(self):
+        bt = chr(96)
+        for name, shown in ((".env.local", ".env.local"), (".env$(touch PWNED)", "<file>"),
+                            (".env" + bt + "id" + bt, "<file>"), (".env local", "<file>"), ('.env"x', "<file>")):
+            with self.subTest(name=name):
+                self.assertEqual(self._step(name), "Next: run npx -y zn-gate env shadow " + shown
+                                 + " to move the values into the local vault, and rotate any value that was"
+                                 " ever committed or shared.")
+
+    def test_a_path_starting_with_a_dash(self):
+        os.mkdir(os.path.join(self.dir, "-x"))
+        self._write(os.path.join("-x", ".env"), "AWS_ACCESS_KEY_ID=" + FAKE_AWS + "\n")
+        cwd = os.getcwd()
+        os.chdir(self.dir)
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                cmd_scan(argparse.Namespace(path="-x", exclude=None, include=None, format="json", no_fail=True))
+        finally:
+            os.chdir(cwd)
+        step = json.loads(out.getvalue())["threats"][0]["next_step"]
+        self.assertIn("env shadow <file> to move", step)
 
 
 class TestFileKinds(_ScanDir):

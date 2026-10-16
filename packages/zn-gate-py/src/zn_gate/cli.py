@@ -59,17 +59,27 @@ def _decode_scan_text(raw: bytes) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
+# A file name is put in a suggested command only when it is made of plain
+# characters and does not start with "-" (see secretNextStep in cli.js).
+_SAFE_FILE_ARG = re.compile(r"[A-Za-z0-9._/@+-]+")
+
+
 def _secret_next_step(file: str, rule: str) -> str:
     """What to do about a secret found by the scan, in plain words (never the
-    value). The same text as secretNextStep in the Node.js package."""
-    shown = f'"{file}"' if re.search(r"\s", file) else file
+    value). The same text as secretNextStep in the Node.js package; the file
+    is shown relative to the current directory, as there."""
     if rule == "secret:private_key":
         return ("Next: move the key out of this file (for example to ~/.ssh or a secret manager) "
                 "and replace it if the file was ever committed or shared.")
     if re.match(r"\.env", os.path.basename(file), re.IGNORECASE):
-        return (f'Next: move the values into the local vault with "npx -y zn-gate env shadow {shown}", '
+        try:
+            rel = os.path.relpath(file)
+        except ValueError:  # another drive on Windows
+            rel = file
+        arg = rel if _SAFE_FILE_ARG.fullmatch(rel) and not rel.startswith("-") else "<file>"
+        return (f"Next: run npx -y zn-gate env shadow {arg} to move the values into the local vault, "
                 "and rotate any value that was ever committed or shared.")
-    return ('Next: store the value in the local vault with "npx -y zn-gate secret set NAME" and use the '
+    return ("Next: run npx -y zn-gate secret set NAME to store the value in the local vault, use the "
             "__ZN_NAME__ marker in its place, and rotate it if it was ever committed or shared.")
 
 SHIELD = "\U0001f6e1\ufe0f"

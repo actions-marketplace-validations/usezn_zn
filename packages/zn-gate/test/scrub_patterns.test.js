@@ -338,6 +338,70 @@ test('the 13 fixed snippets carry no PII either', () => {
   for (const t of KNOWN_OK) assert.deepStrictEqual(pii(t), [], t);
 });
 
+/* ---------------- Bearer tokens and URL passwords ---------------- */
+
+test('BEARER_TOKEN: an opaque token is a span; markers, references and placeholders are not', () => {
+  const token = 'ZNTESTFAKE' + pick(ALNUM, 24);
+  const text = 'curl -H "Authorization: Bearer ' + token + '" https://api.example.com/v1';
+  assert.ok(covers(text, token), text);
+  assert.ok(types(text).includes('BEARER_TOKEN'));
+  assert.ok(types('authorization:bearer ' + token).includes('BEARER_TOKEN'));
+  for (const t of [
+    'Authorization: Bearer __ZN_GITHUB_TOKEN__',
+    'Authorization: Bearer $GITHUB_TOKEN_FOR_CI_JOBS',
+    'Authorization: Bearer ${GITHUB_TOKEN_FOR_CI_JOBS}',
+    'Authorization: Bearer <your-access-token-here>',
+    'Authorization: Bearer xxxxxxxxxxxxxxxxxxxxxxxx',
+    'Authorization: Bearer ' + token.slice(0, 19),
+  ]) {
+    assert.ok(!types(t).includes('BEARER_TOKEN'), t);
+  }
+});
+
+test('URL_PASSWORD: a literal password is a span whatever the user; references are not', () => {
+  const pw = 'ZNTESTFAKE' + pick(ALNUM, 12);
+  for (const user of ['deploy', '${GIT_USER}', '$GIT_USER', '%GIT_USER%', 'x-access-token', 'oauth2']) {
+    const text = 'git clone https://' + user + ':' + pw + '@git.example.com/org/repo.git';
+    assert.ok(covers(text, pw), text);
+    assert.ok(types(text).includes('URL_PASSWORD'), text);
+  }
+  assert.ok(covers('ssh://deploy:' + pw + '@git.example.com/org/repo.git', pw));
+  for (const t of [
+    'https://$TOKEN:x-oauth-basic@git.example.com/org/repo.git',
+    'https://' + pw + ':x-oauth-basic@git.example.com/org/repo.git',
+    'https://deploy:%GIT_PASSWORD%@git.example.com/org/repo.git',
+    'https://deploy:${GIT_PASSWORD}@git.example.com/org/repo.git',
+    'https://deploy:$GIT_PASSWORD@git.example.com/org/repo.git',
+    'https://deploy:<password>@git.example.com/org/repo.git',
+    'https://deploy:{{git_password}}@git.example.com/org/repo.git',
+    'https://git.example.com/org/repo.git',
+  ]) {
+    assert.ok(!types(t).includes('URL_PASSWORD') && !types(t).includes('DB_PASSWORD'), t);
+  }
+});
+
+test('BEARER_TOKEN and URL_PASSWORD stay fast on 100 KB adversarial inputs', () => {
+  const size = 100 * 1024;
+  const fill = (unit) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+  const inputs = [
+    fill('Authorization: Bearer '),
+    fill('authorization:'),
+    'Authorization: Bearer ' + fill('a'),
+    'Authorization: Bearer ' + fill('a.') + ' ',
+    fill('https://a:'),
+    fill('https://a:b'),
+    'https://u:' + fill('a') + '@',
+    fill('a://b:c@'),
+    fill('://:'),
+  ];
+  for (const input of inputs) {
+    const t0 = process.hrtime.bigint();
+    P.findPatterns(input, {});
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 500, 'findPatterns took ' + ms.toFixed(1) + ' ms on ' + JSON.stringify(input.slice(0, 16)));
+  }
+});
+
 module.exports = { KNOWN_OK };
 
 if (require.main === module) run('scrub patterns + PII');

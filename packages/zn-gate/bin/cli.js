@@ -86,16 +86,20 @@ function decodeScanText(raw) {
 }
 
 // What to do about a secret found by the scan, in plain words. Never
-// includes the value. The same text as the Python package.
+// includes the value. The same text as the Python package. A file name is
+// put in the suggested command only when it is made of plain characters and
+// does not start with "-": a name such as `.env$(cmd)` would otherwise turn
+// into a command the user may paste.
+const SAFE_FILE_ARG = /^[A-Za-z0-9._\/@+-]+$/;
 function secretNextStep(file, rule) {
-  const shown = /\s/.test(file) ? `"${file}"` : file;
   if (rule === 'secret:private_key') {
     return 'Next: move the key out of this file (for example to ~/.ssh or a secret manager) and replace it if the file was ever committed or shared.';
   }
   if (/^\.env/i.test(path.basename(file))) {
-    return `Next: move the values into the local vault with "npx -y zn-gate env shadow ${shown}", and rotate any value that was ever committed or shared.`;
+    const arg = SAFE_FILE_ARG.test(file) && !file.startsWith('-') ? file : '<file>';
+    return `Next: run npx -y zn-gate env shadow ${arg} to move the values into the local vault, and rotate any value that was ever committed or shared.`;
   }
-  return 'Next: store the value in the local vault with "npx -y zn-gate secret set NAME" and use the __ZN_NAME__ marker in its place, and rotate it if it was ever committed or shared.';
+  return 'Next: run npx -y zn-gate secret set NAME to store the value in the local vault, use the __ZN_NAME__ marker in its place, and rotate it if it was ever committed or shared.';
 }
 
 // The line shown with a scan finding: secrets found by the rules and by the

@@ -58,8 +58,8 @@ test('a secret says "Secret found" and gives a next step, never the value', () =
   assert.match(text.stdout, /Secret found/);
   assert.match(text.stdout, /SECRET\(S\) FOUND/);
   assert.doesNotMatch(text.stdout, /THREAT\(S\) FOUND/);
-  assert.match(text.stdout, /Next: move the values into the local vault with "npx -y zn-gate env shadow \.env"/);
-  assert.match(text.stdout, /Next: store the value in the local vault with "npx -y zn-gate secret set NAME"/);
+  assert.match(text.stdout, /Next: run npx -y zn-gate env shadow \.env to move the values into the local vault/);
+  assert.match(text.stdout, /Next: run npx -y zn-gate secret set NAME to store the value in the local vault/);
   assert.ok(!text.stdout.includes('ZNTESTFAKE'));
 
   const gh = scanDir(files, ['--format', 'github']);
@@ -74,6 +74,37 @@ test('a secret says "Secret found" and gives a next step, never the value', () =
   assert.equal(data.total_secrets, 2);
   assert.equal(data.total_threats, 2);
   for (const t of data.threats) assert.match(t.next_step, /^Next: /);
+});
+
+test('a file name is put in the suggested command only when it is plain', () => {
+  const env = `AWS_ACCESS_KEY_ID=${FAKE_AWS}\n`;
+  const BT = String.fromCharCode(96);
+  const cases = [
+    ['.env.local', '.env.local'],
+    ['.env$(touch PWNED)', '<file>'],
+    ['.env' + BT + 'id' + BT, '<file>'],
+    ['.env local', '<file>'],
+    ['.env"x', '<file>'],
+  ];
+  for (const [name, shown] of cases) {
+    const { data } = scanJson({ [name]: env });
+    const steps = data.threats.filter((t) => t.type === 'secret_leak').map((t) => t.next_step);
+    assert.equal(steps.length, 1, name);
+    assert.equal(steps[0], `Next: run npx -y zn-gate env shadow ${shown} to move the values into the local vault, and rotate any value that was ever committed or shared.`, name);
+  }
+  // A path that starts with "-" would be read as an option.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-scan-dash-'));
+  try {
+    fs.mkdirSync(path.join(dir, '-x'));
+    fs.writeFileSync(path.join(dir, '-x', '.env'), env);
+    const r = spawnSync(process.execPath, [CLI, 'scan', '--format', 'json', '--', '-x'], {
+      cwd: dir, encoding: 'utf8', env: { ...process.env, ZN_LOCAL_ONLY: 'true' },
+    });
+    const data = JSON.parse(r.stdout);
+    assert.match(data.threats[0].next_step, /env shadow <file> to move/, r.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('injection findings keep the threat wording and have no next step', () => {
