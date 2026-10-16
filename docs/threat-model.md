@@ -176,8 +176,10 @@ stop malware running as the same user (see above).
   accepted, so a pipe from PowerShell is read.
 - **The hook process does not start at all** (for example, Node moved after an
   upgrade and the hook command points to the old path, or the hook times out):
-  most agents then carry on without the hook. Run `zn hooks install` again
-  after moving or upgrading Node.
+  tool calls in most agents then go ahead unchecked. Run `zn hooks install` again
+  after moving or upgrading Node. Agents that block prompts when the hook fails
+  (Claude Code, Cursor, OpenCode) block every prompt until then: see
+  [If your agent blocks every prompt](compat.md#if-your-agent-blocks-every-prompt).
 
 ## Design decisions and known limits
 
