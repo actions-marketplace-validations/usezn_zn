@@ -87,6 +87,7 @@ test('a file name is put in the suggested command only when it is plain', () => 
     ['.env"x', '<file>'],
   ];
   for (const [name, shown] of cases) {
+    if (process.platform === 'win32' && /[<>:"|?*]/.test(name)) continue; // not a valid file name on Windows
     const { data } = scanJson({ [name]: env });
     const steps = data.threats.filter((t) => t.type === 'secret_leak').map((t) => t.next_step);
     assert.equal(steps.length, 1, name);
@@ -161,4 +162,17 @@ test('skipped files are counted in text and github and listed in JSON', () => {
   assert.deepEqual(data.skipped.map((s) => s.reason).sort(), ['2 MiB or larger', 'binary .key file, not a key']);
   assert.match(scanDir(files).stdout, /Files Skipped: 2\b/);
   assert.match(scanDir(files, ['--format', 'github']).stdout, /\(2 not scanned\)/);
+});
+
+test('a flag value longer than 512 characters is redacted to its end', () => {
+  // A fake value that looks generated (fixed pseudo-random letters and digits), 640 characters long.
+  const A = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let seed = 7, long = 'ZNTESTFAKE';
+  while (long.length < 640) { seed = (seed * 1103515245 + 12345) % 2147483648; long += A[seed % A.length]; }
+  const { data, stdout } = scanJson({ 'deploy.txt': `deploy --token=${long}\n` });
+  const hit = data.threats.find((t) => t.rule === 'secret:cli_credential_flag');
+  assert.ok(hit, 'the flag was reported');
+  // The whole value is replaced: nothing of it, beyond 512 characters included, is shown.
+  assert.equal(hit.content, 'deploy --token=[REDACTED_SECRET]');
+  assert.ok(!stdout.includes(long.slice(512, 552)), 'the tail of the value was printed');
 });
