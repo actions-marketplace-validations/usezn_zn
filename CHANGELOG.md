@@ -9,14 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-10-16
+
+zn-gate 1.9.1 finds more kinds of secrets with `zn-gate scan` and says what to do about each one, gives repairs that work in `zn-gate check` and `zn-gate init` (also after a Node.js version is removed), and closes ways an AI agent could start the guided `zn-gate init`. It also stops clearly on Node.js older than 18. Update with `npm install -g zn-gate@1.9.1` and `pip install -U zn-gate`.
+
+**If a CI job runs `zn-gate scan`:** the Node.js scan now reports more secret types, so a job that fails on findings can start failing on files that passed before. **If you use the agent hooks:** a prompt, tool call or MCP call that holds an opaque `Authorization: Bearer` token is now blocked or has the token replaced.
+
 ### Added
 - `zn-gate scan` finds more secrets, in Node.js and Python alike: values of `--api-key=`, `--password=`, `--token=`, `--secret=` and similar flags on a command line; quoted values assigned to a name that ends in password, secret, token or api key with `=`, `:`, `:=` or `=>` (also `$password = "..."`), when the value looks machine-generated; an opaque `Authorization: Bearer` token; and the password in `https://user:password@host` and `ssh://user:password@host` URLs, such as git remotes. A flag without a value, a reference (`$TOKEN`, `${API_KEY}`), a placeholder (`<token>`, `changeme`) and a URL without a password are not reported. The Node.js scan now also reports the provider token formats the Python scan already reported (Slack, Stripe, Google, Hugging Face and the others the scrubber knows), with the same rule names.
 - `zn-gate scan` reads UTF-16 files that start with a byte order mark, and the private key files `id_xmss` and `identity`.
 - The scrubber also replaces an opaque `Authorization: Bearer` token (new type `BEARER_TOKEN`), as the Python package already did; zn's own `__ZN_<NAME>__` markers are left alone. GitHub's fixed `x-oauth-basic` password (`https://<token>:x-oauth-basic@host`) is no longer a URL password in either package; the token in the user part is still found by its own pattern. A password that is only a reference (`%NAME%`, `$NAME`, `${NAME}`, `<name>`, `{{name}}`) is not one either, while a literal password is redacted whatever the user part says. `RULES_VERSION` is now `2026-10-16.2` and `SCRUB_RULES_VERSION` `2026-10-16.3`.
-
-### Fixed
-- `zn hooks uninstall claude-code` removed any user MCP server called `secrets` from Claude Code, also one that was not zn's. It now removes only zn's own server, recognised by its exact command (zn-gate's `secrets-mcp`), and says so when it leaves another one in place. `zn hooks install` no longer overwrites another `secrets` server that only mentions `secrets-mcp`.
-- An AI agent could start the guided `zn-gate init` despite the rule that keeps agents from running it: with a backslash or other characters the shell joins into one word, an option in capital letters, or `npm exec`, which keeps the options after the package for itself. These are refused now, and the guided `zn-gate init` stops with an error when it gets any argument. An agent variable such as `CLAUDECODE` that is set but empty now also counts as an agent. `POLICY_RULES_VERSION` is `2026-10-16.5`.
 
 ### Changed
 - With Node.js older than 18, the `zn-gate` and `zn` commands you run stop with a short message that names the version and how to install Node.js 18 or later (exit code 1). Hooks, MCP servers and the `zn run` commands that zn's hooks write keep running and print a warning, so a check that works today is not turned off. Node.js 16 and 17 were never supported; some commands happened to run on them.
@@ -29,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: the Python install steps say that Debian and Ubuntu need the `python3-venv` package for `python3 -m venv`.
 - Docs: what to do when your agent blocks every prompt because zn's hook cannot run (usually after Node.js is upgraded or moved): `zn-gate check`, reinstall, or turn zn off for that agent until it is fixed (docs/compat.md).
 - Docs: the README, docs/secrets.md and docs/check.md describe the 1.9.1 behaviour: "Secret found" and its next step in `zn-gate scan`, the secret types it finds (and that a CI job can start failing on files that passed before), the Node.js 18 message, the repair steps of `zn-gate check`, the guided `zn-gate init` without arguments, and `zn hooks uninstall claude-code` keeping other `secrets` MCP servers.
+
+### Fixed
+- `zn hooks uninstall claude-code` removed any user MCP server called `secrets` from Claude Code, also one that was not zn's. It now removes only zn's own server, recognised by its exact command (zn-gate's `secrets-mcp`), and says so when it leaves another one in place. `zn hooks install` no longer overwrites another `secrets` server that only mentions `secrets-mcp`.
+- An AI agent could start the guided `zn-gate init` despite the rule that keeps agents from running it: with a backslash or other characters the shell joins into one word, an option in capital letters, or `npm exec`, which keeps the options after the package for itself. These are refused now, and the guided `zn-gate init` stops with an error when it gets any argument. An agent variable such as `CLAUDECODE` that is set but empty now also counts as an agent. `POLICY_RULES_VERSION` is `2026-10-16.5`.
 
 ## [1.9.0] - 2026-10-16
 
@@ -448,7 +454,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.9.0...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.9.1...next
+[1.9.1]: https://github.com/usezn/zn/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/usezn/zn/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/usezn/zn/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/usezn/zn/compare/v1.8.0...v1.8.1
