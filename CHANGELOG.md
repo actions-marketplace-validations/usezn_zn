@@ -9,12 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-16
+
+zn-gate 1.9.0 makes `npx -y zn-gate init` the one command that sets up zn for the coding agents on your machine, and adds `zn-gate check` to show that zn stops your agent from reading a secret. Block messages for commands only you may run now give the exact command. Update with `npm install -g zn-gate@1.9.0`; the Python package has no code changes and moves to 1.9.0 to keep the versions in step.
+
+**Breaking for scripts:** `zn-gate init` without options no longer wraps the MCP servers in your agent configs. Use `zn-gate init --wrap-mcp`.
+
 ### Added
 - `zn-gate init` is now a guided setup: it finds Claude Code, Codex CLI, Cursor and OpenCode, shows the one route that protects each agent that is not protected yet (the zn-gate plugin for Claude Code, `zn hooks install` for the others, from a global install rather than the npx cache), runs each step after you confirm it in your own terminal, and ends with `zn-gate check`. When an AI agent or a script runs it, it only prints the steps.
 - `zn-gate check` (also `zn-gate doctor`) shows that zn stops your coding agent from reading a secret. For each agent set up for your user (Claude Code through the zn-gate plugin or `zn hooks install`, Codex CLI, Cursor, OpenCode), it asks zn's hook to let the agent read a `.env` file with a fake key and an ordinary file, in a temporary folder. An agent counts as protected only when the first is blocked and the second allowed. For Claude Code, Codex CLI and Cursor it also runs the installed hook, which finds a hook that cannot start or that blocks every file. It says how to fix an agent that is not protected. Nothing is sent over the network and no setting changes. See [docs/check.md](docs/check.md).
 - `zn hooks install claude-code` and `zn-gate status` warn when Claude Code settings stop zn from running: an organization policy that turns off all hooks (`disableAllHooks`), runs only its own hooks (`allowManagedHooksOnly`), or does not allow the `secrets` MCP server (`managed-mcp.json`, `allowManagedMcpServersOnly`, `allowedMcpServers`, `deniedMcpServers`), or `disableAllHooks` in your own settings. Claude Code does not show these. Only the settings files are read, not policy sent through claude.ai, MDM or the Windows registry.
 
 ### Changed
+- The READMEs start with `npx -y zn-gate init`; the steps for each agent are under "Manual install".
 - Block messages, third batch: zn commands that only the user may run (`hooks install` and `uninstall`, `unlock`, `lock`, `stats share on`, `secret`, `env shadow`, `pins approve`, `init`) each say what the command does and the command for the user to run, with the agent, secret name or file name when the agent's command had one, instead of one message about secret values for all of them. Reading or changing `~/.zn` now says how a command can still use a secret, and a secret after a shell keyword says why it cannot be filled in.
 - Breaking for scripts: `zn-gate init` without options no longer wraps the MCP servers in your agent configs: that is now `zn-gate init --wrap-mcp`. `--dry-run`, `--shadow` and `--revert` still select it. AI agents can no longer run the guided `zn-gate init` (zn's hooks refuse it, as they refuse `zn hooks install`); `--wrap-mcp` is not affected.
 - CI: draft pull requests skip the test, package, plugin, Rust, Windows and action jobs until they are marked ready for review, and pushes that change only documentation skip the test and plugin workflows (Markdown in the packages and plugins still runs them); the plugin checks also skip documentation-only pull requests. On release pull requests, which are opened before the plugin can be pinned, a plugin pin one step behind the release is a warning in `Public facts`; it still fails on `main` and `next`, so `main` stays red after a release merge until the plugin is pinned. The `Plugin repository` workflow ends with a warning instead of failing while the plugin repository's copy of its checks is out of date.
@@ -420,7 +427,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.8.2...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.9.0...next
+[1.9.0]: https://github.com/usezn/zn/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/usezn/zn/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/usezn/zn/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/usezn/zn/compare/v1.7.1...v1.8.0
