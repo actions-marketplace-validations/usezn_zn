@@ -2,7 +2,7 @@
   "layers": {
     "rules": {
       "version_const": "RULES_VERSION",
-      "version": "2026-10-16.2",
+      "version": "2026-10-16.4",
       "ids": [
         "evasion:bidi_override",
         "exfil:credentials",
@@ -45,7 +45,7 @@
         "secret:private_key"
       ],
       "sha256": {
-        "lib/rules.js": "4dcf4cd34de36a4173fd0563c80700370b35561605df6147e7afc6b3cc2eadae"
+        "lib/rules.js": "b99e72a9ae847301d8e5323b6504f6782de3fed6297a1e420ba8b1225edafee7"
       }
     },
     "scrub": {
