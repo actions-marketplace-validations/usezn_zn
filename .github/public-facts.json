@@ -60,7 +60,7 @@
         "packages/zn-gate/package.json"
       ],
       "must": [
-        "(Claude Code, Codex CLI, Cursor, OpenCode)"
+        "while you use Claude Code, Codex CLI, Cursor or OpenCode"
       ]
     },
     {
