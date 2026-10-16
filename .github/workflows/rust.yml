@@ -5,6 +5,7 @@ on:
     branches: [main, next]
     paths: ["src/**", "Cargo.toml", "Cargo.lock", ".cargo/**", "build.rs", ".github/workflows/rust.yml"]
   pull_request:
+    types: [ opened, synchronize, reopened, ready_for_review ]
     paths: ["src/**", "Cargo.toml", "Cargo.lock", ".cargo/**", "build.rs", ".github/workflows/rust.yml"]
   schedule:
     - cron: "17 6 * * 1" # weekly advisory check
@@ -13,13 +14,17 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request, or to next, cancels the run still going for it, so a burst of
+# merges into next tests only the newest commit. Runs for main, scheduled runs and manual runs always complete.
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: rust-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref == 'refs/heads/next') && 'next-push' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/next') }}
 
 jobs:
   check:
     name: build, test, clippy, fmt
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -38,6 +43,11 @@ jobs:
           version: "29.3"
           repo-token: ${{ github.token }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Each Rust cache is 1.5 to 3 GB, so only main saves one. next and pull requests
+          # restore the cache of main (same key prefix) and save nothing, which keeps the
+          # repository under its 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
@@ -49,6 +59,8 @@ jobs:
 
   audit:
     name: cargo audit
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

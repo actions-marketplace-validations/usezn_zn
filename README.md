@@ -40,7 +40,19 @@
 
 Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)).
 
-**Claude Code (recommended): the plugin.** You also need Git and Claude Code 2.1.295 or later.
+**One command for the coding agents on your machine:**
+
+```bash
+npx -y zn-gate init
+```
+
+It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal: when an AI agent or a script runs it, it only prints the steps.
+
+**Check that it works.** In a new terminal, run `npx -y zn-gate check`. For each agent set up for your user it shows **OK** when zn blocked a test `.env` file with a fake key and allowed an ordinary file, or says what to fix. Nothing is sent anywhere and no setting changes. [What the output means](docs/check.md).
+
+**Manual install**, one agent at a time (the same steps `init` runs):
+
+**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later.
 
 ```bash
 claude plugin marketplace add usezn/zn
@@ -95,13 +107,19 @@ Cursor (`~/.cursor/mcp.json`) and other editors: `{ "mcpServers": { "zn-gate": {
 
 ```bash
 npx -y zn-gate init --dry-run   # preview
-npx -y zn-gate init             # wrap (backup first)
+npx -y zn-gate init --wrap-mcp  # wrap (backup first)
 npx -y zn-gate init --revert    # undo
 ```
 
 It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`), Codex CLI (`~/.codex/config.toml`), OpenCode (`~/.config/opencode/opencode.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). [Full list and rules](packages/zn-gate/README.md#wrap-the-mcp-servers-you-already-use).
 
 ## Check that it works
+
+```bash
+npx -y zn-gate check
+```
+
+For each agent set up for your user, zn-gate asks its hook to let the agent read a `.env` file with a fake key and an ordinary file, in a temporary folder. It shows what your agent would be told, and a line that says **NOT protected** says how to fix it. Nothing is sent over the network and no setting changes. [What the output means](docs/check.md).
 
 ```bash
 npx -y zn-gate test
@@ -221,10 +239,10 @@ jobs:
           persist-credentials: false
       - name: Scan AI agent prompts and tools
         # Pin the action to a full commit SHA; the comment names the release.
-        # v1.4.1 does not have the package-sha256 input (v1.5.0 and later).
-        uses: usezn/zn@d9da1b1a87e12c4da468cb9beec425dc3f972c5f # v1.4.1
+        uses: usezn/zn@dca953a154615595848b1367d0fd40b08ef0c7fd # v1.8.0
         with:
-          version: '1.5.0'
+          version: '1.8.0'
+          package-sha256: '2174e1d9647fb0e8c42922c72363b35c26b0b97065b909eaa7a7d6b7c3950e17'
           path: '.'
           fail-on-threat: 'true'
           format: 'github'

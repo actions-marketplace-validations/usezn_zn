@@ -270,7 +270,7 @@ test('the agent hooks refuse zn-gate pins approve, also quoted and from PowerShe
   const policy = require('../lib/hooks/policy');
   for (const cmd of ['zn pins approve --all', 'npx -y zn-gate@1.7.0 pins approve 1a2b3c', 'zn-gate pins approve abc',
     "zn-gate pins 'approve' --all", "zn-gate 'pins' approve x", 'zn-gate.ps1 pins approve x']) {
-    assert.match(policy.bashDenial(cmd) || '', /approving MCP tool changes/, cmd);
+    assert.match(policy.bashDenial(cmd) || '', /approving changed MCP tools/, cmd);
   }
   assert.strictEqual(policy.adminCommand('zn-gate pins'), null, 'listing the pins is allowed');
 });

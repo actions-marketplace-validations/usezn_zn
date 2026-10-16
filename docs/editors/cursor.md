@@ -58,8 +58,8 @@ The agent can then call `analyze_prompt`, `check_tool_call`, `check_tool_result`
 ### Check the output of your other MCP servers
 
 ```bash
-npx -y zn-gate init --dry-run   # shows what would change
-npx -y zn-gate init             # wraps each local server with zn-gate shield (a backup is written first)
+npx -y zn-gate init --dry-run    # shows what would change
+npx -y zn-gate init --wrap-mcp  # wraps each local server with zn-gate shield (a backup is written first)
 ```
 
 Every result of a wrapped server is checked for prompt injection, and secrets zn-gate recognizes are removed, before the agent sees it. `npx -y zn-gate init --revert` restores the backup.
