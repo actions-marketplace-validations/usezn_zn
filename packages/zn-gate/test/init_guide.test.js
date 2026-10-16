@@ -362,3 +362,68 @@ test('plan: a broken plugin next to zn hooks gets one step that turns the plugin
   const cc = items.find((i) => i.id === 'claude-code');
   assert.deepEqual(cc.steps.map(line), ['claude plugin disable zn-gate@usezn']);
 });
+
+function brokenPluginIn(home) {
+  const root = path.join(home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.9.0');
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), "process.stderr.write('zn plugin: zn-gate is not installed'); process.exit(2);\n");
+  fs.writeFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: root }] } }));
+}
+
+const goneNode = (m) => getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: '/nonexistent/bin/node', runnerPath: RUNNER, mcp: false });
+
+test('plan: a broken plugin next to zn hooks that do not work either repairs the hooks first, then turns the plugin off', async (t) => {
+  const m = machine(t, ['claude-code']);
+  goneNode(m);
+  brokenPluginIn(m.home);
+  const { items, setup } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code', 'claude plugin disable zn-gate@usezn']);
+  assert.equal(setup.length, 0);
+  // From a temporary copy, the global install comes first, then the hooks with the global zn, then the plugin off.
+  const tmp = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: true, global: { npm: NPM, zn: ZN } });
+  const t2 = tmp.items.find((i) => i.id === 'claude-code');
+  assert.deepEqual(tmp.setup.map(line), ['npm install -g zn-gate@' + VERSION]);
+  assert.deepEqual(t2.steps.map(line), ['zn hooks install claude-code', 'claude plugin disable zn-gate@usezn']);
+  assert.deepEqual(t2.steps[0].run, [ZN, ['hooks', 'install', 'claude-code']]);
+});
+
+test('guide: the plugin is never turned off while the hooks are not repaired', async (t) => {
+  const m = machine(t, ['claude-code']);
+  goneNode(m);
+  brokenPluginIn(m.home);
+  for (const outcome of ['declined', 'failed']) {
+    const out = capture();
+    const ran = [];
+    const confirm = async () => outcome !== 'declined';
+    const run = (step) => { ran.push(step.manual); return false; };
+    await guide({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false, stdin: tty, write: out.write, confirm, run });
+    assert.ok(!ran.includes('claude plugin disable zn-gate@usezn'), outcome + ': ' + ran.join(', '));
+  }
+});
+
+test('plan: a Claude Code setting that stops all hooks, with the plugin and zn hooks, touches neither set', async (t) => {
+  const m = machine(t, ['claude-code']);
+  getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+  pluginIn(m.home, true);
+  const file = path.join(m.home, '.claude', 'settings.json');
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), disableAllHooks: true }));
+  const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.equal(cc.state, 'not-protected');
+  assert.match(cc.problem, /disableAllHooks/);
+  assert.equal(cc.steps.length, 1);
+  assert.equal(cc.steps[0].run, null);
+  assert.doesNotMatch(cc.steps.map(line).join(' '), /plugin disable|hooks uninstall|hooks install/);
+});
+
+test('plan: a plugin turned off next to broken zn hooks repairs the hooks only', async (t) => {
+  const m = machine(t, ['claude-code']);
+  goneNode(m);
+  pluginIn(m.home, false);
+  const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.equal(cc.state, 'not-protected');
+  assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code']);
+});

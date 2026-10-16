@@ -160,6 +160,9 @@ test('check: the Claude Code plugin is checked through its launcher; a launcher 
   r = byId(await check({ home, env, cwd: home }), 'claude-code');
   assert.equal(r.state, 'not-protected');
   assert.match(r.problem, /blocks everything, ordinary files too/);
+  // The plugin alone: no second set to fall back on, so nothing is offered to turn off.
+  assert.ok(!r.pluginBroken);
+  assert.doesNotMatch(r.fix, /plugin disable/);
 });
 
 test('check: the plugin\'s own check message, a plugin turned off, and a disableAllHooks setting are not protected', async (t) => {
@@ -264,6 +267,7 @@ test('check: a plugin that is turned off next to zn hooks: the hooks are checked
   const r = byId(await check(ctx), 'claude-code');
   assert.equal(r.via, 'hooks');
   assert.equal(r.state, 'protected');
+  assert.ok(!r.pluginBroken);
   assert.ok(r.notes.includes('the zn-gate plugin is also installed, but turned off'));
   assert.doesNotMatch(r.fix, /uninstall/);
 });
@@ -285,8 +289,86 @@ test('check: a broken plugin next to zn hooks is turned off, not the hooks remov
   const r = byId(await check(ctx), 'claude-code');
   assert.equal(r.via, 'both');
   assert.equal(r.pluginBroken, true);
+  assert.equal(r.hooksBroken, false);
   assert.equal(r.state, 'not-protected');
-  assert.match(r.problem, /the zn-gate plugin does not work here/);
+  assert.match(r.problem, /the zn-gate plugin does not work here \(.+\), while the hooks of `zn hooks install claude-code` next to it do$/);
   assert.match(r.fix, /claude plugin disable zn-gate@usezn/);
-  assert.doesNotMatch(r.fix, /hooks uninstall/);
+  assert.doesNotMatch(r.fix, /hooks uninstall|npm install/);
+});
+
+test('check: a plugin whose own check message reports a fault, next to working zn hooks, is turned off', async (t) => {
+  const ctx = homeWithHooks(t, ['claude-code']);
+  const settings = JSON.parse(fs.readFileSync(getAdapter('claude-code').settingsFile(ctx), 'utf8'));
+  fakePlugin(ctx.home, launcher({ systemMessage: 'zn plugin: this Node.js is not supported. Run: npm i -g zn-gate@1.8.1.' }), settings);
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.pluginBroken, true);
+  assert.equal(r.hooksBroken, false);
+  // The quoted message loses its full stop: no "." just before the closing parenthesis.
+  assert.doesNotMatch(r.problem, /\.\)/);
+  assert.match(r.problem, /\(zn plugin: this Node\.js is not supported\. Run: npm i -g zn-gate@1\.8\.1\)/);
+  assert.match(r.fix, /^turn the plugin off, which keeps those hooks: run `claude plugin disable zn-gate@usezn`/);
+});
+
+test('check: a broken plugin next to zn hooks that do not work either: repair the hooks first, then turn the plugin off', async (t) => {
+  const ctx = homeWithHooks(t, []);
+  getAdapter('claude-code').install({ scope: 'user', home: ctx.home, env: ctx.env, nodePath: '/nonexistent/bin/node', runnerPath: RUNNER, mcp: false });
+  const settings = JSON.parse(fs.readFileSync(getAdapter('claude-code').settingsFile(ctx), 'utf8'));
+  fakePlugin(ctx.home, launcher({ broken: true }), settings);
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.via, 'both');
+  assert.equal(r.pluginBroken, true);
+  assert.equal(r.hooksBroken, true);
+  assert.equal(r.state, 'not-protected');
+  // Nothing claims the hooks protect the agent: they were checked and they do not.
+  assert.match(r.problem, /do not work either \(its hook cannot start: its Node\.js .* is no longer there\)/);
+  assert.doesNotMatch(r.problem + r.fix, /keep protecting|keeps those hooks/);
+  const npm = r.fix.indexOf('npm install -g zn-gate');
+  const hooks = r.fix.indexOf('zn hooks install claude-code');
+  const off = r.fix.indexOf('claude plugin disable zn-gate@usezn');
+  assert.ok(npm >= 0 && npm < hooks && hooks < off, r.fix);
+});
+
+test('check: zn hooks without their read hook next to a broken plugin count as broken hooks', async (t) => {
+  const ctx = homeWithHooks(t, ['claude-code']);
+  const file = getAdapter('claude-code').settingsFile(ctx);
+  const tree = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete tree.hooks.PreToolUse;
+  fakePlugin(ctx.home, launcher({ broken: true }), tree);
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.pluginBroken, true);
+  assert.equal(r.hooksBroken, true);
+  assert.match(r.problem, /not the one that checks reading files \(PreToolUse\)/);
+  assert.ok(r.fix.indexOf('zn hooks install claude-code') < r.fix.indexOf('claude plugin disable'));
+});
+
+test('check: a Claude Code setting that stops all hooks, with the plugin and zn hooks, is not blamed on the plugin', async (t) => {
+  const ctx = homeWithHooks(t, ['claude-code']);
+  const settings = JSON.parse(fs.readFileSync(getAdapter('claude-code').settingsFile(ctx), 'utf8'));
+  fakePlugin(ctx.home, launcher(), { ...settings, disableAllHooks: true });
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.via, 'both');
+  assert.equal(r.state, 'not-protected');
+  assert.ok(!r.pluginBroken);
+  assert.ok(!r.duplicate);
+  assert.match(r.problem, /disableAllHooks/);
+  assert.doesNotMatch(r.problem, /plugin does not work|both set up/);
+  assert.doesNotMatch(r.fix, /plugin disable|hooks uninstall|hooks install/);
+  // Also when the plugin is broken as well: the setting comes first, it stops both sets.
+  fakePlugin(ctx.home, launcher({ broken: true }), { ...settings, disableAllHooks: true });
+  const b = byId(await check(ctx), 'claude-code');
+  assert.ok(!b.pluginBroken);
+  assert.match(b.problem, /disableAllHooks/);
+});
+
+test('check: a plugin turned off next to broken zn hooks: the hooks are repaired, the plugin is not called broken', async (t) => {
+  const ctx = homeWithHooks(t, []);
+  getAdapter('claude-code').install({ scope: 'user', home: ctx.home, env: ctx.env, nodePath: '/nonexistent/bin/node', runnerPath: RUNNER, mcp: false });
+  const settings = JSON.parse(fs.readFileSync(getAdapter('claude-code').settingsFile(ctx), 'utf8'));
+  fakePlugin(ctx.home, launcher({ broken: true }), { ...settings, enabledPlugins: { 'zn-gate@usezn': false } });
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.via, 'hooks');
+  assert.equal(r.state, 'not-protected');
+  assert.ok(!r.pluginBroken);
+  assert.match(r.fix, /npm install -g zn-gate`, then `zn hooks install claude-code`/);
+  assert.doesNotMatch(r.fix, /plugin/);
 });
