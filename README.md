@@ -250,7 +250,7 @@ jobs:
         uses: usezn/zn@98fc10e88c9c364b96fa65acc72a41386f0bd2e4 # v1.10.0
         with:
           version: '1.10.0'
-          package-sha256: '361fa45e65170dfabbd786a216c994f40e4e990bc4e3a26ae204451a96b74f64'
+          package-sha256: '36b3fbee7a846a4d8ba7b4c5e8b654d57b9a3fdbb9d99a2839f8cd83433b2d1d'
           path: '.'
           fail-on-threat: 'true'
           format: 'github'
