@@ -2,7 +2,7 @@
   "name": "zn-gate",
   "mcpName": "io.github.usezn/zn-gate",
   "version": "1.10.0",
-  "description": "Local security layer for coding agents (Claude Code, Codex CLI, Cursor, OpenCode): keeps secrets out of what the agent sends to the model, checks for prompt injection and guards the MCP servers you wrap.",
+  "description": "The local security layer for coding agents. Use Claude Code, Codex CLI, Cursor or OpenCode without exposing your secrets, your data or your systems.",
   "license": "MIT",
   "author": "usezn <admin@usezn.com>",
   "homepage": "https://usezn.com",

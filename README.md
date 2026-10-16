@@ -11,7 +11,8 @@
 <h1 align="center">zn-gate</h1>
 
 <p align="center">
-  <strong>Use AI coding agents without exposing your secrets, your data or your systems.</strong><br/>
+  <strong>The local security layer for coding agents.</strong><br/>
+  Use Claude Code, Codex CLI, Cursor or OpenCode without exposing your secrets, your data or your systems.<br/>
   An open-source security layer that runs on your machine, between your agent and the tools and content it touches.
 </p>
 
@@ -48,9 +49,23 @@ npx -y zn-gate init
 
 It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal, with no arguments: when an AI agent or a script runs it, it only prints the steps.
 
-**Check that it works.** In a new terminal, run `npx -y zn-gate check`. For each agent set up for your user it shows **OK** when zn blocked a test `.env` file with a fake key and allowed an ordinary file, or says what to fix. Nothing is sent anywhere and no setting changes. [What the output means](docs/check.md).
+> **Windows PowerShell:** `npm` and `npx` can fail with "running scripts is disabled on this system", because the default execution policy blocks `npm.ps1`. Use `npm.cmd`, `npx.cmd` and `zn.cmd` instead (for example `npm.cmd install -g zn-gate`), run the commands from Command Prompt, or allow local scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
-**Manual install**, one agent at a time (the same steps `init` runs):
+**Then keep your `.env` values in the vault.** With the plugin or the hooks, the agent cannot read `.env` files with real values; move them into zn-gate's encrypted vault, and the file keeps markers such as `__ZN_STRIPE_KEY__`:
+
+```bash
+npx -y zn-gate unlock            # creates the vault the first time
+npx -y zn-gate env shadow .env
+```
+
+After this, your own app also reads the markers in `.env`: start it with zn-gate's `run` command once you allow it ([docs/secrets.md](docs/secrets.md)). `env shadow` tells you how to undo it.
+
+Five-minute walkthrough: [docs/secrets.md](docs/secrets.md). Limits: [docs/threat-model.md](docs/threat-model.md).
+
+<details>
+<summary><strong>Other ways to install</strong>: one agent at a time, other editors, Python, MCP server only, wrapping the MCP servers you already use</summary>
+
+**One agent at a time** (the same steps `init` runs):
 
 **Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later.
 
@@ -73,19 +88,6 @@ zn hooks install codex           # or: cursor, opencode
 In Codex, approve the new hooks with `/hooks`. In Cursor, shell output and file contents are not scrubbed. What each agent supports: [docs/compat.md](docs/compat.md).
 
 **Other editors** (VS Code, Antigravity, Windsurf, Cline, Zed, JetBrains, Continue): zn-gate works there as an MCP server only. Setup for each one: [usezn.com/docs/integrations/editors](https://usezn.com/docs/integrations/editors/).
-
-**Then keep your `.env` values in the vault.** With the plugin or the hooks, the agent cannot read `.env` files with real values; move them into zn-gate's encrypted vault, and the file keeps markers such as `__ZN_STRIPE_KEY__`:
-
-```bash
-npx -y zn-gate unlock            # creates the vault the first time
-npx -y zn-gate env shadow .env
-```
-
-After this, your own app also reads the markers in `.env`: start it with zn-gate's `run` command once you allow it ([docs/secrets.md](docs/secrets.md)). `env shadow` tells you how to undo it.
-
-Five-minute walkthrough: [docs/secrets.md](docs/secrets.md). Limits: [docs/threat-model.md](docs/threat-model.md).
-
-> **Windows PowerShell:** `npm` and `npx` can fail with "running scripts is disabled on this system", because the default execution policy blocks `npm.ps1`. Use `npm.cmd`, `npx.cmd` and `zn.cmd` instead (for example `npm.cmd install -g zn-gate`), run the commands from Command Prompt, or allow local scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
 **Python: for agents you build yourself** (rules engine and secret redaction for LangChain, CrewAI, LlamaIndex or plain tool calling). It does not protect Claude Code, Codex, Cursor or other coding agents. Install it in a virtual environment; many recent Linux systems, and Homebrew's Python on macOS, refuse `pip install` outside one ("externally-managed-environment"):
 
@@ -114,6 +116,8 @@ npx -y zn-gate init --revert    # undo
 ```
 
 It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`), Codex CLI (`~/.codex/config.toml`), OpenCode (`~/.config/opencode/opencode.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). [Full list and rules](packages/zn-gate/README.md#wrap-the-mcp-servers-you-already-use).
+
+</details>
 
 ## Check that it works
 
