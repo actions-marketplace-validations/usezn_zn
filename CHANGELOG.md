@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Docs: the Python install steps say that Debian and Ubuntu need the `python3-venv` package for `python3 -m venv`, and that a pipx install needs `pipx ensurepath` and a new terminal.
+- Docs: the Python install steps say that Debian and Ubuntu need the `python3-venv` package for `python3 -m venv`.
 
 ## [1.9.0] - 2026-10-16
 
