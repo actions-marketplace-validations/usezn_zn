@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-16.7';
+const POLICY_RULES_VERSION = '2026-10-16.8';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -869,12 +869,16 @@ const TOO_LONG_MESSAGE = 'zn: this command is too long for zn to check (over 100
  */
 const SHELL_PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm;
 function shellPatchMessage(cmd, deny, opts) {
-  if (!deny || !/^\s*apply_patch\b/.test(String(cmd))) return deny;
+  // Only a refused command that is a patch (apply_patch with *** lines); a too-long command keeps its own message.
+  if (!deny || deny === TOO_LONG_MESSAGE || !/^\s*apply_patch\b/.test(String(cmd)) || !/^\*\*\* /m.test(String(cmd))) return deny;
   for (const m of String(cmd).matchAll(SHELL_PATCH_FILE_RE)) {
     const f = m[1].trim();
     const c = classifyPath(f, opts);
+    // The name comes from the agent: no control characters, and short, in a message the user reads.
+    const shown = f.replace(/[\u0000-\u001f\u007f-\u009f]/g, '?');
+    const name = shown.length > 120 ? shown.slice(0, 119) + '\u2026' : shown;
     if (!c || c.kind === 'agent_config' || c.kind === 'zn_state') continue;
-    return 'zn: this patch was blocked because it writes to ' + f + ', which zn treats as holding secrets (' + c.reason + '). ' +
+    return 'zn: this patch was blocked because it writes to ' + name + ', which zn treats as holding secrets (' + c.reason + '). ' +
       'Next step: ask the user to make this change in that file.';
   }
   // Its *** lines read as file patterns that can match secret files, so zn refuses any patch in this form.

@@ -304,4 +304,11 @@ test('a patch sent as a shell command (Codex apply_patch) is refused with the fi
   const m3 = policy.bashDenial("apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch\nPATCH", { cwd: dir, home: dir });
   assert.match(m3, /sent as a shell command, which zn cannot check file by file/);
   assert.match(m3, /use the apply_patch tool/);
+  // The file name is shown without control characters and cut short; a too-long command keeps its own message.
+  const long = 'd'.repeat(300) + '/\u001b[2J/.env';
+  const m4 = policy.bashDenial("apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: " + long + "\n@@\n+X=1\n*** End Patch\nPATCH", { cwd: dir, home: dir });
+  assert.ok(m4 && m4.length < 400, String(m4 && m4.length));
+  assert.doesNotMatch(m4, /\u001b/);
+  const huge = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: a.txt\n+" + 'x'.repeat(policy.SHELL_SCAN_CAP + 10) + "\n*** End Patch\nPATCH";
+  assert.doesNotMatch(policy.bashDenial(huge, { cwd: dir, home: dir }), /sent as a shell command/);
 });
