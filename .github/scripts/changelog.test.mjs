@@ -88,3 +88,31 @@ test('editing [Unreleased] directly is refused, except on a release branch; a ba
   g('add', '-A'); g('commit', '-qm', 'bad');
   assert.match(checkPullRequest(dir, 'next').errors.join(), /only "### <Section>" headings/);
 });
+
+test('assemble moves the compare links to the new version', (t) => {
+  const { dir } = repo(t);
+  fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), CHANGELOG + '\n[Unreleased]: https://github.com/example/repo/compare/v1.0.0...next\n[1.0.0]: https://github.com/example/repo/releases/tag/v1.0.0\n');
+  assemble(dir, '1.1.0', '2026-02-01');
+  const out = fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8');
+  assert.match(out, /\[Unreleased\]: https:\/\/github\.com\/example\/repo\/compare\/v1\.1\.0\.\.\.next\n\[1\.1\.0\]: https:\/\/github\.com\/example\/repo\/compare\/v1\.0\.0\.\.\.v1\.1\.0\n\[1\.0\.0\]/);
+});
+
+test('shipped files: plugin skills and manifests count; repo tools, tests and fixtures do not', () => {
+  for (const f of ['plugins/zn-gate/skills/zn-secrets/SKILL.md', '.claude-plugin/marketplace.json', '.agents/plugins/marketplace.json',
+    'packages/zn-gate/server.json', 'skill/SKILL.md', 'Cargo.lock']) assert.equal(needsFragment(f), true, f);
+  for (const f of ['plugins/tools/check-plugins.js', 'plugins/zn-gate/README.md', 'packages/zn-gate/lib/x.test.js',
+    'packages/zn-gate/test/fixtures/a.json', 'plugins/zn-gate/tests/a.js']) assert.equal(needsFragment(f), false, f);
+});
+
+test('a fragment with a byte order mark, a non-ASCII name, or in a subfolder', (t) => {
+  assert.deepEqual(parseFragment('﻿### Fixed\n- x\n').errors, []);
+  const { dir, g } = repo(t);
+  fs.writeFileSync(path.join(dir, 'packages', 'zn-gate', 'lib', 'a.js'), '2\n');
+  fs.mkdirSync(path.join(dir, 'changelog.d', 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'changelog.d', 'café fix.md'), '### Fixed\n- A fix.\n');
+  g('add', '-A'); g('commit', '-qm', 'accent');
+  assert.deepEqual(checkPullRequest(dir, 'next').errors, []);
+  fs.writeFileSync(path.join(dir, 'changelog.d', 'sub', 'x.md'), '### Fixed\n- Lost.\n');
+  g('add', '-A'); g('commit', '-qm', 'sub');
+  assert.match(checkPullRequest(dir, 'next').errors.join(), /directly in changelog\.d/);
+});

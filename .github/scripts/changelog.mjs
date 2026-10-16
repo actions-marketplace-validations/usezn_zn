@@ -9,15 +9,26 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const SECTIONS = ['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security'];
 const FRAGMENT_DIR = 'changelog.d';
+const FRAGMENT_RE = /^changelog\.d\/[^/]+\.md$/;
 const UNRELEASED = '## [Unreleased]';
 
-// Paths whose change needs a changelog fragment: what ships in a package, the plugin or the Action.
-const SHIPPED = [/^packages\/[^/]+\/(?:bin|lib|src)\//, /^packages\/[^/]+\/(?:package\.json|pyproject\.toml)$/, /^src\//,
-  /^plugins\/[^/]+\/(?!README)/, /^action\.ya?ml$/, /^Cargo\.(?:toml|lock)$/];
-const NEVER = [/\.md$/, /\/test\//, /\/tests\//, /^packages\/[^/]+\/test\//];
+// Paths whose change needs a changelog fragment: what ships in a package, the plugin, the MCP Registry entry or the Action.
+const SHIPPED = [
+  /^packages\/[^/]+\/(?:bin|lib|src)\//,
+  /^packages\/[^/]+\/(?:package\.json|pyproject\.toml|server\.json)$/,
+  /^src\//,
+  /^plugins\/zn-gate\//,
+  /^plugins\/mcp-registry\//,
+  /^\.claude-plugin\//, /^\.cursor-plugin\//, /^\.agents\/plugins\//,
+  /^skill\//,
+  /^action\.ya?ml$/,
+  /^Cargo\.(?:toml|lock)$/,
+];
+const NEVER = [/(?:^|\/)README[^/]*\.md$/i, /(?:^|\/)tests?\//, /(?:^|\/)__tests__\//, /(?:^|\/)fixtures\//, /\.test\.[cm]?[jt]s$/];
 
 export function needsFragment(file) {
   return SHIPPED.some((re) => re.test(file)) && !NEVER.some((re) => re.test(file));
@@ -28,7 +39,7 @@ export function parseFragment(text, name = 'fragment') {
   const out = {};
   let current = null;
   const errors = [];
-  for (const [i, raw] of String(text).replace(/\r\n/g, '\n').split('\n').entries()) {
+  for (const [i, raw] of String(text).replace(/^﻿/, '').replace(/\r\n/g, '\n').split('\n').entries()) {
     const line = raw.replace(/\s+$/, '');
     if (!line) continue;
     const h = /^### (\w+)$/.exec(line);
@@ -80,15 +91,31 @@ export function buildSection(unreleased, fragments) {
 export function readFragments(root) {
   const dir = path.join(root, FRAGMENT_DIR);
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'README.md').sort().map((f) => {
-    const p = parseFragment(fs.readFileSync(path.join(dir, f), 'utf8'), path.join(FRAGMENT_DIR, f));
-    return { file: path.join(FRAGMENT_DIR, f), ...p };
-  });
+  const out = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (e.name === 'README.md') continue;
+    const rel = FRAGMENT_DIR + '/' + e.name;
+    if (!e.isFile() || !FRAGMENT_RE.test(rel)) {
+      out.push({ file: rel, sections: {}, errors: [`${rel}: fragments are plain .md files directly in ${FRAGMENT_DIR}/`] });
+      continue;
+    }
+    out.push({ file: rel, ...parseFragment(fs.readFileSync(path.join(dir, e.name), 'utf8'), rel) });
+  }
+  return out;
+}
+
+/* The compare links at the bottom: [Unreleased] moves to the new tag, and the new version links from the previous one. */
+export function updateLinks(changelog, version) {
+  const re = /^\[Unreleased\]: (\S+)\/compare\/(v[^.\s]+\.[^.\s]+\.[^.\s]+?)\.\.\.(\S+)$/m;
+  const m = re.exec(changelog);
+  if (!m) return changelog;
+  const [line, base, prev, head] = m;
+  return changelog.replace(line, `[Unreleased]: ${base}/compare/v${version}...${head}\n[${version}]: ${base}/compare/${prev}...v${version}`);
 }
 
 export function assemble(root, version, date) {
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('version must look like 1.2.3');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('date must look like 2026-01-31');
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version || '')) throw new Error('version must look like 1.2.3');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('date must look like 2026-01-31');
   const file = path.join(root, 'CHANGELOG.md');
   const changelog = fs.readFileSync(file, 'utf8');
   if (changelog.includes(`## [${version}]`)) throw new Error(`CHANGELOG.md already has a section for ${version}`);
@@ -98,7 +125,7 @@ export function assemble(root, version, date) {
   const b = unreleasedBounds(changelog);
   const section = buildSection(unreleasedText(changelog), fragments);
   if (!section) throw new Error('nothing to release: [Unreleased] and changelog.d are empty');
-  const out = changelog.slice(0, b.bodyStart) + `\n## [${version}] - ${date}\n\n${section}\n` + changelog.slice(b.end);
+  const out = updateLinks(changelog.slice(0, b.bodyStart) + `\n## [${version}] - ${date}\n\n${section}\n` + changelog.slice(b.end), version);
   fs.writeFileSync(file, out);
   for (const f of fragments) fs.unlinkSync(path.join(root, f.file));
   return { fragments: fragments.length };
@@ -108,16 +135,30 @@ function git(root, args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
-/* Pull request rules: a valid fragment when shipped code changes, and no edits to [Unreleased] in CHANGELOG.md
- * (which is what made sibling pull requests conflict). Release branches assemble the fragments, so they may edit it. */
+/* `git diff --name-status -z`: status, then one path (two for renames and copies), each NUL-terminated. */
+export function parseNameStatus(z) {
+  const parts = z.split('\0');
+  const out = [];
+  for (let i = 0; i < parts.length && parts[i]; ) {
+    const status = parts[i++];
+    if (/^[RC]/.test(status)) { i++; out.push({ status, file: parts[i++] }); } else out.push({ status, file: parts[i++] });
+  }
+  return out;
+}
+
+/* Pull request rules: a valid fragment when shipped files change, and no edits to [Unreleased] in CHANGELOG.md
+ * (which is what made sibling pull requests conflict). Release work (release, back-merge and plugin-pin branches,
+ * and pull requests into a release branch) may edit CHANGELOG.md and needs no fragment. */
 export function checkPullRequest(root, base, { skip = false, release = false } = {}) {
-  const changed = git(root, ['diff', '--name-status', `${base}...HEAD`]).split('\n').filter(Boolean).map((l) => {
-    const [status, ...rest] = l.split('\t');
-    return { status, file: rest[rest.length - 1] };
-  });
+  const changed = parseNameStatus(git(root, ['diff', '--name-status', '-z', `${base}...HEAD`]));
   const errors = [];
-  const fragments = changed.filter((c) => c.file.startsWith(FRAGMENT_DIR + '/') && c.file.endsWith('.md') && !c.file.endsWith('/README.md') && c.status !== 'D');
-  for (const f of fragments) errors.push(...parseFragment(fs.readFileSync(path.join(root, f.file), 'utf8'), f.file).errors);
+  const touched = changed.filter((c) => c.file.startsWith(FRAGMENT_DIR + '/') && c.file !== FRAGMENT_DIR + '/README.md' && c.status !== 'D');
+  const fragments = [];
+  for (const f of touched) {
+    if (!FRAGMENT_RE.test(f.file)) { errors.push(`${f.file}: fragments are plain .md files directly in ${FRAGMENT_DIR}/`); continue; }
+    fragments.push(f.file);
+    errors.push(...parseFragment(fs.readFileSync(path.join(root, f.file), 'utf8'), f.file).errors);
+  }
   if (!release && changed.some((c) => c.file === 'CHANGELOG.md')) {
     let before = '';
     try { before = unreleasedText(git(root, ['show', `${base}:CHANGELOG.md`])); } catch (_) { /* no file on the base */ }
@@ -129,7 +170,7 @@ export function checkPullRequest(root, base, { skip = false, release = false } =
   if (code.length && !fragments.length && !skip && !release) {
     errors.push(`this pull request changes shipped files (${code.slice(0, 3).join(', ')}${code.length > 3 ? ', ...' : ''}) but adds no changelog.d/ fragment; add one, or the "no-changelog" label if users see no change`);
   }
-  return { errors, code, fragments: fragments.map((f) => f.file) };
+  return { errors, code, fragments };
 }
 
 function main(argv) {
@@ -153,13 +194,13 @@ function main(argv) {
   }
   if (cmd === 'assemble') {
     const r = assemble(root, opt('--version'), opt('--date'));
-    console.log(`CHANGELOG.md: wrote ${opt('--version')} from ${r.fragments} fragment(s) and [Unreleased]`);
+    console.log(`CHANGELOG.md: wrote ${opt('--version')} from ${r.fragments} fragment(s) and [Unreleased]; add the release introduction by hand`);
     return 0;
   }
   console.error('usage: changelog.mjs check --base <ref> | preview | assemble --version X.Y.Z --date YYYY-MM-DD');
   return 2;
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('changelog.mjs')) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try { process.exitCode = main(process.argv.slice(2)); } catch (e) { console.error('changelog: ' + e.message); process.exitCode = 1; }
 }

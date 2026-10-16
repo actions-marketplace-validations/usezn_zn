@@ -29,7 +29,9 @@ jobs:
         run: node --test .github/scripts/changelog.test.mjs
       - name: Check this pull request
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CHANGELOG_SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') && '1' || '0' }}
-          CHANGELOG_RELEASE: ${{ (startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'chore/backmerge-') || startsWith(github.head_ref, 'chore/pin-plugin-')) && '1' || '0' }}
-        run: node .github/scripts/changelog.mjs check --base "$BASE_SHA"
+          # Dependency updates by Dependabot and changes labelled no-changelog need no fragment (security updates get one by hand).
+          CHANGELOG_SKIP: ${{ (contains(github.event.pull_request.labels.*.name, 'no-changelog') || github.event.pull_request.user.login == 'dependabot[bot]') && '1' || '0' }}
+          # Release work may edit CHANGELOG.md: release, back-merge and plugin-pin branches of this repository, and pull requests into a release branch.
+          CHANGELOG_RELEASE: ${{ (startsWith(github.base_ref, 'release/') || (github.event.pull_request.head.repo.full_name == github.repository && ((startsWith(github.head_ref, 'release/') && github.base_ref == 'main') || (startsWith(github.head_ref, 'chore/pin-plugin-') && github.base_ref == 'main') || (startsWith(github.head_ref, 'chore/backmerge-') && github.base_ref == 'next')))) && '1' || '0' }}
+        # HEAD is the merge commit GitHub made for this pull request: its first parent is the base it was merged onto.
+        run: node .github/scripts/changelog.mjs check --base HEAD^1
