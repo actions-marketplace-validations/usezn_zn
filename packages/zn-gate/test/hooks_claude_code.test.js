@@ -754,3 +754,15 @@ test('uninstall: removes only zn\'s own "secrets" MCP server', (t) => {
     assert.match(calls[1], /^mcp remove --scope user secrets/);
   }
 });
+
+test('zn\'s own secrets server is recognised by its exact command, not by the word', () => {
+  const cc = require('../lib/agents/claude-code');
+  assert.equal(cc.isZnSecretsServer({ command: process.execPath, args: ['/x/node_modules/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\npm\\node_modules\\zn-gate\\bin\\cli.js', 'secrets-mcp'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'zn', args: ['secrets-mcp'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'npx', args: ['-y', 'zn-gate@1.9.0', 'secrets-mcp'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'npx', args: ['-y', '@acme/secrets-mcp'] }), false);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/vault-example/server.js'], env: { NOTE: 'like secrets-mcp' } }), false);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/other/server.js', 'secrets-mcp'] }), false);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/zn/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] }), true);
+});

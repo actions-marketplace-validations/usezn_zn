@@ -691,6 +691,14 @@ async function main() {
 
   if (command === 'init' && !(args.includes('--wrap-mcp') || options.dryRun || options.revert || options.shadow)) {
     // Guided setup: one route per agent, run only by a person in a terminal, then zn-gate check.
+    // It takes no arguments: an unknown one (an option in capitals, or words the shell joined) is refused here, on the
+    // real argument list, instead of starting the guided setup.
+    if (args.length > 1) {
+      const shown = String(args[1]).replace(/[^\x20-\x7e]/g, '?').slice(0, 60);
+      process.stderr.write('zn-gate init: unknown argument "' + shown + '". Run `zn-gate init` with no arguments for the guided setup, or `zn-gate init --wrap-mcp` (with --dry-run, --shadow or --revert) to wrap MCP servers.\n');
+      process.exitCode = 2;
+      return;
+    }
     process.env.ZN_STATS = 'off';
     process.exitCode = await require('../lib/init-guide').guide({});
     return;
