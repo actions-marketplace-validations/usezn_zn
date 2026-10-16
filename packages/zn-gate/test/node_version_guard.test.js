@@ -49,6 +49,13 @@ test('a hook started by an agent on Node.js 16 still runs and still blocks a .en
   }
 });
 
+test('a `zn run` command written by the hooks is not stopped by the guard on Node.js 16', () => {
+  const r = runAs('16.20.2', ['run', '--', process.execPath, '-e', '']);
+  assert.match(r.stderr, /^Warning: zn-gate needs Node\.js 18 or later/);
+  assert.doesNotMatch(r.stderr, /then run the command again\.\n[\s\S]*then run the command again/);
+  assert.ok(!(r.status === 1 && r.stderr.trim().split('\n').length === 2), 'the guard stopped zn run');
+});
+
 test('MCP servers on Node.js 16 keep stdout clean', () => {
   const r = runAs('16.20.2', ['mcp']);
   assert.strictEqual(r.stdout, '');
