@@ -103,8 +103,21 @@ async function plan(opts = {}) {
     if (found && r.state !== 'protected') {
       // Claude Code set up with zn's own hooks is repaired with them, and with the plugin as well it drops them:
       // installing the plugin on top would run both sets.
-      const hooksVerb = r.id !== 'claude-code' ? 'install' : r.via === 'hooks' ? 'install' : r.via === 'both' ? 'uninstall' : null;
-      if (!hooksVerb && r.pluginOff) {
+      // A broken plugin next to zn's own hooks that do not work either: the hooks are repaired first (below).
+      const hooksVerb = r.id !== 'claude-code' ? 'install' : r.via === 'hooks' ? 'install'
+        : r.via === 'both' && r.duplicate ? 'uninstall' : r.via === 'both' && r.pluginBroken && r.hooksBroken ? 'install' : null;
+      const disablePlugin = () => {
+        const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
+        if (claude) return { label: 'turn off the zn-gate plugin (zn\'s own hooks stay)', run: [claude, ['plugin', 'disable', 'zn-gate@usezn']], manual: 'claude plugin disable zn-gate@usezn' };
+        return { label: 'in Claude Code, type this command', run: null, manual: 'in Claude Code, type /plugin disable zn-gate@usezn' };
+      };
+      if (!hooksVerb && r.pluginBroken) {
+        // The plugin does not work next to zn's own hooks, which check found working: turn the plugin off and keep the hooks.
+        item.steps.push(disablePlugin());
+      } else if (!hooksVerb && r.via === 'both') {
+        // Something other than the plugin (a Claude Code setting that stops all hooks, zn's rules): neither set is touched.
+        item.steps.push({ label: 'first do this yourself', run: null, manual: r.fix });
+      } else if (!hooksVerb && r.pluginOff) {
         // Installed but turned off: installing it again would not turn it on.
         const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
         if (claude) item.steps.push({ label: 'turn on the zn-gate plugin', run: [claude, ['plugin', 'enable', 'zn-gate@usezn']], manual: 'claude plugin enable zn-gate@usezn' });
@@ -124,6 +137,9 @@ async function plan(opts = {}) {
         const args = temporary ? ['hooks', hooksVerb, r.id] : [path.join(PKG_ROOT, 'bin', 'cli.js'), 'hooks', hooksVerb, r.id];
         const label = hooksVerb === 'uninstall' ? 'remove zn\'s own hooks for ' + r.name + ' (the zn-gate plugin stays)' : 'install zn\'s hooks for ' + r.name;
         item.steps.push({ label, run: zn ? [zn, args] : null, manual: 'zn hooks ' + hooksVerb + ' ' + r.id, needsGlobal: temporary });
+        // Only after the hooks are repaired: the steps stop at the first one that is skipped or fails, so the plugin is
+        // never turned off while the hooks still do not work.
+        if (r.pluginBroken) item.steps.push(disablePlugin());
       }
     }
     items.push(item);
