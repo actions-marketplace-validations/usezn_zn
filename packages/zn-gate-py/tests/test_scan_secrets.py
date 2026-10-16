@@ -136,6 +136,20 @@ class TestNextStepFileName(_ScanDir):
                                  + " to move the values into the local vault, and rotate any value that was"
                                  " ever committed or shared.")
 
+    def test_a_subfolder_is_shown_with_forward_slashes(self):
+        os.mkdir(os.path.join(self.dir, "app"))
+        self._write(os.path.join("app", ".env"), "AWS_ACCESS_KEY_ID=" + FAKE_AWS + "\n")
+        cwd = os.getcwd()
+        os.chdir(self.dir)
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                cmd_scan(argparse.Namespace(path=".", exclude=None, include=None, format="json", no_fail=True))
+        finally:
+            os.chdir(cwd)
+        step = json.loads(out.getvalue())["threats"][0]["next_step"]
+        self.assertIn("env shadow app/.env to move", step)
+
     def test_a_path_starting_with_a_dash(self):
         os.mkdir(os.path.join(self.dir, "-x"))
         self._write(os.path.join("-x", ".env"), "AWS_ACCESS_KEY_ID=" + FAKE_AWS + "\n")

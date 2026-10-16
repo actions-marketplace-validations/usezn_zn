@@ -96,7 +96,9 @@ function secretNextStep(file, rule) {
     return 'Next: move the key out of this file (for example to ~/.ssh or a secret manager) and replace it if the file was ever committed or shared.';
   }
   if (/^\.env/i.test(path.basename(file))) {
-    const arg = SAFE_FILE_ARG.test(file) && !file.startsWith('-') ? file : '<file>';
+    // On Windows the relative path uses backslashes; npx takes forward slashes there too.
+    const shown = process.platform === 'win32' ? file.split(path.sep).join('/') : file;
+    const arg = SAFE_FILE_ARG.test(shown) && !shown.startsWith('-') ? shown : '<file>';
     return `Next: run npx -y zn-gate env shadow ${arg} to move the values into the local vault, and rotate any value that was ever committed or shared.`;
   }
   return 'Next: run npx -y zn-gate secret set NAME to store the value in the local vault, use the __ZN_NAME__ marker in its place, and rotate it if it was ever committed or shared.';

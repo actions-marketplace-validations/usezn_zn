@@ -92,6 +92,17 @@ test('a file name is put in the suggested command only when it is plain', () => 
     assert.equal(steps.length, 1, name);
     assert.equal(steps[0], `Next: run npx -y zn-gate env shadow ${shown} to move the values into the local vault, and rotate any value that was ever committed or shared.`, name);
   }
+  // In a subfolder the path is shown with forward slashes, also on Windows.
+  const sub = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-scan-sub-'));
+  try {
+    fs.mkdirSync(path.join(sub, 'app'));
+    fs.writeFileSync(path.join(sub, 'app', '.env'), env);
+    const r = spawnSync(process.execPath, [CLI, 'scan', '--format', 'json', sub], { cwd: sub, encoding: 'utf8', env: { ...process.env, ZN_LOCAL_ONLY: 'true' } });
+    const step = JSON.parse(r.stdout).threats.find((t) => t.type === 'secret_leak').next_step;
+    assert.match(step, /env shadow app\/\.env to move/);
+  } finally {
+    fs.rmSync(sub, { recursive: true, force: true });
+  }
   // A path that starts with "-" would be read as an option.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-scan-dash-'));
   try {

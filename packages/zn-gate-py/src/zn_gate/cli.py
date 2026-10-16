@@ -76,6 +76,8 @@ def _secret_next_step(file: str, rule: str) -> str:
             rel = os.path.relpath(file)
         except ValueError:  # another drive on Windows
             rel = file
+        if os.sep != "/":  # Windows: npx takes forward slashes too
+            rel = rel.replace(os.sep, "/")
         arg = rel if _SAFE_FILE_ARG.fullmatch(rel) and not rel.startswith("-") else "<file>"
         return (f"Next: run npx -y zn-gate env shadow {arg} to move the values into the local vault, "
                 "and rotate any value that was ever committed or shared.")
