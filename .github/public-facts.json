@@ -106,7 +106,8 @@
         "SECURITY.md"
       ],
       "must": [
-        "| 1.8.x   | :white_check_mark: |"
+        "| {minor}.x   | :white_check_mark: |",
+        "| < {minor}.0 | :x:"
       ]
     }
   ],
