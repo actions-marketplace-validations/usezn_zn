@@ -421,3 +421,47 @@ test('Square and Discord near misses are not tokens', () => {
     'MQa7Zt3Lm9Pw2Ny5Rb8Vx1Cd4.Fg6Hj0.Ks1Qa7Zt3Lm9Pw2Ny5Rb8Vx1Cd4Fg6Hj0',
   ]) assert.deepStrictEqual(types(t).filter((x) => x === 'SQUARE_TOKEN' || x === 'DISCORD_BOT_TOKEN'), [], t);
 });
+
+/* ---------------- provider formats from gitleaks v8.30.1 ---------------- */
+// Deterministic fake bodies: a fixed alphabet cycled, so every run is the same and nothing looks like a real key.
+const G_AL = 'Qa7Zt3Lm9Pw2Ny5Rb8Vx1Cd4Fg6Hj0Ks', G_HX = '0123456789abcdef', G_LA = 'qa7zt3lm9pw2ny5rb8vx1cd4fg6hj0ks';
+const G_B64 = G_AL + '+/', G_UR = G_AL + '-_';
+const pickA = (n, alphabet = G_AL) => Array.from({ length: n }, (_, i) => alphabet[(i * 7 + 3) % alphabet.length]).join('');
+const uuidA = () => [pickA(8, G_HX), pickA(4, G_HX), pickA(4, G_HX), pickA(4, G_HX), pickA(12, G_HX)].join('-');
+const GITLEAKS_FORMATS = [
+  ['ONEPASSWORD_SA_TOKEN', 'ops_eyJ' + pickA(250, G_B64), 'ops_eyJ' + pickA(249, G_B64)],
+  ['AGE_SECRET_KEY', 'AGE-SECRET-KEY-1' + pickA(58, 'QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L'), 'AGE-SECRET-KEY-1' + pickA(57, 'QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L')],
+  ['ALIBABA_KEY_ID', 'LTAI' + pickA(20), 'LTAI' + pickA(19)],
+  ['ARTIFACTORY_KEY', 'AKCp' + pickA(69), 'AKCp' + pickA(68)],
+  ['CLOUDFLARE_ORIGIN_CA_KEY', 'v1.0-' + pickA(24, G_HX) + '-' + pickA(146, G_HX), 'v1.0-' + pickA(24, G_HX) + '-' + pickA(145, G_HX)],
+  ['DYNATRACE_TOKEN', 'dt0c01.' + pickA(24) + '.' + pickA(64), 'dt0c01.' + pickA(23) + '.' + pickA(64)],
+  ['EASYPOST_KEY', 'EZAK' + pickA(54), 'EZAK' + pickA(53)],
+  ['FLYIO_TOKEN', 'fo1_' + pickA(43, G_UR), 'fo1_' + pickA(42, G_UR)],
+  ['GRAFANA_TOKEN', 'glsa_' + pickA(32) + '_' + pickA(8, G_HX), 'glsa_' + pickA(31) + '_' + pickA(8, G_HX)],
+  ['TERRAFORM_CLOUD_TOKEN', pickA(14, G_LA) + '.atlasv1.' + pickA(64, G_UR), pickA(14, G_LA) + '.atlasv1.' + pickA(59, G_UR)],
+  ['HEROKU_KEY_V2', 'HRKU-AA' + pickA(58, G_UR), 'HRKU-AA' + pickA(57, G_UR)],
+  ['NOTION_TOKEN', 'ntn_' + pickA(11, '0123456789') + pickA(35), 'ntn_' + pickA(11, '0123456789') + pickA(34)],
+  ['PERPLEXITY_KEY', 'pplx-' + pickA(48), 'pplx-' + pickA(47)],
+  ['PLANETSCALE_TOKEN', 'pscale_tkn_' + pickA(40, G_UR), 'pscale_tkn_' + pickA(31, G_UR)],
+  ['POSTMAN_KEY', 'PMAK-' + pickA(24, G_HX) + '-' + pickA(34, G_HX), 'PMAK-' + pickA(24, G_HX) + '-' + pickA(33, G_HX)],
+  ['PREFECT_KEY', 'pnu_' + pickA(36), 'pnu_' + pickA(35)],
+  ['PULUMI_TOKEN', 'pul-' + pickA(40, G_HX), 'pul-' + pickA(39, G_HX)],
+  ['README_KEY', 'rdme_' + pickA(70, G_LA), 'rdme_' + pickA(69, G_LA)],
+  ['RUBYGEMS_KEY', 'rubygems_' + pickA(48, G_HX), 'rubygems_' + pickA(47, G_HX)],
+  ['BREVO_KEY', 'xkeysib-' + pickA(64, G_HX) + '-' + pickA(16), 'xkeysib-' + pickA(64, G_HX) + '-' + pickA(15)],
+  ['SENTRY_USER_TOKEN', 'sntryu_' + pickA(64, G_HX), 'sntryu_' + pickA(63, G_HX)],
+  ['SHIPPO_KEY', 'shippo_live_' + pickA(40, G_HX), 'shippo_live_' + pickA(39, G_HX)],
+  ['OPENSHIFT_TOKEN', 'sha256~' + pickA(43, G_UR), 'sha256~' + pickA(42, G_UR)],
+  ['TEAMS_WEBHOOK', 'https://example.webhook.office.com/webhookb2/' + uuidA() + '@' + uuidA() + '/IncomingWebhook/' + pickA(32, G_HX) + '/' + uuidA(), 'https://example.webhook.office.com/webhookb2/' + uuidA() + '@' + uuidA() + '/IncomingWebhook/' + pickA(31, G_HX) + '/' + uuidA()],
+];
+test('provider formats from gitleaks: each positive is found, each near miss is not', () => {
+  for (const [type, pos, neg] of GITLEAKS_FORMATS) {
+    assert.ok(types(pos).includes(type), type + ' positive');
+    assert.ok(!types(neg).includes(type), type + ' near miss');
+  }
+});
+test('provider formats from gitleaks: placeholder bodies are not tokens', () => {
+  for (const t of ['pnu_' + '0'.repeat(36), 'pul-' + 'a'.repeat(40), 'sha256~' + 'x'.repeat(43), 'LTAI' + 'X'.repeat(20)]) {
+    assert.deepStrictEqual(types(t), [], t);
+  }
+});

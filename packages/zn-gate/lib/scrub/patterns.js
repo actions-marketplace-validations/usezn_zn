@@ -27,7 +27,7 @@
 
 // Version of the type catalogue (secret and PII patterns, validators). Bump it
 // when a pattern, validator or type name changes; see CONTRIBUTING.md.
-const SCRUB_RULES_VERSION = '2026-10-16.5';
+const SCRUB_RULES_VERSION = '2026-10-16.6';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -463,6 +463,57 @@ const PATTERNS = [
    * hold dots but ends on a non-dot character, so a full stop that closes a
    * sentence is not part of the span; the trailing lookahead still rejects
    * a dotted continuation such as `.json`. */
+  /* From here to the end of this group: provider token formats taken from gitleaks v8.30.1
+   * (config/gitleaks.toml, MIT License, Copyright (c) 2019 Zachary Rice; full notice in THIRD_PARTY_NOTICES.md),
+   * one per rule, rewritten for these engines with the same random-body check as the others. */
+  { type: 'ONEPASSWORD_SA_TOKEN', hints: ['ops_eyJ'], re: re(NB + 'ops_eyJ[A-Za-z0-9+/]{250,}={0,3}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^ops_eyJ'), ''), 2, 3.0) },
+  { type: 'AGE_SECRET_KEY', hints: ['AGE-SECRET-KEY-1'], re: re(NB + 'AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^AGE-SECRET-KEY-1'), ''), 2, 3.0) },
+  { type: 'ALIBABA_KEY_ID', hints: ['LTAI'], re: re(NB + 'LTAI[A-Za-z0-9]{20}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^LTAI'), ''), 2, 3.0) },
+  { type: 'ARTIFACTORY_KEY', hints: ['AKCp'], re: re(NB + 'AKCp[A-Za-z0-9]{69}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^AKCp'), ''), 2, 3.0) },
+  { type: 'CLOUDFLARE_ORIGIN_CA_KEY', hints: ['v1.0-'], re: re(NB + 'v1\\.0-[a-f0-9]{24}-[a-f0-9]{146}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^v1\\.0-'), ''), 2, 3.0) },
+  { type: 'DYNATRACE_TOKEN', hints: ['dt0c01.'], re: re(NB + 'dt0c01\\.[A-Za-z0-9]{24}\\.[A-Za-z0-9]{64}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^dt0c01\\.'), ''), 2, 3.0) },
+  { type: 'EASYPOST_KEY', hints: ['EZAK', 'EZTK'], re: re(NB + 'EZ(?:AK|TK)[A-Za-z0-9]{54}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^EZ(?:AK|TK)'), ''), 2, 3.0) },
+  { type: 'FLYIO_TOKEN', hints: ['fo1_', 'fm1a_', 'fm1r_', 'fm2_'], re: re(NB + '(?:fo1_[A-Za-z0-9_-]{43}|fm1[ar]_[A-Za-z0-9+/]{100,}={0,3}|fm2_[A-Za-z0-9+/]{100,}={0,3})' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^(?:fo1|fm1[ar]|fm2)_'), ''), 2, 3.0) },
+  { type: 'GRAFANA_TOKEN', hints: ['glc_', 'glsa_'], re: re(NB + '(?:glc_[A-Za-z0-9+/]{32,400}={0,3}|glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8})' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^gl(?:c|sa)_'), ''), 2, 3.0) },
+  { type: 'TERRAFORM_CLOUD_TOKEN', hints: ['.atlasv1.'], re: re(NB + '[a-z0-9]{14}\\.atlasv1\\.[A-Za-z0-9_=-]{60,70}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^[a-z0-9]{14}\\.atlasv1\\.'), ''), 2, 3.0) },
+  { type: 'HEROKU_KEY_V2', hints: ['HRKU-AA'], re: re(NB + 'HRKU-AA[A-Za-z0-9_-]{58}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^HRKU-AA'), ''), 2, 3.0) },
+  { type: 'NOTION_TOKEN', hints: ['ntn_'], re: re(NB + 'ntn_[0-9]{11}[A-Za-z0-9]{35}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^ntn_[0-9]{11}'), ''), 2, 3.0) },
+  { type: 'PERPLEXITY_KEY', hints: ['pplx-'], re: re(NB + 'pplx-[A-Za-z0-9]{48}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^pplx-'), ''), 2, 3.0) },
+  { type: 'PLANETSCALE_TOKEN', hints: ['pscale_'], re: re(NB + 'pscale_(?:tkn|oauth|pw)_[A-Za-z0-9_=.-]{32,64}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^pscale_(?:tkn|oauth|pw)_'), ''), 2, 3.0) },
+  { type: 'POSTMAN_KEY', hints: ['PMAK-'], re: re(NB + 'PMAK-[a-f0-9]{24}-[a-f0-9]{34}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^PMAK-'), ''), 2, 3.0) },
+  { type: 'PREFECT_KEY', hints: ['pnu_'], re: re(NB + 'pnu_[A-Za-z0-9]{36}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^pnu_'), ''), 2, 3.0) },
+  { type: 'PULUMI_TOKEN', hints: ['pul-'], re: re(NB + 'pul-[a-f0-9]{40}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^pul-'), ''), 2, 3.0) },
+  { type: 'README_KEY', hints: ['rdme_'], re: re(NB + 'rdme_[a-z0-9]{70}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^rdme_'), ''), 2, 3.0) },
+  { type: 'RUBYGEMS_KEY', hints: ['rubygems_'], re: re(NB + 'rubygems_[a-f0-9]{48}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^rubygems_'), ''), 2, 3.0) },
+  { type: 'BREVO_KEY', hints: ['xkeysib-'], re: re(NB + 'xkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^xkeysib-'), ''), 2, 3.0) },
+  { type: 'SENTRY_USER_TOKEN', hints: ['sntryu_'], re: re(NB + 'sntryu_[a-f0-9]{64}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^sntryu_'), ''), 2, 3.0) },
+  { type: 'SHIPPO_KEY', hints: ['shippo_'], re: re(NB + 'shippo_(?:live|test)_[a-fA-F0-9]{40}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^shippo_(?:live|test)_'), ''), 2, 3.0) },
+  { type: 'OPENSHIFT_TOKEN', hints: ['sha256~'], re: re(NB + 'sha256~[A-Za-z0-9_-]{43}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^sha256~'), ''), 2, 3.0) },
+  { type: 'TEAMS_WEBHOOK', hints: ['webhook.office.com'], re: re(NB + 'https://[a-z0-9]+\\.webhook\\.office\\.com/webhookb2/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}@[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}/IncomingWebhook/[a-z0-9]{32}/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}' + NA),
+    check: (v) => looksRandom(v.replace(new RegExp('^https://[a-z0-9]+\\.webhook\\.office\\.com/webhookb2/'), ''), 2, 3.0) },
   { type: 'AZURE_AD_CLIENT_SECRET', hints: ['Q~'], re: re('(?<![A-Za-z0-9_~.-])[A-Za-z0-9_~.]{3}[0-9]Q~[A-Za-z0-9_~.-]{30,33}[A-Za-z0-9_~-](?![A-Za-z0-9_~-])(?!\\.[A-Za-z0-9_~-])'),
     check: (v) => looksRandom(v, 3, 3.5) },
   { type: 'JWT', hints: ['eyJ'], re: re(NB + 'eyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{16,}' + NA) },
