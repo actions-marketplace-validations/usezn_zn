@@ -94,6 +94,8 @@ python3 -m venv .venv
 .venv/bin/pip install zn-gate      # Windows: .venv\Scripts\pip install zn-gate
 ```
 
+On Debian and Ubuntu, `python3 -m venv` needs the `python3-venv` package first: `sudo apt install python3-venv`.
+
 **zn-gate as an MCP server only** (the agent calls it when it decides to; not automatic protection):
 
 ```bash
