@@ -179,6 +179,13 @@ async function checkAgent(spec, ctx) {
     if (plugin.root) {
       installed = true;
       res.where = 'the zn-gate plugin';
+      res.via = 'plugin';
+      // zn's own hooks left next to the plugin both run, and a broken prompt hook among them blocks every prompt.
+      if (hookEntries(readJson(userFile)).some((e) => parseCommand(e.command, spec.id))) {
+        res.via = 'both';
+        res.problem = 'the zn-gate plugin and the hooks of `zn hooks install claude-code` are both set up, so both run, and a broken one can block every prompt';
+        res.fix = 'remove the second set: run `zn hooks uninstall claude-code` in your own terminal';
+      }
       if (plugin.off) res.problem = 'the zn-gate plugin is turned off in your Claude Code settings; turn it on with `claude plugin enable zn-gate@usezn`';
       const pre = spawnHook(process.execPath, [path.join(plugin.root, 'scripts', 'zn-launch.js'), 'check', 'claude-code'], {}, { CLAUDE_PLUGIN_ROOT: plugin.root }, ctx.dir);
       const sys = pre.ran && /"systemMessage"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(pre.stdout || '');
@@ -196,7 +203,7 @@ async function checkAgent(spec, ctx) {
     installed = entries.length > 0;
     res.where = userFile;
     // Set up with `zn hooks install`, so that is also how to repair it (not the plugin: both would run).
-    if (installed) res.fix = 'run `zn hooks install ' + spec.id + '` in your own terminal';
+    if (installed) { res.fix = 'run `zn hooks install ' + spec.id + '` in your own terminal'; res.via = 'hooks'; }
     const read = entries.find((e) => e.event === spec.event && matcherCovers(e.matcher, spec.tool));
     if (installed && !read) {
       res.problem = 'zn\'s hooks are there, but not the one that checks reading files (' + spec.event + ')';
@@ -211,7 +218,7 @@ async function checkAgent(spec, ctx) {
         const absPath = String((ctx.env || process.env).PATH || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d)).join(path.delimiter);
         const found = require('./exe').whichSync(process.platform === 'win32' ? 'zn.cmd' : 'zn', absPath);
         const zn = found ? path.resolve(found) : null;
-        if (!zn) res.problem = 'its hook runs `zn`, and there is no `zn` on your PATH; install zn-gate with `npm i -g zn-gate`';
+        if (!zn) { res.problem = 'its hook runs `zn`, and there is no `zn` on your PATH'; res.fix = 'install zn-gate again for the Node.js you use now: run `npm install -g zn-gate`, then `zn hooks install ' + spec.id + '`, in your own terminal'; }
         else if (process.platform !== 'win32') live = { file: zn, args: ['hook', spec.id], env: {} };
         else res.notes.push('the installed hook runs `zn` from your PATH; zn\'s rules were checked directly');
       } else {

@@ -234,3 +234,26 @@ test('agent guard: many init words with an option at the end stay fast', () => {
   policy.bashDenial(cmd);
   assert.ok(Date.now() - t0 < 500, 'took ' + (Date.now() - t0) + ' ms');
 });
+
+test('plan: Claude Code set up with zn hooks is repaired with zn hooks, not with the plugin', async (t) => {
+  const m = machine(t, ['claude-code']);
+  getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: path.join(m.home, 'gone', 'node'), runnerPath: RUNNER, mcp: false });
+  const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.equal(cc.state, 'not-protected');
+  assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code']);
+});
+
+test('plan: the plugin together with zn hooks gets one step that removes the hooks', async (t) => {
+  const m = machine(t, ['claude-code']);
+  getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+  const root = path.join(m.home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.9.0');
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), 'process.exit(0);\n');
+  fs.writeFileSync(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: root }] } }));
+  const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.deepEqual(cc.steps.map(line), ['zn hooks uninstall claude-code']);
+  assert.match(cc.steps[0].label, /the zn-gate plugin stays/);
+});

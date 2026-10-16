@@ -224,3 +224,35 @@ test('check: a `zn hook` command does not find zn through a relative PATH entry'
     process.chdir(saved);
   }
 });
+
+test('check: a hook whose zn-gate files are gone gets the same repair', async (t) => {
+  const ctx = homeWithHooks(t, ['codex']);
+  const file = getAdapter('codex').hooksFile(ctx);
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split(RUNNER.replace(/\\/g, '/')).join(path.join(ctx.home, 'gone', 'zn-gate', 'lib', 'hooks', 'runner.js').replace(/\\/g, '/')));
+  const r = byId(await check(ctx), 'codex');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /its zn-gate files .* is no longer there/);
+  assert.match(r.fix, /^install zn-gate again for the Node\.js you use now: run `npm install -g zn-gate`/);
+});
+
+test('check: the plugin together with zn hooks is not protected, and the fix removes the hooks', async (t) => {
+  const ctx = homeWithHooks(t, ['claude-code']);
+  const settings = JSON.parse(fs.readFileSync(getAdapter('claude-code').settingsFile(ctx), 'utf8'));
+  fakePlugin(ctx.home, launcher(), settings);
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.via, 'both');
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /plugin and the hooks of `zn hooks install claude-code` are both set up/);
+  assert.equal(r.fix, 'remove the second set: run `zn hooks uninstall claude-code` in your own terminal');
+  assert.ok(!r.notes.some((n) => /prompt hook/.test(n)));
+});
+
+test('check: the plugin alone keeps the plugin fix', async (t) => {
+  const ctx = homeWithHooks(t, []);
+  fs.mkdirSync(path.join(ctx.home, '.claude'), { recursive: true });
+  fakePlugin(ctx.home, launcher());
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.via, 'plugin');
+  assert.equal(r.state, 'protected');
+  assert.match(r.fix, /claude plugin install zn-gate@usezn/);
+});
