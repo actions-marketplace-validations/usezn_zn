@@ -250,6 +250,37 @@ test('check: the plugin together with zn hooks is not protected, and the fix rem
   assert.ok(!r.notes.some((n) => /prompt hook/.test(n)));
 });
 
+// zn's own rules letting the fake .env through (as a damaged zn-gate install would): the fix is zn-gate itself,
+// never "install the plugin" for a plugin that is already there.
+async function withRulesThatAllow(t, fn) {
+  const runner = require('../lib/hooks/runner');
+  const real = runner.handle;
+  runner.handle = async () => ({ decision: { decision: 'allow' } });
+  t.after(() => { runner.handle = real; });
+  return fn();
+}
+
+test('check: zn rules that do not block .env, with the plugin alone or next to zn hooks, are fixed by reinstalling zn-gate', async (t) => {
+  const alone = homeWithHooks(t, []);
+  fs.mkdirSync(path.join(alone.home, '.claude'), { recursive: true });
+  fakePlugin(alone.home, launcher());
+  const both = homeWithHooks(t, ['claude-code']);
+  fakePlugin(both.home, launcher(), JSON.parse(fs.readFileSync(getAdapter('claude-code').settingsFile(both), 'utf8')));
+  await withRulesThatAllow(t, async () => {
+    for (const [ctx, via] of [[alone, 'plugin'], [both, 'both']]) {
+      const r = byId(await check(ctx), 'claude-code');
+      assert.equal(r.via, via);
+      assert.equal(r.state, 'not-protected');
+      assert.equal(r.problem, 'zn did not block the read of .env');
+      assert.equal(r.fix, 'install zn-gate again: run `npm install -g zn-gate` in your own terminal, then run `zn-gate check` again');
+      assert.ok(!r.duplicate);
+    }
+    const hooks = byId(await check(homeWithHooks(t, ['codex'])), 'codex');
+    assert.equal(hooks.problem, 'zn did not block the read of .env');
+    assert.match(hooks.fix, /npm install -g zn-gate/);
+  });
+});
+
 test('check: the plugin alone keeps the plugin fix', async (t) => {
   const ctx = homeWithHooks(t, []);
   fs.mkdirSync(path.join(ctx.home, '.claude'), { recursive: true });
