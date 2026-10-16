@@ -97,7 +97,7 @@ test('zn unlock with the system keychain refuses without an interactive terminal
   const home = tempDir(t, 'zn-unlock-home-');
   // A child process: its stdin is a pipe, never a terminal, and ZN_HOME keeps it away from any real vault.
   const r = spawnSync(process.execPath, ['-e',
-    'require(' + JSON.stringify(require.resolve('../lib/vault/cli')) + ').runVaultCommand(["unlock", "--backend", "keychain"])' +
+    'require(' + JSON.stringify(require.resolve('../lib/vault/cli')) + ').runVaultCommand(["unlock", "--backend", "libsecret"])' +
     '.then((c) => process.exit(c || 0), (e) => { process.stderr.write(String(e.message)); process.exit(3); })'],
   { encoding: 'utf8', input: '', env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, ZN_HOME: path.join(home, '.zn') } });
   assert.equal(typeof runVaultCommand, 'function');
