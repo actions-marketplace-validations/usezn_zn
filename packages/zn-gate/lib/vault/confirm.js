@@ -30,7 +30,6 @@
  */
 
 const fs = require('fs');
-const path = require('path');
 const { spawn } = require('child_process');
 
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -148,7 +147,6 @@ function ttyChannel(opts = {}) {
 function exists(p) {
   try { return fs.statSync(p).isFile(); } catch (_) { return false; }
 }
-
 
 // Popup type: 4 Yes/No + 48 warning icon + 256 second button (No) default + 4096 topmost.
 const WIN_SCRIPT = [

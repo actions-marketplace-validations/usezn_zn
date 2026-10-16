@@ -5,7 +5,6 @@
  * Values are read from a hidden TTY prompt or the clipboard, never from argv.
  */
 
-const path = require('path');
 const { spawnSync } = require('child_process');
 
 /**
@@ -122,7 +121,8 @@ function readClipboard() {
     const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true });
     if (!r.error && r.status === 0) return String(r.stdout || '').replace(/\r?\n$/, '');
   }
-  const err = new Error('could not read the clipboard (tried ' + candidates.map((c) => c[0]).join(', ') + ')');
+  const err = new Error(candidates.length ? 'could not read the clipboard (tried ' + candidates.map((c) => c[0]).join(', ') + ')'
+    : 'could not read the clipboard: the system PowerShell (Windows PowerShell 5.1) was not found');
   err.code = 'ZN_UNAVAILABLE';
   throw err;
 }

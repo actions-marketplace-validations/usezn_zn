@@ -185,7 +185,10 @@ const WIN_SCRIPT = [
 
 function winCred(op, input) {
   const ps = powershellPath();
-  if (!ps) return { status: 127, stdout: '', stderr: 'the system PowerShell was not found' };
+  if (!ps) {
+    throw znError(CODES.LOCKED, 'the Windows Credential Manager needs the system PowerShell (Windows PowerShell 5.1, in System32\\WindowsPowerShell\\v1.0), '
+      + 'which was not found. Next step: use a passphrase instead with `zn unlock --backend passphrase`, or, if you are an agent, ask the user to do it.');
+  }
   const encoded = Buffer.from(WIN_SCRIPT, 'utf16le').toString('base64');
   return run(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], input,
     { ZN_CRED_OP: op, ZN_CRED_TARGET: service() + ':' + ACCOUNT });
