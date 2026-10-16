@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-16.4';
+const POLICY_RULES_VERSION = '2026-10-16.5';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -826,7 +826,7 @@ const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.j
 // `npm exec` (and `npm x`) keeps the options after the package for itself unless a `--` comes first, so
 // `npm exec zn-gate init --dry-run` runs the guided init: the options do not count there. Checked per simple
 // command, in one pass, with no length limit (padding the command must not hide it).
-const NPM_EXEC_RE = /(?:^|[\s(`$'"\/\\])npm(?:-cli\.js|\.cmd|\.ps1)?["']?(?:\s+-\S+)*\s+(?:exec|exe|x)(?=\s)/i;
+const NPM_EXEC_RE = /(?:^|[\s(`$'"\/\\])npm(?:-cli\.js|\.cmd|\.ps1)?["']?(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+(?:exec|exe|x)(?=\s)/i;
 const ZN_INIT_RE = /[\s\/\\'"](?:zn-gate|zn|cli\.js)(?:@[^\s"'`;&|]+)?["']?\s+["']?init(?=\s|$|["'])/i;
 function npmExecInit(text) {
   for (const part of text.split(/[\n;&|]/)) {

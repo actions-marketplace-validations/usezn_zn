@@ -402,7 +402,7 @@ function isZnSecretsServer(s) {
   if (i < 0) return false;
   const prev = i > 0 ? args[i - 1].replace(/\\/g, '/') : '';
   const cmd = path.basename(String(s.command || '').replace(/\\/g, '/')).replace(/\.(?:cmd|exe|ps1)$/i, '').toLowerCase();
-  if (/(?:^|\/)bin\/cli\.js$/i.test(prev)) return true;
+  if (/(?:^|\/)zn-gate\/bin\/cli\.js$/i.test(prev)) return true;
   if (i === 0 && (cmd === 'zn' || cmd === 'zn-gate')) return true;
   return /^zn-gate(?:@[^\s]+)?$/i.test(prev) && (cmd === 'npx' || cmd === 'npm');
 }

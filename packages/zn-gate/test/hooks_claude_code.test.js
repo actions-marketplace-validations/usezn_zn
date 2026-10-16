@@ -505,7 +505,7 @@ test('install / uninstall write and remove only our hooks, with backups', (t) =>
   const userHook = { matcher: 'Bash', hooks: [{ type: 'command', command: '/usr/local/bin/my-guard.sh' }] };
   fs.writeFileSync(file, JSON.stringify({ model: 'x', hooks: { PreToolUse: [userHook] } }, null, 2));
   const env = {};
-  const rep = adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
+  const rep = adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
   assert.equal(rep.settings, file);
   assert.ok(rep.backup && fs.existsSync(rep.backup));
   const data = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -516,7 +516,7 @@ test('install / uninstall write and remove only our hooks, with backups', (t) =>
   assert.equal(data.hooks.PreToolUse[1].hooks[0].command, "'/usr/bin/node' '/opt/zn/lib/hooks/runner.js' claude-code");
   assert.equal(data.hooks.PostToolUse[0].matcher, adapter.POST_MATCHER);
   assert.ok(Array.isArray(data.hooks.UserPromptSubmit));
-  adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
+  adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
   const again = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(again.hooks.PreToolUse.length, 2, 'install is idempotent');
   adapter.uninstall({ scope: 'user', home, env, mcp: false });
@@ -526,10 +526,10 @@ test('install / uninstall write and remove only our hooks, with backups', (t) =>
 
 test('project install writes .claude/settings.json and .mcp.json', (t) => {
   const dir = tempDir(t, 'zn-ccp-');
-  const rep = adapter.install({ scope: 'project', projectDir: dir, nodePath: 'node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
+  const rep = adapter.install({ scope: 'project', projectDir: dir, nodePath: 'node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
   assert.equal(rep.settings, path.join(dir, '.claude', 'settings.json'));
   const mcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
-  assert.deepEqual(mcp.mcpServers.secrets, { command: 'node', args: ['/opt/zn/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] });
+  assert.deepEqual(mcp.mcpServers.secrets, { command: 'node', args: ['/opt/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] });
   adapter.uninstall({ scope: 'project', projectDir: dir });
   const mcp2 = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
   assert.equal(mcp2.mcpServers.secrets, undefined);
@@ -556,14 +556,14 @@ test('a batch-file claude (npm install on Windows) is never run through cmd.exe'
   const bin = path.join(home, 'claude.cmd');
   fs.writeFileSync(bin, '@echo off\r\necho ran > "' + marker + '"\r\n');
   const env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
-  const opts = { scope: 'user', home, env, claudeBin: bin, nodePath: 'C:/Program Files/nodejs/node.exe', cliPath: 'C:/a & b/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
+  const opts = { scope: 'user', home, env, claudeBin: bin, nodePath: 'C:/Program Files/nodejs/node.exe', cliPath: 'C:/a & b/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
   const rep = adapter.install(opts);
   const warn = rep.warnings.find((w) => /batch file/.test(w));
   assert.ok(warn, JSON.stringify(rep.warnings));
   assert.match(warn, /claude mcp add --scope user secrets -- "/);
   // zn's own server registered by hand, as the warning above says.
   fs.mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ mcpServers: { secrets: { command: 'node', args: ['C:/a & b/zn/bin/cli.js', 'secrets-mcp'] } } }));
+  fs.writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ mcpServers: { secrets: { command: 'node', args: ['C:/a & b/zn-gate/bin/cli.js', 'secrets-mcp'] } } }));
   const un = adapter.uninstall(opts);
   assert.ok(un.warnings.some((w) => /claude mcp remove --scope user secrets/.test(w)), JSON.stringify(un.warnings));
   assert.equal(fs.existsSync(marker), false, 'the batch file must not run');
@@ -589,7 +589,7 @@ test('Windows: an extensionless file next to its .cmd is not the program (npm la
 test('the prompt hook blocks the prompt when it cannot run; tool hooks do not', (t) => {
   const home = tempDir(t, 'zn-onf-');
   const env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
-  const opts = { scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
+  const opts = { scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
   const read = () => JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).hooks || {};
   adapter.install(opts);
   assert.equal(read().UserPromptSubmit[0].hooks[0].onFailure, 'block');
@@ -764,5 +764,6 @@ test('zn\'s own secrets server is recognised by its exact command, not by the wo
   assert.equal(cc.isZnSecretsServer({ command: 'npx', args: ['-y', '@acme/secrets-mcp'] }), false);
   assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/vault-example/server.js'], env: { NOTE: 'like secrets-mcp' } }), false);
   assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/other/server.js', 'secrets-mcp'] }), false);
-  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/zn/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/acme/bin/cli.js', 'secrets-mcp'] }), false);
 });

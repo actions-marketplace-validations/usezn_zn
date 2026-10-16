@@ -308,6 +308,8 @@ test('agent guard: the npm exec check stays fast', () => {
   assert.equal(policy.adminCommand('npm exec ' + 'a '.repeat(40000) + 'zn-gate init --dry-run'), 'init');
   assert.equal(policy.adminCommand(('npm x ' + 'b'.repeat(50) + ' ').repeat(1500)), null);
   assert.equal(policy.adminCommand(('npm exec ' + '-- '.repeat(20)).repeat(1500)), null);
+  assert.equal(policy.adminCommand('npm' + ' -a b'.repeat(15000) + ' exec zn-gate init --dry-run'), 'init');
+  policy.adminCommand('npm' + ' -a b'.repeat(15000) + ' install');
   assert.equal(policy.adminCommand('npm exec ' + '--yes '.repeat(200) + 'zn-gate init --dry-run'), 'init', 'padding does not hide it');
   assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 500);
 });
@@ -317,11 +319,12 @@ test('agent guard: Unicode spaces, carriage returns and more npm exec forms do n
     'zn-gate init x\u3000--dry-run', 'zn-gate init x\ufeff--revert',
     'npm --yes exec zn-gate init --dry-run', 'npm -y x zn-gate init --wrap-mcp', '/usr/local/bin/npm exec zn-gate init --dry-run',
     'node /opt/npm/bin/npm-cli.js exec zn-gate init --dry-run', '"npm" exec zn-gate init --dry-run', "npm exec 'zn-gate' init --dry-run",
-    'npm exec "zn-gate@latest" init --wrap-mcp', 'npm exec zn init --dry-run', 'npm exe zn-gate init --revert']) {
+    'npm exec "zn-gate@latest" init --wrap-mcp', 'npm exec zn init --dry-run', 'npm exe zn-gate init --revert',
+    'npm --prefix /tmp/x exec zn-gate init --dry-run', 'npm --loglevel warn exec zn-gate init --wrap-mcp']) {
     assert.ok(policy.bashDenial(cmd), 'expected a denial for: ' + JSON.stringify(cmd));
   }
   for (const cmd of ['npm exec -- zn-gate init --dry-run', 'npm exec zn-gate -- init --wrap-mcp', 'npx -y zn-gate@latest init --revert',
-    'npx -y zn-gate init --wrap-mcp --shadow', 'npm x tsc -- --init', 'npm init -y']) {
+    'npx -y zn-gate init --wrap-mcp --shadow', 'npm x tsc -- --init', 'npm init -y', 'npm -w pkg exec vitest', 'npm --prefix /tmp/x exec -- zn-gate init --dry-run']) {
     assert.equal(policy.bashDenial(cmd), null, 'expected no denial for: ' + cmd);
   }
 });
