@@ -185,11 +185,8 @@ async function checkAgent(spec, ctx) {
       res.where = 'the zn-gate plugin';
       res.via = 'plugin';
       // zn's own hooks left next to the plugin both run, and a broken prompt hook among them blocks every prompt.
-      if (cliHooks) {
-        res.via = 'both';
-        res.problem = 'the zn-gate plugin and the hooks of `zn hooks install claude-code` are both set up, so both run, and a broken one can block every prompt';
-        res.fix = 'remove the second set: run `zn hooks uninstall claude-code` in your own terminal';
-      }
+      // Which set to drop depends on whether the plugin works, so the plugin is checked first (below).
+      if (cliHooks) res.via = 'both';
       if (plugin.off) {
         res.pluginOff = true;
         res.problem = 'the zn-gate plugin is turned off in your Claude Code settings';
@@ -263,6 +260,18 @@ async function checkAgent(spec, ctx) {
     else if (a.decision !== 'deny') res.problem = 'the installed hook did not block the read of .env';
     else if (b.decision === 'deny') res.problem = 'the installed hook blocks everything, ordinary files too, so part of zn is missing or broken';
     else res.verified = true;
+  }
+  if (res.via === 'both') {
+    if (res.problem) {
+      // The plugin does not work here, while zn's own hooks may: turning the plugin off keeps those.
+      res.pluginBroken = true;
+      res.problem = 'the zn-gate plugin does not work here (' + res.problem + '), and the hooks of `zn hooks install claude-code` are set up next to it';
+      res.fix = 'turn the plugin off: run `claude plugin disable zn-gate@usezn` in your own terminal (zn\'s own hooks keep protecting Claude Code), then run `zn-gate check` again';
+    } else {
+      res.verified = false;
+      res.problem = 'the zn-gate plugin and the hooks of `zn hooks install claude-code` are both set up, so both run, and a broken one can block every prompt';
+      res.fix = 'remove the second set: run `zn hooks uninstall claude-code` in your own terminal';
+    }
   }
   res.state = res.problem ? 'not-protected' : 'protected';
   return res;

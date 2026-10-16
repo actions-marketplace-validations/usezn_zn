@@ -249,7 +249,9 @@ test('plan: the plugin together with zn hooks gets one step that removes the hoo
   getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
   const root = path.join(m.home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.9.0');
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), 'process.exit(0);\n');
+  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), "const [mode] = process.argv.slice(2); if (mode === 'check') process.exit(0);\n" +
+    "const r = require('child_process').spawnSync(process.execPath, [" + JSON.stringify(RUNNER) + ", 'claude-code'], { input: require('fs').readFileSync(0), encoding: 'utf8' });\n" +
+    "process.stdout.write(r.stdout || ''); process.exit(r.status || 0);\n");
   fs.writeFileSync(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'),
     JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: root }] } }));
   const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
@@ -261,7 +263,9 @@ test('plan: the plugin together with zn hooks gets one step that removes the hoo
 function pluginIn(home, enabled) {
   const root = path.join(home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.9.0');
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), 'process.exit(0);\n');
+  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), "const [mode] = process.argv.slice(2); if (mode === 'check') process.exit(0);\n" +
+    "const r = require('child_process').spawnSync(process.execPath, [" + JSON.stringify(RUNNER) + ", 'claude-code'], { input: require('fs').readFileSync(0), encoding: 'utf8' });\n" +
+    "process.stdout.write(r.stdout || ''); process.exit(r.status || 0);\n");
   fs.writeFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'),
     JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: root }] } }));
   if (enabled === false) {
@@ -344,4 +348,17 @@ test('agent variables count when present, also when empty', () => {
   const tty = require('../lib/broker/tty');
   assert.equal(tty.agentEnvDetected({ CLAUDECODE: '' }), 'CLAUDECODE');
   assert.equal(tty.agentEnvDetected({ PATH: '/usr/bin' }), null);
+});
+
+test('plan: a broken plugin next to zn hooks gets one step that turns the plugin off', async (t) => {
+  const m = machine(t, ['claude-code']);
+  getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+  const root = path.join(m.home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.9.0');
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), "process.stderr.write('zn plugin: zn-gate is not installed'); process.exit(2);\n");
+  fs.writeFileSync(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: root }] } }));
+  const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.deepEqual(cc.steps.map(line), ['claude plugin disable zn-gate@usezn']);
 });

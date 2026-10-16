@@ -277,3 +277,16 @@ test('check: a plugin alone that is turned off is fixed by turning it on', async
   assert.equal(r.pluginOff, true);
   assert.equal(r.fix, 'turn it on: run `claude plugin enable zn-gate@usezn` in your own terminal');
 });
+
+test('check: a broken plugin next to zn hooks is turned off, not the hooks removed', async (t) => {
+  const ctx = homeWithHooks(t, ['claude-code']);
+  const settings = JSON.parse(fs.readFileSync(getAdapter('claude-code').settingsFile(ctx), 'utf8'));
+  fakePlugin(ctx.home, launcher({ broken: true }), settings);
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.via, 'both');
+  assert.equal(r.pluginBroken, true);
+  assert.equal(r.state, 'not-protected');
+  assert.match(r.problem, /the zn-gate plugin does not work here/);
+  assert.match(r.fix, /claude plugin disable zn-gate@usezn/);
+  assert.doesNotMatch(r.fix, /hooks uninstall/);
+});
