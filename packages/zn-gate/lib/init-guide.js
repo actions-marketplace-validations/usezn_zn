@@ -188,7 +188,7 @@ async function guide(opts = {}) {
   const w = opts.write || ((s) => process.stdout.write(s));
   const tty = require('./broker/tty');
   const stdin = opts.stdin || process.stdin;
-  const agent = tty.agentEnvDetected(env);
+  const agent = tty.agentDetected(env, opts);
   const interactive = Boolean(stdin.isTTY) && !agent;
   const { items, setup } = await plan(opts);
 
