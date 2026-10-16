@@ -182,6 +182,15 @@ jobs:
           # --no-isolation: build with the hash-pinned setuptools from the
           # venv instead of resolving the build backend again from PyPI.
           "$RUNNER_TEMP/build-venv/bin/python" -m build --no-isolation packages/zn-gate-py --outdir "$RUNNER_TEMP/release"
+          # setuptools stamps the files it generates with the build time: fix the times, owners, order
+          # and gzip header of the sdist, then build once more and require the same bytes.
+          "$RUNNER_TEMP/build-venv/bin/python" -I .release-tools/.github/scripts/normalize-sdist.py "$RUNNER_TEMP"/release/*.tar.gz
+          "$RUNNER_TEMP/build-venv/bin/python" -m build --no-isolation packages/zn-gate-py --outdir "$RUNNER_TEMP/rebuild"
+          "$RUNNER_TEMP/build-venv/bin/python" -I .release-tools/.github/scripts/normalize-sdist.py "$RUNNER_TEMP"/rebuild/*.tar.gz
+          (cd "$RUNNER_TEMP/release" && sha256sum zn_gate-*) > "$RUNNER_TEMP/release.sum"
+          (cd "$RUNNER_TEMP/rebuild" && sha256sum zn_gate-*) > "$RUNNER_TEMP/rebuild.sum"
+          diff "$RUNNER_TEMP/release.sum" "$RUNNER_TEMP/rebuild.sum" || { echo "::error::the Python sdist or wheel differs between two builds of the same commit"; exit 1; }
+          rm -rf "$RUNNER_TEMP/rebuild"
           "$RUNNER_TEMP/build-venv/bin/python" -m twine check --strict "$RUNNER_TEMP"/release/*.whl "$RUNNER_TEMP"/release/*.tar.gz
       - name: Check file names and write SHA256SUMS
         working-directory: ${{ runner.temp }}/release
