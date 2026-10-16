@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.10.0] - 2026-10-17
+## [1.10.0] - 2026-10-16
 
 zn-gate 1.10.0 adds an audit mode with SARIF output to the GitHub Action, makes the commands that only you may run harder for an AI agent to start, gives the right repair in `zn-gate check` and `zn-gate init` when the zn-gate plugin is broken next to zn's own hooks, and checks long shell commands much faster. Update with `npm install -g zn-gate@1.10.0` and `pip install -U zn-gate`.
 
