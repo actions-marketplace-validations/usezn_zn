@@ -14,7 +14,7 @@ inputs:
   version:
     description: 'zn-gate version to install, as an exact version number (for example 1.6.0). Ranges and "latest" are not accepted. `audit` needs 1.6.0 or later.'
     required: false
-    default: '1.7.1'
+    default: '1.9.0'
   mode:
     description: 'scan (prompt-injection and secret scan of files, the behaviour of earlier releases), audit (audit of agent configs, hooks, MCP servers, plugins and skills), or both'
     required: false
@@ -36,7 +36,7 @@ inputs:
     required: false
     default: 'true'
   severity-threshold:
-    description: 'Audit only: lowest severity that fails the step when fail-on-threat is true (high, medium or low). The scan has no severities: any scan finding fails.'
+    description: 'Audit only: lowest severity that fails the step when fail-on-threat is true (critical, high, medium or low). The scan has no severities: any scan finding fails.'
     required: false
     default: 'high'
   fail-on:
@@ -52,13 +52,13 @@ inputs:
     required: false
     default: 'github'
   sarif-file:
-    description: 'With format sarif: where to write the SARIF file. Empty writes zn-gate.sarif in a new directory under the runner temp directory.'
+    description: 'With format sarif: where to write the SARIF file, inside the workspace or the runner temp directory (not through a symbolic link). Empty writes zn-gate.sarif in a new directory under the runner temp directory.'
     required: false
     default: ''
 
 outputs:
   sarif-file:
-    description: 'Path of the SARIF file (format sarif only)'
+    description: 'Path of the SARIF file (format sarif only); empty if no check produced a report or the file could not be written'
     value: ${{ steps.run.outputs.sarif-file }}
   scan-exit-code:
     description: 'Exit code of zn-gate scan (0 clean, 1 findings, 2 error); empty if it did not run'
@@ -77,6 +77,7 @@ runs:
         ZN_VERSION: ${{ inputs.version }}
         ZN_MODE: ${{ inputs.mode }}
         ZN_FORMAT: ${{ inputs.format }}
+        ZN_FAIL_ON_THREAT: ${{ inputs.fail-on-threat }}
         ZN_FAIL_ON: ${{ inputs.fail-on }}
         ZN_SEVERITY_THRESHOLD: ${{ inputs.severity-threshold }}
         ZN_AGENTS: ${{ inputs.agents }}
@@ -92,8 +93,9 @@ runs:
         pre=${BASH_REMATCH[5]}; pren=${BASH_REMATCH[6]}
         case "$ZN_MODE" in scan|audit|both) ;; *) fail "'mode' must be scan, audit or both" ;; esac
         case "$ZN_FORMAT" in github|text|json|sarif) ;; *) fail "'format' must be github, text, json or sarif" ;; esac
+        case "$ZN_FAIL_ON_THREAT" in true|false) ;; *) fail "'fail-on-threat' must be true or false" ;; esac
         case "$ZN_FAIL_ON" in ''|low|medium|high|critical|none) ;; *) fail "'fail-on' must be low, medium, high, critical or none" ;; esac
-        case "$ZN_SEVERITY_THRESHOLD" in high|medium|low) ;; *) fail "'severity-threshold' must be high, medium or low" ;; esac
+        case "$ZN_SEVERITY_THRESHOLD" in critical|high|medium|low) ;; *) fail "'severity-threshold' must be critical, high, medium or low" ;; esac
         [[ "$ZN_AGENTS" =~ ^[a-z0-9,-]*$ ]] || fail "'agents' must be a comma-separated list of agent names"
         [ -z "$ZN_SHA256" ] || [[ "$ZN_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || fail "'package-sha256' must be a 64-character hex SHA-256"
         [ -z "$ZN_NPM_INTEGRITY" ] || [[ "$ZN_NPM_INTEGRITY" =~ ^sha512-[A-Za-z0-9+/]{86}==$ ]] || fail "'npm-integrity' must be a sha512-... integrity string"
@@ -109,8 +111,13 @@ runs:
             echo "::warning title=zn-gate::zn-gate $ZN_VERSION has no audit; running the scan only. Set version to 1.6.0 or later to audit agent configs, or mode: scan to silence this warning."
           fi
         fi
+        # A .post version exists on PyPI only, so there is no npm package to audit with.
         if [[ "$ZN_VERSION" =~ \.post ]] && [ "$run_audit" = true ]; then
-          fail "'version' with .post is a PyPI-only version and cannot be audited; use mode: scan"
+          if [ "$ZN_MODE" = audit ]; then
+            fail "'version' with .post is a PyPI-only version and cannot be audited; use mode: scan"
+          fi
+          echo "::warning title=zn-gate::zn-gate $ZN_VERSION is a PyPI-only version with no audit; running the scan only. Set mode: scan to silence this warning."
+          run_audit=false
         fi
         # npm spells pre-releases 1.6.0-beta.1 where PyPI has 1.6.0b1.
         npm_version="$major.$minor.$patch"
@@ -187,7 +194,7 @@ runs:
         cd "$ZN_NPM_DIR/pkg"
         # npm checks the tarball against the registry's integrity hash.
         npm pack "zn-gate@$ZN_NPM_VERSION" --silent --ignore-scripts > packed.txt
-        tgz="$ZN_NPM_DIR/pkg/$(tail -n 1 packed.txt)"
+        tgz="$ZN_NPM_DIR/pkg/$(tail -n 1 packed.txt | tr -d '\r')"
         if [ -n "$ZN_NPM_INTEGRITY" ]; then
           actual="$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write("sha512-"+c.createHash("sha512").update(f.readFileSync(process.argv[1])).digest("base64"))' "$tgz")"
           if [ "$actual" != "$ZN_NPM_INTEGRITY" ]; then
@@ -226,6 +233,7 @@ runs:
         ZN_SARIF_FILE: ${{ inputs.sarif-file }}
         ZN_WORK: ${{ runner.temp }}/zn-gate-run
         ZN_WORK_ROOT: ${{ runner.temp }}
+        ZN_WORKSPACE: ${{ github.workspace }}
       run: |
         # The runner starts bash with -e; collect every exit code instead.
         set +e
@@ -243,13 +251,27 @@ runs:
         fi
         # Helper for SARIF: convert scan JSON, merge runs, print annotations.
         cat > "$ZN_WORK/sarif.py" <<'PY'
-        import json, os, sys
+        import json, os, pathlib, sys, tempfile
+        from urllib.parse import quote
 
         SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
 
         def load(p):
             with open(p, encoding="utf-8") as f:
                 return json.load(f)
+
+        def file_uri(path, root):
+            # Relative to the repository root and percent-encoded per segment, like
+            # the audit's SARIF; a file outside the root (or, on Windows, on another
+            # drive) gets an absolute file: URI.
+            path = os.path.abspath(path)
+            try:
+                rel = os.path.relpath(path, root)
+            except ValueError:
+                rel = None
+            if rel is None or rel == os.pardir or rel.startswith(os.pardir + os.sep):
+                return pathlib.Path(path).as_uri()
+            return "/".join(quote(s, safe="!~*'()") for s in rel.replace(os.sep, "/").split("/"))
 
         def scan_run(src, version):
             data = load(src)
@@ -259,7 +281,7 @@ runs:
                 rid = str(t.get("rule") or "zn-gate")
                 rules.setdefault(rid, {"id": rid, "shortDescription": {"text": rid},
                                        "properties": {"tags": ["security", t.get("type", "injection")]}})
-                uri = os.path.relpath(os.path.abspath(t["file"]), root).replace(os.sep, "/")
+                uri = file_uri(t["file"], root)
                 results.append({
                     "ruleId": rid,
                     "level": "error",
@@ -274,6 +296,43 @@ runs:
                     "automationDetails": {"id": "zn-gate/scan/"},
                     "results": results}
 
+        def refuse(msg):
+            print(f"::error title=zn-gate::{msg}")
+            sys.exit(2)
+
+        def inside(path, roots):
+            for r in roots:
+                try:
+                    if os.path.commonpath([path, r]) == r:
+                        return True
+                except ValueError:  # another drive on Windows
+                    pass
+            return False
+
+        def target(out):
+            # The file must end up inside the workspace or the runner temp directory,
+            # with no symbolic link on the way: the workspace holds the code under test.
+            roots = [os.path.normcase(os.path.realpath(r))
+                     for r in (os.environ.get("ZN_WORKSPACE"), os.environ.get("ZN_WORK_ROOT")) if r]
+            out = os.path.abspath(out)
+            parent, name = os.path.split(out)
+            if name in ("", ".", ".."):
+                refuse("'sarif-file' must name a file")
+            def real_parent():
+                real = os.path.realpath(parent)
+                if not inside(os.path.normcase(real), roots):
+                    refuse("'sarif-file' must be inside the workspace or the runner temp directory")
+                return real
+            real_parent()
+            os.makedirs(parent, exist_ok=True)
+            real = real_parent()
+            dest = os.path.join(real, name)
+            if os.path.islink(dest):
+                refuse("'sarif-file' is a symbolic link; give the path of a regular file")
+            if os.path.lexists(dest) and not os.path.isfile(dest):
+                refuse("'sarif-file' exists and is not a regular file")
+            return dest
+
         def merge(out, version, scan_json, audit_sarif):
             runs = []
             if scan_json:
@@ -282,8 +341,20 @@ runs:
                 for i, run in enumerate(load(audit_sarif).get("runs", [])):
                     run.setdefault("automationDetails", {"id": f"zn-gate/audit/{i or ''}"})
                     runs.append(run)
-            with open(out, "w", encoding="utf-8") as f:
-                json.dump({"$schema": SCHEMA, "version": "2.1.0", "runs": runs}, f, indent=2)
+            dest = target(out)
+            # Write a temporary file next to it and rename it over the destination:
+            # the rename replaces a link put there meanwhile instead of following it.
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), prefix=".zn-gate-", suffix=".sarif.tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump({"$schema": SCHEMA, "version": "2.1.0", "runs": runs}, f, indent=2)
+                os.replace(tmp, dest)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
             print(f"[zn-gate] SARIF: {sum(len(r.get('results', [])) for r in runs)} results in {len(runs)} run(s) -> {out}")
 
         def esc(s, prop=False):
@@ -374,15 +445,21 @@ runs:
 
         sarif_out=""; merge_rc=0
         if [ "$ZN_FORMAT" = sarif ]; then
-          # Default: a new directory per run, so a later run of the action in the same
-          # job does not remove or overwrite it.
-          if [ -n "$ZN_SARIF_FILE" ]; then
-            sarif_out="$ZN_SARIF_FILE"
-          else
-            sarif_out="$(mktemp -d "$ZN_WORK_ROOT/zn-gate-sarif-XXXXXX")/zn-gate.sarif"
-          fi
+          # A scan that ended in an error may have printed partial JSON: leave it out.
+          case "$scan_rc" in 0|1) ;; *) scan_json="" ;; esac
           [ -s "$audit_sarif" ] || audit_sarif=""
-          helper merge "$sarif_out" "$ZN_VERSION" "$scan_json" "$audit_sarif" || merge_rc=2
+          if [ -z "$scan_json" ] && [ -z "$audit_sarif" ]; then
+            echo "::warning title=zn-gate::no check produced a report, so no SARIF file was written"
+          else
+            # Default: a new directory per run, so a later run of the action in the same
+            # job does not remove or overwrite it.
+            if [ -n "$ZN_SARIF_FILE" ]; then
+              sarif_out="$ZN_SARIF_FILE"
+            else
+              sarif_out="$(mktemp -d "$ZN_WORK_ROOT/zn-gate-sarif-XXXXXX")/zn-gate.sarif"
+            fi
+            helper merge "$sarif_out" "$ZN_VERSION" "$scan_json" "$audit_sarif" || { merge_rc=2; sarif_out=""; }
+          fi
         fi
         {
           echo "sarif-file=$sarif_out"
