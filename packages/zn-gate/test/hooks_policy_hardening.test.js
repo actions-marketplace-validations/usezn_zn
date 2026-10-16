@@ -277,3 +277,10 @@ test('a shell command over 100 KB is refused at once; one just under the limit g
   assert.equal(policy.bashDenial('npm test'), null);
   assert.match(policy.bashDenial('cat ~/.aws/credentials'), /credential/);
 });
+
+test('a long command that repeats its words is checked quickly, and still blocks', () => {
+  const t0 = process.hrtime.bigint();
+  assert.equal(policy.bashDenial('echo ' + 'a '.repeat(40000)), null);
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 1500, 'too slow');
+  assert.ok(policy.bashDenial('cat ' + 'README.md '.repeat(5000) + '~/.aws/credentials'));
+});
