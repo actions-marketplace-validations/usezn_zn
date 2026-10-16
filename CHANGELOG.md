@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `zn-gate scan` finds more secrets, in Node.js and Python alike: values of `--api-key=`, `--password=`, `--token=`, `--secret=` and similar flags on a command line; quoted values assigned to a name that ends in password, secret, token or api key with `=`, `:`, `:=` or `=>` (also `$password = "..."`), when the value looks machine-generated; an opaque `Authorization: Bearer` token; and the password in `https://user:password@host` and `ssh://user:password@host` URLs, such as git remotes. A flag without a value, a reference (`$TOKEN`, `${API_KEY}`), a placeholder (`<token>`, `changeme`) and a URL without a password are not reported. The Node.js scan now also reports the provider token formats the Python scan already reported (Slack, Stripe, Google, Hugging Face and the others the scrubber knows), with the same rule names.
+- `zn-gate scan` reads UTF-16 files that start with a byte order mark, and the private key files `id_xmss` and `identity`.
+- The scrubber also replaces an opaque `Authorization: Bearer` token (new type `BEARER_TOKEN`), as the Python package already did. `RULES_VERSION` is now `2026-10-16.1` and `SCRUB_RULES_VERSION` `2026-10-16.2`. A URL whose user is a reference (`https://$TOKEN:x-oauth-basic@host`) is no longer redacted as a password by the scrubber, as in the Python package.
+
+### Changed
+- `zn-gate scan` says "Secret found" for a secret, instead of calling it a threat, and adds one next step in plain words: move the values into the local vault with `npx -y zn-gate env shadow <file>` for a `.env` file, store the value with `npx -y zn-gate secret set NAME` otherwise, move a private key out of the file, and rotate anything that was ever committed or shared. The value is never printed. In `--format github`, a secret's annotation is titled `Secret found (<rule>)` and its message is the next step; the summary line reads `Found N secrets and M security threats.` In `--format json`, each secret has a new `next_step` field and the report has a new `total_secrets` count; `total_threats` still counts every finding and the other fields are unchanged. Injection findings keep their wording.
+
 ## [1.9.0] - 2026-10-16
 
 zn-gate 1.9.0 makes `npx -y zn-gate init` the one command that sets up zn for the coding agents on your machine, and adds `zn-gate check` to show that zn stops your agent from reading a secret. Block messages for commands only you may run now give the exact command. Update with `npm install -g zn-gate@1.9.0`; the Python package has no code changes and moves to 1.9.0 to keep the versions in step.

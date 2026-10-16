@@ -107,6 +107,14 @@ class TestPatternParity(unittest.TestCase):
         self.assertEqual({k: _py_regex(v) for k, v in R.SECRET_PATTERN_PREFILTERS.items()},
                          {k: _js_regex(e) for k, e in self.js["secret_prefilters"].items()})
 
+    def test_scan_secret_patterns(self):
+        js = self.js["tables"]["SCAN_SECRET_PATTERNS"]
+        self.assertEqual([(rule_id, _py_regex(pat)) for rule_id, pat, _ in R.SCAN_SECRET_PATTERNS],
+                         [(e["id"], _js_regex(e)) for e in js])
+        self.assertEqual({k: _py_regex(v) for k, v in R.SCAN_SECRET_PREFILTERS.items()},
+                         {k: _js_regex(e) for k, e in self.js["scan_secret_prefilters"].items()})
+        self.assertEqual(set(R.SCAN_SECRET_VALUE_FILTERS), {e["id"] for e in js})
+
     def test_size_limits(self):
         for name, value in self.js["limits"].items():
             with self.subTest(limit=name):
