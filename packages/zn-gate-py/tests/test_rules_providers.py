@@ -32,7 +32,8 @@ def _body(n, alphabet=ALNUM):
 
 
 # (rule id, Node type or None, positive, negative)
-HX_ = "0123456789abcdef"
+# Shuffled so that no body starts with a placeholder run such as "0123456789".
+HX_ = "3a7f0c95e1b2d846"
 LA_ = "qa7zt3lm9pw2ny5rb8vx1cd4fg6hj0ks"
 UR_ = ALNUM + "-_"
 
@@ -135,6 +136,20 @@ CASES = [
      'sha256~' + _body(42, UR_)),
     ("secret:teams_webhook", "TEAMS_WEBHOOK", 'https://example.webhook.office.com/webhookb2/' + _uuid() + '@' + _uuid() + '/IncomingWebhook/' + _body(32, HX_) + '/' + _uuid(),
      'https://example.webhook.office.com/webhookb2/' + _uuid() + '@' + _uuid() + '/IncomingWebhook/' + _body(31, HX_) + '/' + _uuid()),
+    ("secret:flyio_token", "FLYIO_TOKEN", 'fm1a_' + _body(100, B64), 'fm1a_' + _body(99, B64)),
+    ("secret:flyio_token", "FLYIO_TOKEN", 'fm1r_' + _body(120, B64) + '==', 'fm1r_' + _body(99, B64)),
+    ("secret:flyio_token", "FLYIO_TOKEN", 'fm2_' + _body(100, B64), 'fm2_' + _body(99, B64)),
+    ("secret:grafana_token", "GRAFANA_TOKEN", 'glc_' + _body(32, B64), 'glc_' + _body(31, B64)),
+    ("secret:easypost_key", "EASYPOST_KEY", 'EZTK' + _body(54), 'EZTK' + _body(53)),
+    ("secret:planetscale_token", "PLANETSCALE_TOKEN", 'pscale_oauth_' + _body(40, UR_), 'pscale_oauth_' + _body(31, UR_)),
+    ("secret:planetscale_token", "PLANETSCALE_TOKEN", 'pscale_pw_' + _body(40, UR_), 'pscale_pw_' + _body(31, UR_)),
+    ("secret:shippo_key", "SHIPPO_KEY", 'shippo_test_' + _body(40, HX_), 'shippo_test_' + _body(39, HX_)),
+    ("secret:postman_key", "POSTMAN_KEY", 'PMAK-' + _body(24, HX_).upper() + '-' + _body(34, HX_).upper(),
+     'PMAK-' + _body(24, HX_).upper() + '-' + _body(33, HX_).upper()),
+    # one character too many, and a prefix glued to a longer word
+    ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'key LTAI' + _body(20) + ' end', 'key LTAI' + _body(21) + ' end'),
+    ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'id=LTAI' + _body(20), 'id=xLTAI' + _body(20)),
+    ("secret:pulumi_token", "PULUMI_TOKEN", 'pul-' + _body(40, HX_), 'pul-' + _body(41, HX_)),
     ("secret:azure_ad_client_secret", "AZURE_AD_CLIENT_SECRET", "abc1Q~" + _body(33), "abc1Q~" + _body(29)),
     ("secret:url_password", "URL_PASSWORD", "https://svc-user:Zq8Lm2Xv9Pt4@files.test/path",
      "https://svc-user:Zq8@files.test/path"),
@@ -201,6 +216,23 @@ class TestProviderFormatsParity(unittest.TestCase):
                     self.assertEqual(self.node[2 * i + 1], [])
                 else:
                     self.assertNotIn(node_type, self.node[2 * i + 1])
+
+    def test_placeholder_bodies_are_not_tokens(self):
+        cases = [
+            ("secret:prefect_key", "PREFECT_KEY", 'pnu_' + '0' * 36),
+            ("secret:pulumi_token", "PULUMI_TOKEN", 'pul-' + 'a' * 40),
+            ("secret:pulumi_token", "PULUMI_TOKEN", 'pul-' + ('0123456789abcdef' * 3)[:40]),
+            ("secret:openshift_token", "OPENSHIFT_TOKEN", 'sha256~' + 'x' * 43),
+            ("secret:openshift_token", "OPENSHIFT_TOKEN", 'sha256~abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ'),
+            ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'LTAI' + 'X' * 20),
+            ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'LTAIabcdefghijKLMNOP1234'),
+        ]
+        node = _node_types([t for _, _, t in cases])
+        for (rule_id, node_type, text), types in zip(cases, node):
+            with self.subTest(text=text):
+                _, found = R.redact_secrets(text)
+                self.assertNotIn(rule_id, [d["rule"] for d in found])
+                self.assertNotIn(node_type, types)
 
     def test_every_provider_rule_has_a_case(self):
         covered = {rule_id for rule_id, _, _, _ in CASES}

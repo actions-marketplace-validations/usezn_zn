@@ -1,6 +1,6 @@
 """
 zn deterministic rules engine - Python stdlib implementation.
-RULES_VERSION: 2026-10-16.9
+RULES_VERSION: 2026-10-16.10
 Zero external dependencies. Pure Python stdlib.
 """
 
@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-10-16.9"
+RULES_VERSION = "2026-10-16.10"
 
 # Word boundaries are written as explicit ASCII lookarounds, not \b: Python's \b
 # is Unicode, JavaScript's is ASCII-only. Same patterns as rules.js.
@@ -876,6 +876,12 @@ def _pv_placeholder(s: str) -> bool:
     return bool(re.fullmatch(r'(.)\1+', s) or _PV_PLACEHOLDER_SEQ.match(s))
 
 
+def _pv_prefixed(v: str, prefix: str) -> bool:
+    """patterns.js prefixedRandom: the body after the prefix looks random and is not a placeholder."""
+    body = re.sub(prefix, '', v, count=1)
+    return not _pv_placeholder(body) and _pv_random(body, 2, 3.0)
+
+
 def _pv_hf_check(v: str) -> bool:
     # Letters-only bodies are exactly 34 characters; CamelCase identifiers do not count.
     body = v[3:]
@@ -961,7 +967,7 @@ PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
     ("secret:notion_token", re.compile(_TB + r'ntn_[0-9]{11}[A-Za-z0-9]{35}' + _TA), "[REDACTED_NOTION_TOKEN]"),
     ("secret:perplexity_key", re.compile(_TB + r'pplx-[A-Za-z0-9]{48}' + _TA), "[REDACTED_PERPLEXITY_KEY]"),
     ("secret:planetscale_token", re.compile(_TB + r'pscale_(?:tkn|oauth|pw)_[A-Za-z0-9_=.-]{32,64}' + _TA), "[REDACTED_PLANETSCALE_TOKEN]"),
-    ("secret:postman_key", re.compile(_TB + r'PMAK-[a-f0-9]{24}-[a-f0-9]{34}' + _TA), "[REDACTED_POSTMAN_KEY]"),
+    ("secret:postman_key", re.compile(_TB + r'PMAK-[A-Fa-f0-9]{24}-[A-Fa-f0-9]{34}' + _TA), "[REDACTED_POSTMAN_KEY]"),
     ("secret:prefect_key", re.compile(_TB + r'pnu_[A-Za-z0-9]{36}' + _TA), "[REDACTED_PREFECT_KEY]"),
     ("secret:pulumi_token", re.compile(_TB + r'pul-[a-f0-9]{40}' + _TA), "[REDACTED_PULUMI_TOKEN]"),
     ("secret:readme_key", re.compile(_TB + r'rdme_[a-z0-9]{70}' + _TA), "[REDACTED_README_KEY]"),
@@ -1009,30 +1015,30 @@ PROVIDER_MATCH_CHECKS: Dict[str, Any] = {
     "secret:supabase_pat": lambda v: bool(_DIGIT_RE.search(v[4:])) and _pv_random(v[4:], 2, 3.3),
     "secret:square_token": lambda v: _pv_random(re.sub(r'^(?:EAAA|sq0atp-|sq0csp-)', '', v), 2, 3.3),
     "secret:discord_bot_token": lambda v: _pv_discord_check(v),
-    "secret:onepassword_sa_token": lambda v: _pv_random(re.sub(r'^ops_eyJ', '', v), 2, 3.0),
-    "secret:age_secret_key": lambda v: _pv_random(re.sub(r'^AGE-SECRET-KEY-1', '', v), 2, 3.0),
-    "secret:alibaba_key_id": lambda v: _pv_random(re.sub(r'^LTAI', '', v), 2, 3.0),
-    "secret:artifactory_key": lambda v: _pv_random(re.sub(r'^AKCp', '', v), 2, 3.0),
-    "secret:cloudflare_origin_ca_key": lambda v: _pv_random(re.sub(r'^v1\.0-', '', v), 2, 3.0),
-    "secret:dynatrace_token": lambda v: _pv_random(re.sub(r'^dt0c01\.', '', v), 2, 3.0),
-    "secret:easypost_key": lambda v: _pv_random(re.sub(r'^EZ(?:AK|TK)', '', v), 2, 3.0),
-    "secret:flyio_token": lambda v: _pv_random(re.sub(r'^(?:fo1|fm1[ar]|fm2)_', '', v), 2, 3.0),
-    "secret:grafana_token": lambda v: _pv_random(re.sub(r'^gl(?:c|sa)_', '', v), 2, 3.0),
-    "secret:terraform_cloud_token": lambda v: _pv_random(re.sub(r'^[a-z0-9]{14}\.atlasv1\.', '', v), 2, 3.0),
-    "secret:heroku_key_v2": lambda v: _pv_random(re.sub(r'^HRKU-AA', '', v), 2, 3.0),
-    "secret:notion_token": lambda v: _pv_random(re.sub(r'^ntn_[0-9]{11}', '', v), 2, 3.0),
-    "secret:perplexity_key": lambda v: _pv_random(re.sub(r'^pplx-', '', v), 2, 3.0),
-    "secret:planetscale_token": lambda v: _pv_random(re.sub(r'^pscale_(?:tkn|oauth|pw)_', '', v), 2, 3.0),
-    "secret:postman_key": lambda v: _pv_random(re.sub(r'^PMAK-', '', v), 2, 3.0),
-    "secret:prefect_key": lambda v: _pv_random(re.sub(r'^pnu_', '', v), 2, 3.0),
-    "secret:pulumi_token": lambda v: _pv_random(re.sub(r'^pul-', '', v), 2, 3.0),
-    "secret:readme_key": lambda v: _pv_random(re.sub(r'^rdme_', '', v), 2, 3.0),
-    "secret:rubygems_key": lambda v: _pv_random(re.sub(r'^rubygems_', '', v), 2, 3.0),
-    "secret:brevo_key": lambda v: _pv_random(re.sub(r'^xkeysib-', '', v), 2, 3.0),
-    "secret:sentry_user_token": lambda v: _pv_random(re.sub(r'^sntryu_', '', v), 2, 3.0),
-    "secret:shippo_key": lambda v: _pv_random(re.sub(r'^shippo_(?:live|test)_', '', v), 2, 3.0),
-    "secret:openshift_token": lambda v: _pv_random(re.sub(r'^sha256~', '', v), 2, 3.0),
-    "secret:teams_webhook": lambda v: _pv_random(re.sub(r'^https://[a-z0-9]+\.webhook\.office\.com/webhookb2/', '', v), 2, 3.0),
+    "secret:onepassword_sa_token": lambda v: _pv_prefixed(v, r'^ops_eyJ'),
+    "secret:age_secret_key": lambda v: _pv_prefixed(v, r'^AGE-SECRET-KEY-1'),
+    "secret:alibaba_key_id": lambda v: _pv_prefixed(v, r'^LTAI'),
+    "secret:artifactory_key": lambda v: _pv_prefixed(v, r'^AKCp'),
+    "secret:cloudflare_origin_ca_key": lambda v: _pv_prefixed(v, r'^v1\.0-'),
+    "secret:dynatrace_token": lambda v: _pv_prefixed(v, r'^dt0c01\.'),
+    "secret:easypost_key": lambda v: _pv_prefixed(v, r'^EZ(?:AK|TK)'),
+    "secret:flyio_token": lambda v: _pv_prefixed(v, r'^(?:fo1|fm1[ar]|fm2)_'),
+    "secret:grafana_token": lambda v: _pv_prefixed(v, r'^gl(?:c|sa)_'),
+    "secret:terraform_cloud_token": lambda v: _pv_prefixed(v, r'^[a-z0-9]{14}\.atlasv1\.'),
+    "secret:heroku_key_v2": lambda v: _pv_prefixed(v, r'^HRKU-AA'),
+    "secret:notion_token": lambda v: _pv_prefixed(v, r'^ntn_[0-9]{11}'),
+    "secret:perplexity_key": lambda v: _pv_prefixed(v, r'^pplx-'),
+    "secret:planetscale_token": lambda v: _pv_prefixed(v, r'^pscale_(?:tkn|oauth|pw)_'),
+    "secret:postman_key": lambda v: _pv_prefixed(v, r'^PMAK-'),
+    "secret:prefect_key": lambda v: _pv_prefixed(v, r'^pnu_'),
+    "secret:pulumi_token": lambda v: _pv_prefixed(v, r'^pul-'),
+    "secret:readme_key": lambda v: _pv_prefixed(v, r'^rdme_'),
+    "secret:rubygems_key": lambda v: _pv_prefixed(v, r'^rubygems_'),
+    "secret:brevo_key": lambda v: _pv_prefixed(v, r'^xkeysib-'),
+    "secret:sentry_user_token": lambda v: _pv_prefixed(v, r'^sntryu_'),
+    "secret:shippo_key": lambda v: _pv_prefixed(v, r'^shippo_(?:live|test)_'),
+    "secret:openshift_token": lambda v: _pv_prefixed(v, r'^sha256~'),
+    "secret:teams_webhook": lambda v: _pv_prefixed(v, r'^https://[a-z0-9]+\.webhook\.office\.com/webhookb2/'),
     "secret:azure_ad_client_secret": lambda v: _pv_random(v, 3, 3.5),
 }
 

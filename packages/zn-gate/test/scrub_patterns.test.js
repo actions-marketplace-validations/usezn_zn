@@ -453,6 +453,19 @@ const GITLEAKS_FORMATS = [
   ['SHIPPO_KEY', 'shippo_live_' + pickA(40, G_HX), 'shippo_live_' + pickA(39, G_HX)],
   ['OPENSHIFT_TOKEN', 'sha256~' + pickA(43, G_UR), 'sha256~' + pickA(42, G_UR)],
   ['TEAMS_WEBHOOK', 'https://example.webhook.office.com/webhookb2/' + uuidA() + '@' + uuidA() + '/IncomingWebhook/' + pickA(32, G_HX) + '/' + uuidA(), 'https://example.webhook.office.com/webhookb2/' + uuidA() + '@' + uuidA() + '/IncomingWebhook/' + pickA(31, G_HX) + '/' + uuidA()],
+  ['FLYIO_TOKEN', 'fm1a_' + pickA(100, G_B64), 'fm1a_' + pickA(99, G_B64)],
+  ['FLYIO_TOKEN', 'fm1r_' + pickA(120, G_B64) + '==', 'fm1r_' + pickA(99, G_B64)],
+  ['FLYIO_TOKEN', 'fm2_' + pickA(100, G_B64), 'fm2_' + pickA(99, G_B64)],
+  ['GRAFANA_TOKEN', 'glc_' + pickA(32, G_B64), 'glc_' + pickA(31, G_B64)],
+  ['EASYPOST_KEY', 'EZTK' + pickA(54), 'EZTK' + pickA(53)],
+  ['PLANETSCALE_TOKEN', 'pscale_oauth_' + pickA(40, G_UR), 'pscale_oauth_' + pickA(31, G_UR)],
+  ['PLANETSCALE_TOKEN', 'pscale_pw_' + pickA(40, G_UR), 'pscale_pw_' + pickA(31, G_UR)],
+  ['SHIPPO_KEY', 'shippo_test_' + pickA(40, G_HX), 'shippo_test_' + pickA(39, G_HX)],
+  ['POSTMAN_KEY', 'PMAK-' + pickA(24, G_HX).toUpperCase() + '-' + pickA(34, G_HX).toUpperCase(), 'PMAK-' + pickA(24, G_HX).toUpperCase() + '-' + pickA(33, G_HX).toUpperCase()],
+  // one character too many, and a prefix glued to a longer word
+  ['ALIBABA_KEY_ID', 'key LTAI' + pickA(20) + ' end', 'key LTAI' + pickA(21) + ' end'],
+  ['ALIBABA_KEY_ID', 'id=LTAI' + pickA(20), 'id=xLTAI' + pickA(20)],
+  ['PULUMI_TOKEN', 'pul-' + pickA(40, G_HX), 'pul-' + pickA(41, G_HX)],
 ];
 test('provider formats from gitleaks: each positive is found, each near miss is not', () => {
   for (const [type, pos, neg] of GITLEAKS_FORMATS) {
@@ -461,7 +474,9 @@ test('provider formats from gitleaks: each positive is found, each near miss is 
   }
 });
 test('provider formats from gitleaks: placeholder bodies are not tokens', () => {
-  for (const t of ['pnu_' + '0'.repeat(36), 'pul-' + 'a'.repeat(40), 'sha256~' + 'x'.repeat(43), 'LTAI' + 'X'.repeat(20)]) {
+  for (const t of ['pnu_' + '0'.repeat(36), 'pul-' + 'a'.repeat(40), 'sha256~' + 'x'.repeat(43), 'LTAI' + 'X'.repeat(20),
+    'sha256~abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ', 'pul-' + '0123456789abcdef'.repeat(3).slice(0, 40),
+    'LTAIabcdefghijKLMNOP1234']) {
     assert.deepStrictEqual(types(t), [], t);
   }
 });
