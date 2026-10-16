@@ -27,6 +27,8 @@ const AGENT_PROGRAMS = new Set(['claude', 'codex', 'opencode', 'cursor-agent']);
 // The same agents started by a JavaScript runtime: a path segment of the script.
 const RUNTIMES = new Set(['node', 'nodejs', 'bun', 'deno']);
 const AGENT_SCRIPT_RE = /[\\/](?:@anthropic-ai[\\/]claude-code|@openai[\\/]codex|opencode-ai|cursor-agent)(?:[\\/]|$)/i;
+// Claude Code's native installer keeps each version as .../claude/versions/<version>, which can be started by that path.
+const CLAUDE_VERSIONS_RE = /[\\/]claude[\\/]versions[\\/][^\\/]+$/i;
 
 function baseName(file) {
   return path.basename(String(file || '').replace(/\\/g, '/')).toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
@@ -39,6 +41,7 @@ function agentOf(proc) {
   const name = baseName(proc.name);
   if (AGENT_PROGRAMS.has(exe)) return exe;
   if (AGENT_PROGRAMS.has(name)) return name;
+  if (argv && CLAUDE_VERSIONS_RE.test(String(argv[0]).replace(/\\/g, '/'))) return 'claude';
   if (RUNTIMES.has(exe) || RUNTIMES.has(name)) {
     const rest = argv ? argv.slice(1) : String(proc.cmd || '').split(/\s+/).slice(1);
     for (const a of rest) {
@@ -70,19 +73,27 @@ function linuxEntry(pid) {
   }
 }
 
-/* macOS (and Linux without /proc): one `ps` call for the whole table. `args` is split on spaces, which is enough for names and paths. */
+/*
+ * macOS (and Linux without /proc): one `ps` call for the whole table, `pid ppid ucomm args`. `ucomm` (the
+ * program's own name, one word in practice) decides even when the path in `args` has spaces; `args` is split
+ * on spaces, which is enough to find the JavaScript entry points.
+ */
 function parsePs(text) {
   const table = new Map();
   for (const line of String(text).split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line);
     if (!m) continue;
-    const args = m[3].trim();
-    table.set(Number(m[1]), { pid: Number(m[1]), ppid: Number(m[2]), name: args.split(/\s+/)[0] || '', argv: args.split(/\s+/) });
+    const args = m[4].trim();
+    table.set(Number(m[1]), { pid: Number(m[1]), ppid: Number(m[2]), name: m[3], argv: args ? args.split(/\s+/) : [m[3]] });
   }
   return table;
 }
 
-/* Windows: one CIM query; JSON array of {ProcessId, ParentProcessId, Name, CommandLine}. */
+/*
+ * Windows: one CIM query; JSON array of {ProcessId, ParentProcessId, Name, CommandLine, Created}. Windows keeps a
+ * parent id after the parent exits, and the id can be reused: `created` (ms) lets the walk accept a parent only if
+ * it started before its child.
+ */
 function parseCim(text) {
   const table = new Map();
   let rows;
@@ -94,7 +105,9 @@ function parseCim(text) {
     // The command line is one string; the executable is its first token, quoted or not.
     const exe = /^\s*"([^"]*)"/.exec(cmd) ? /^\s*"([^"]*)"/.exec(cmd)[1] : cmd.trim().split(/\s+/)[0] || r.Name;
     const rest = cmd.replace(/^\s*("[^"]*"|\S+)\s*/, '');
-    table.set(r.ProcessId, { pid: r.ProcessId, ppid: Number(r.ParentProcessId) || 0, name: String(r.Name || ''), argv: [exe, ...rest.split(/\s+/).filter(Boolean)] });
+    const created = Number(r.Created);
+    table.set(r.ProcessId, { pid: r.ProcessId, ppid: Number(r.ParentProcessId) || 0, name: String(r.Name || ''), argv: [exe, ...rest.split(/\s+/).filter(Boolean)],
+      created: Number.isFinite(created) && created > 0 ? created : undefined });
   }
   return table;
 }
@@ -102,7 +115,7 @@ function parseCim(text) {
 function psTable() {
   for (const ps of ['/bin/ps', '/usr/bin/ps']) {
     if (!fs.existsSync(ps)) continue;
-    const r = spawnSync(ps, ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8', timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    const r = spawnSync(ps, ['-axo', 'pid=,ppid=,ucomm=,args='], { encoding: 'utf8', timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
     if (!r.error && r.status === 0) return parsePs(r.stdout);
   }
   return null;
@@ -111,7 +124,8 @@ function psTable() {
 function cimTable() {
   // Absolute path only, like the clipboard reader: a powershell planted on PATH would decide.
   const ps = path.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress';
+  const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,' +
+    '@{n=\'Created\';e={[long](($_.CreationDate.ToUniversalTime() - [datetime]\'1970-01-01\').TotalMilliseconds)}} | ConvertTo-Json -Compress';
   const r = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', timeout: TIMEOUT_MS * 3, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
   return !r.error && r.status === 0 ? parseCim(r.stdout) : null;
 }
@@ -123,8 +137,11 @@ function walk(pid, lookup) {
   let next = cur ? cur.ppid : 0;
   for (let i = 0; i < MAX_DEPTH && next > 0 && !seen.has(next); i++) {
     seen.add(next);
+    const child = cur;
     cur = lookup(next);
     if (!cur) return null;
+    // A "parent" that started after its child is another process that got the id of one that exited (Windows).
+    if (child && child.created !== undefined && cur.created !== undefined && cur.created > child.created) return null;
     const a = agentOf(cur);
     if (a) return a;
     next = cur.ppid;

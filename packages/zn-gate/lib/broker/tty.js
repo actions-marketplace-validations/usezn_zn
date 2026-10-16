@@ -28,7 +28,15 @@ function agentDetected(env = process.env, io = {}) {
   const v = agentEnvDetected(env);
   if (v) return v;
   const a = (io.ancestry || require('./ancestry').agentAncestor)();
-  return a ? a + ' as a parent process' : null;
+  return a ? 'started from ' + a : null;
+}
+
+/* The end of a refusal, in words for someone who does not program. */
+function agentNote(agent) {
+  if (/^started from /.test(agent)) {
+    return ' (zn found it was ' + agent + '). If you are not using an AI agent, open a new terminal window and try again.';
+  }
+  return ' (detected ' + agent + ').';
 }
 
 /** Throws unless a person is at an interactive terminal. */
@@ -37,7 +45,7 @@ function requireHuman(what, io = {}) {
   const env = io.env || process.env;
   const agent = agentDetected(env, io);
   if (agent) {
-    const err = new Error(what + ' must be run by you in your own terminal, not by an AI agent (detected ' + agent + ').');
+    const err = new Error(what + ' must be run by you in your own terminal, not by an AI agent' + agentNote(agent));
     err.code = 'ZN_POLICY_DENIED';
     throw err;
   }
@@ -118,4 +126,4 @@ function readClipboard() {
   throw err;
 }
 
-module.exports = { AGENT_ENV_VARS, agentEnvDetected, agentDetected, requireHuman, readHidden, confirm, readClipboard };
+module.exports = { AGENT_ENV_VARS, agentEnvDetected, agentDetected, agentNote, requireHuman, readHidden, confirm, readClipboard };

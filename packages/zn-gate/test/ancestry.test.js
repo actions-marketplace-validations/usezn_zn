@@ -24,6 +24,7 @@ test('agentOf: the agents\' programs and their JavaScript entry points, never an
     [{ name: 'node.exe', argv: [String.raw`C:\Program Files\nodejs\node.exe`, String.raw`C:\Users\u\AppData\Roaming\npm\node_modules\opencode-ai\bin\opencode`] }, 'opencode'],
     [{ name: 'opencode', argv: ['opencode'] }, 'opencode'],
     [{ name: 'cursor-agent', argv: ['/home/u/.local/bin/cursor-agent'] }, 'cursor-agent'],
+    [{ name: '2.1.300', argv: ['/home/u/.local/share/claude/versions/2.1.300', '--continue'] }, 'claude'],
   ];
   for (const [p, want] of yes) assert.equal(agentOf(p), want, JSON.stringify(p));
   const no = [
@@ -41,9 +42,12 @@ test('agentOf: the agents\' programs and their JavaScript entry points, never an
 
 test('parsers: /proc stat with parentheses in the name, ps and CIM tables', () => {
   assert.deepEqual(parseStat('4242 (we (ird) name) S 77 4242 4242 0 -1'), { name: 'we (ird) name', ppid: 77 });
-  const ps = parsePs('    1     0 /sbin/launchd\n  500     1 /Users/u/.local/bin/claude --resume\n  600   500 /bin/zsh -c zn unlock\n');
+  const ps = parsePs('    1     0 launchd /sbin/launchd\n  500     1 claude /Users/John Smith/.local/bin/claude --resume\n  600   500 zsh /bin/zsh -c zn unlock\n' +
+    '  700     1 node node /Users/u/.npm/_npx/9/node_modules/@openai/codex/bin/codex.js\n  800     1 Code /Applications/Visual Studio Code.app/Contents/MacOS/Code\n');
   assert.equal(ps.get(600).ppid, 500);
-  assert.equal(agentOf(ps.get(500)), 'claude');
+  assert.equal(agentOf(ps.get(500)), 'claude'); // a space in the path: the program name still decides
+  assert.equal(agentOf(ps.get(700)), 'codex');
+  assert.equal(agentOf(ps.get(800)), null);
   const cim = parseCim(JSON.stringify([
     { ProcessId: 10, ParentProcessId: 4, Name: 'explorer.exe', CommandLine: String.raw`C:\Windows\explorer.exe` },
     { ProcessId: 20, ParentProcessId: 10, Name: 'node.exe', CommandLine: String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\u\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js"` },
@@ -69,9 +73,21 @@ test('walk: finds an agent several levels up, stops on loops, depth and missing 
   assert.equal(walk(7, (p) => self.get(p) || null), null);
 });
 
+test('walk on Windows: a parent id reused by a later claude.exe is not the parent; a real older one is', () => {
+  const rows = (agentCreated) => JSON.stringify([
+    { ProcessId: 50, ParentProcessId: 40, Name: 'node.exe', CommandLine: 'node.exe cli.js', Created: 2000 },
+    { ProcessId: 40, ParentProcessId: 4, Name: 'claude.exe', CommandLine: 'claude.exe', Created: agentCreated },
+  ]);
+  const reused = parseCim(rows(3000));
+  assert.equal(walk(50, (p) => reused.get(p) || null), null);
+  const real = parseCim(rows(1000));
+  assert.equal(walk(50, (p) => real.get(p) || null), 'claude');
+});
+
 test('requireHuman: an agent program among the parents is refused even without the agent variables', () => {
   const io = { env: { PATH: '/usr/bin' }, stdin: { isTTY: true }, ancestry: () => 'codex' };
-  assert.throws(() => tty.requireHuman('zn secret set', io), (e) => e.code === 'ZN_POLICY_DENIED' && /detected codex as a parent process/.test(e.message));
+  assert.throws(() => tty.requireHuman('zn secret set', io), (e) => e.code === 'ZN_POLICY_DENIED'
+    && /zn found it was started from codex\)\. If you are not using an AI agent, open a new terminal window and try again\./.test(e.message));
   assert.doesNotThrow(() => tty.requireHuman('zn secret set', { ...io, ancestry: () => null }));
   assert.equal(tty.agentDetected({ CLAUDECODE: '' }, { ancestry: () => 'codex' }), 'CLAUDECODE');
 });
