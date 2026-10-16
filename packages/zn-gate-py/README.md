@@ -8,7 +8,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/zn-gate?color=3775a9&logo=pypi&logoColor=white)](https://pypi.org/project/zn-gate/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/usezn/zn/blob/main/LICENSE)
 
-**The local security layer for the AI agents you build in Python.** Use LangChain, CrewAI, LlamaIndex or plain tool calling without exposing your secrets, your data or your systems.
+**The local security layer for the AI agents you build in Python.** zn-gate guards your secrets, your data and your systems in agents built with LangChain, CrewAI, LlamaIndex or plain tool calling.
 
 `zn-gate` is an open-source security layer that runs in your process. It checks prompts, tool arguments and tool output for prompt injection, and redacts secrets from tool output before the model sees it. No account, no network by default, Python standard library only.
 

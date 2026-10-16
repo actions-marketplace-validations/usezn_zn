@@ -12,7 +12,7 @@
 
 <p align="center">
   <strong>The local security layer for coding agents.</strong><br/>
-  Use Claude Code, Codex CLI, Cursor or OpenCode without exposing your secrets, your data or your systems.<br/>
+  zn-gate guards your secrets, your data and your systems while you use Claude Code, Codex CLI, Cursor or OpenCode.<br/>
   An open-source security layer that runs on your machine, between your agent and the tools and content it touches.
 </p>
 
