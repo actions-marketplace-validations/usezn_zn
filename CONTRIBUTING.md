@@ -69,3 +69,7 @@ CI also runs the false-positive gate, `node bench/rules_fp_gate.js`. It counts t
 ## Security Vulnerability Reporting
 
 If you find a security vulnerability, please do NOT open a public issue. Follow our [Security Policy](SECURITY.md) and report it to `security@usezn.com`.
+
+## Changelog
+
+Describe a change users will notice in a fragment file in `changelog.d/` instead of editing `CHANGELOG.md`; see [changelog.d/README.md](changelog.d/README.md).

@@ -5,10 +5,10 @@ const path = require('path');
 
 /**
  * zn deterministic rules engine - SINGLE SOURCE OF TRUTH.
- * RULES_VERSION: 2026-10-16.3
+ * RULES_VERSION: 2026-10-16.5
  */
 
-const RULES_VERSION = '2026-10-16.3';
+const RULES_VERSION = '2026-10-16.5';
 
 // Word boundaries are written as explicit ASCII lookarounds, not \b: JavaScript's
 // \b is ASCII-only without the u flag, while Python's is Unicode. A letter such
@@ -684,7 +684,7 @@ const SECRET_PATTERNS = [
 const SCAN_FLAG_PREFILTER = /--(?:api|pass|token|secret|access|auth|client)/;
 const SCAN_ASSIGNMENT_PREFILTER = /[Pp][Aa][Ss][Ss][Ww]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]/;
 const SCAN_SECRET_PATTERNS = [
-  { id: 'secret:cli_credential_flag', pattern: /(?<![A-Za-z0-9_-])(--(?:api[-_]?key|password|passwd|token|secret|access[-_]token|auth[-_]token|client[-_]secret)=["']?)([^\s'"]{8,512})(["']?)/gu, replacement: '$1[REDACTED_SECRET]$3', valueFilter: isNonSecretValue, prefilter: SCAN_FLAG_PREFILTER },
+  { id: 'secret:cli_credential_flag', pattern: /(?<![A-Za-z0-9_-])(--(?:api[-_]?key|password|passwd|token|secret|access[-_]token|auth[-_]token|client[-_]secret)=["']?)([^\s'"]{8,512})[^\s'"]*(["']?)/gu, replacement: '$1[REDACTED_SECRET]$3', valueFilter: isNonSecretValue, prefilter: SCAN_FLAG_PREFILTER },
   // The name is at most 40 characters before the keyword, so each start costs a bounded amount.
   { id: 'secret:credential_assignment', pattern: /(?<![A-Za-z0-9_$])(\$?[A-Za-z0-9_]{0,40}?(?:[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy])["']?[ \t]*(?::=|=>|=|:)[ \t]*["'])([^\s'"]{8,512})(["'])/gu, replacement: '$1[REDACTED_SECRET]$3', valueFilter: isNonSecretDefault, prefilter: SCAN_ASSIGNMENT_PREFILTER },
 ];

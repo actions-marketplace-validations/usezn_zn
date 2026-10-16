@@ -131,6 +131,8 @@ class TestNextStepFileName(_ScanDir):
         bt = chr(96)
         for name, shown in ((".env.local", ".env.local"), (".env$(touch PWNED)", "<file>"),
                             (".env" + bt + "id" + bt, "<file>"), (".env local", "<file>"), ('.env"x', "<file>")):
+            if os.name == "nt" and any(c in name for c in '<>:"|?*'):
+                continue  # not a valid file name on Windows
             with self.subTest(name=name):
                 self.assertEqual(self._step(name), "Next: run npx -y zn-gate env shadow " + shown
                                  + " to move the values into the local vault, and rotate any value that was"
@@ -197,3 +199,16 @@ class TestFileKinds(_ScanDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_long_flag_value_is_redacted_to_its_end():
+    from zn_gate.rules import redact_scan_secrets
+    alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    seed, long = 7, "ZNTESTFAKE"
+    while len(long) < 640:
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        long += alphabet[seed % len(alphabet)]
+    out = redact_scan_secrets("deploy --token=" + long)
+    text = out[0] if isinstance(out, tuple) else getattr(out, "sanitized", out)
+    assert long[-40:] not in str(text)
+    assert long[:40] not in str(text)
