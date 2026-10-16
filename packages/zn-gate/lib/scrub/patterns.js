@@ -27,7 +27,7 @@
 
 // Version of the type catalogue (secret and PII patterns, validators). Bump it
 // when a pattern, validator or type name changes; see CONTRIBUTING.md.
-const SCRUB_RULES_VERSION = '2026-10-16.3';
+const SCRUB_RULES_VERSION = '2026-10-16.5';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -442,6 +442,22 @@ const PATTERNS = [
    * digit is assumed. */
   { type: 'SUPABASE_PAT', hints: ['sbp_'], re: re(NB + 'sbp_[A-Za-z0-9_-]{30,}' + NA),
     check: (v) => /\d/.test(v.slice(4)) && looksRandom(v.slice(4), 2, 3.3) },
+  /* Square: production access tokens (`EAAA` + 60), and the legacy access token (`sq0atp-` + 22) and OAuth
+   * application secret (`sq0csp-` + 43). Same shapes as gitleaks square-access-token / square-secret. */
+  { type: 'SQUARE_TOKEN', hints: ['EAAA', 'sq0atp-', 'sq0csp-'],
+    re: re(NB + '(?:EAAA[A-Za-z0-9_-]{60}|sq0atp-[A-Za-z0-9_-]{22}|sq0csp-[A-Za-z0-9_-]{43})' + NA),
+    check: (v) => looksRandom(v.replace(/^(?:EAAA|sq0atp-|sq0csp-)/, ''), 2, 3.3) },
+  /* Discord bot token: base64url of the bot's numeric id, a 6-character timestamp and the HMAC. The first part
+   * must decode to a 17-20 digit id, so a dotted random string is not a token. */
+  { type: 'DISCORD_BOT_TOKEN', hints: ['.'],
+    re: re(NB + '[MNO][A-Za-z0-9_-]{22,26}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27,38}' + NA),
+    check: (v) => {
+      const [id, , mac] = v.split('.');
+      // A length of 4n+1 is not base64; Buffer would drop the last character where Python refuses it.
+      if (id.length % 4 === 1) return false;
+      const digits = Buffer.from(id.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('latin1');
+      return /^\d{17,20}$/.test(digits) && looksRandom(mac, 2, 3.0);
+    } },
   /* Azure AD client secret, as in gitleaks' azure-ad-client-secret rule:
    * three characters, a digit, `Q~`, then 31-34 characters. The body may
    * hold dots but ends on a non-dot character, so a full stop that closes a

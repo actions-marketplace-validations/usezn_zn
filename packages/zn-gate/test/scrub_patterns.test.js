@@ -81,6 +81,13 @@ const EXTRA = [
   ['DIGITALOCEAN_TOKEN', () => 'dop_v1_' + pick(HEX, 64)],
   ['LINEAR_KEY', () => 'lin_api_' + pick(ALNUM, 40)],
   ['TELEGRAM_BOT_TOKEN', () => '123456789:AA' + pick(URLSAFE, 33)],
+  ['SQUARE_TOKEN', () => 'EAAA' + pick(URLSAFE, 60)],
+  ['SQUARE_TOKEN', () => 'sq0csp-' + pick(URLSAFE, 43)],
+  // base64url of the 18-digit id 123456789012345678, a timestamp and an HMAC
+  ['DISCORD_BOT_TOKEN', () => 'MTIzNDU2Nzg5MDEyMzQ1Njc4.' + pick(URLSAFE, 6) + '.' + pick(URLSAFE, 30)],
+  // ids of 17 and 20 digits (the shortest and longest first parts)
+  ['DISCORD_BOT_TOKEN', () => 'MTIzNDU2Nzg5MDEyMzQ1Njc.' + pick(URLSAFE, 6) + '.' + pick(URLSAFE, 27)],
+  ['DISCORD_BOT_TOKEN', () => 'MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.' + pick(URLSAFE, 6) + '.' + pick(URLSAFE, 38)],
   ['DATABRICKS_TOKEN', () => 'dapi' + pick(HEX, 30) + 'c3'],
   ['VAULT_TOKEN', () => 'hvs.' + pick(URLSAFE, 90)],
   ['DOPPLER_TOKEN', () => 'dp.st.' + pick(ALNUM, 40)],
@@ -406,3 +413,11 @@ module.exports = { KNOWN_OK };
 
 if (require.main === module) run('scrub patterns + PII');
 void path;
+
+test('Square and Discord near misses are not tokens', () => {
+  for (const t of [
+    'EAAA' + 'x'.repeat(59),
+    // a dotted random string whose first part does not decode to a numeric id
+    'MQa7Zt3Lm9Pw2Ny5Rb8Vx1Cd4.Fg6Hj0.Ks1Qa7Zt3Lm9Pw2Ny5Rb8Vx1Cd4Fg6Hj0',
+  ]) assert.deepStrictEqual(types(t).filter((x) => x === 'SQUARE_TOKEN' || x === 'DISCORD_BOT_TOKEN'), [], t);
+});
