@@ -415,8 +415,31 @@ def cmd_stats(args) -> int:
     return 0
 
 
+# Commands of the npm package. The Python package has none of them, so instead of
+# argparse's "invalid choice" it says where they are.
+NPM_ONLY_COMMANDS = frozenset({
+    "hooks", "hook", "init", "check", "doctor", "unlock", "lock", "run", "secret",
+    "secrets", "env", "vault", "pins", "shield", "mcp", "mcp-shield", "secrets-mcp",
+    "wrap", "team", "audit", "logs", "export",
+})
+
+
+def npm_only_message(command: str) -> str:
+    return (
+        f"zn-gate {command} is in the npm package, not in this Python package.\n"
+        "The Python package protects agents you build yourself (LangChain, CrewAI, "
+        "LlamaIndex or plain tool calling).\n"
+        "To protect Claude Code, Codex CLI, Cursor or OpenCode, run this in your own "
+        "terminal (it needs Node.js 18 or later):\n"
+        "  npx -y zn-gate init\n"
+    )
+
+
 def main() -> int:
     _configure_output_streams()
+    if len(sys.argv) > 1 and sys.argv[1] in NPM_ONLY_COMMANDS:
+        sys.stderr.write(npm_only_message(sys.argv[1]))
+        return 2
     parser = argparse.ArgumentParser(
         prog="zn-gate",
         description="zn deterministic guardrail engine for AI agents and LLM tool calling."
