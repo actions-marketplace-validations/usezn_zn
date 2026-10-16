@@ -290,3 +290,24 @@ test('plan: a plugin alone that is turned off gets one step that turns it on', a
   const cc = items.find((i) => i.id === 'claude-code');
   assert.deepEqual(cc.steps.map(line), ['claude plugin enable zn-gate@usezn']);
 });
+
+test('agent guard: a backslash before the option and npm exec options do not unlock the guided init', () => {
+  for (const cmd of ['zn-gate init x\\ --wrap-mcp', 'npx -y zn-gate init a\\ --dry-run', 'npm exec zn-gate init --dry-run',
+    'npm x zn-gate init --wrap-mcp', 'npm exec -y zn-gate@1.9.0 init --revert', 'npm.cmd exec zn-gate init --shadow']) {
+    const d = policy.bashDenial(cmd);
+    assert.ok(d, 'expected a denial for: ' + cmd);
+    assert.match(d, /ask the user to run it in their own terminal/);
+  }
+  for (const cmd of ['npm exec -- zn-gate init --dry-run', 'npm exec zn-gate -- init --wrap-mcp', 'npx -y zn-gate init --wrap-mcp', 'npm exec zn-gate check', 'npm init -y']) {
+    assert.equal(policy.bashDenial(cmd), null, 'expected no denial for: ' + cmd);
+  }
+});
+
+test('agent guard: the npm exec check stays fast', () => {
+  const t0 = process.hrtime.bigint();
+  assert.equal(policy.adminCommand('npm exec ' + 'a '.repeat(40000) + 'zn-gate init --dry-run'), 'init');
+  assert.equal(policy.adminCommand(('npm x ' + 'b'.repeat(50) + ' ').repeat(1500)), null);
+  assert.equal(policy.adminCommand(('npm exec ' + '-- '.repeat(20)).repeat(1500)), null);
+  assert.equal(policy.adminCommand('npm exec ' + '--yes '.repeat(200) + 'zn-gate init --dry-run'), 'init', 'padding does not hide it');
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 500);
+});

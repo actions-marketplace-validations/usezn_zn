@@ -561,6 +561,9 @@ test('a batch-file claude (npm install on Windows) is never run through cmd.exe'
   const warn = rep.warnings.find((w) => /batch file/.test(w));
   assert.ok(warn, JSON.stringify(rep.warnings));
   assert.match(warn, /claude mcp add --scope user secrets -- "/);
+  // zn's own server registered by hand, as the warning above says.
+  fs.mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ mcpServers: { secrets: { command: 'node', args: ['C:/a & b/zn/bin/cli.js', 'secrets-mcp'] } } }));
   const un = adapter.uninstall(opts);
   assert.ok(un.warnings.some((w) => /claude mcp remove --scope user secrets/.test(w)), JSON.stringify(un.warnings));
   assert.equal(fs.existsSync(marker), false, 'the batch file must not run');
@@ -722,4 +725,32 @@ test('Bash, PowerShell and Monitor commands over 100 KB are blocked before they 
   // A normal command is unchanged.
   const ok = await run(preTool('Bash', { command: 'npm test', description: 'x' }, dir));
   assert.notEqual(ok.output && ok.output.hookSpecificOutput && ok.output.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('uninstall: removes only zn\'s own "secrets" MCP server', (t) => {
+  const os = require('os');
+  const fsx = require('fs');
+  const pth = require('path');
+  const home = fsx.mkdtempSync(pth.join(os.tmpdir(), 'zn-cc-uninstall-'));
+  t.after(() => fsx.rmSync(home, { recursive: true, force: true }));
+  const cc = require('../lib/agents/claude-code');
+  const calls = [];
+  const fakeClaude = pth.join(home, 'claude-fake.js');
+  fsx.writeFileSync(fakeClaude, '#!/usr/bin/env node\nrequire("fs").appendFileSync(' + JSON.stringify(pth.join(home, 'calls.txt')) + ', process.argv.slice(2).join(" ") + "\\n");\n', { mode: 0o755 });
+  const run = (servers) => {
+    fsx.writeFileSync(pth.join(home, '.claude.json'), JSON.stringify({ mcpServers: servers }));
+    try { fsx.rmSync(pth.join(home, 'calls.txt')); } catch (_) { /* none */ }
+    const r = cc.uninstall({ scope: 'user', home, env: { HOME: home }, claudeBin: process.platform === 'win32' ? null : fakeClaude });
+    let c = '';
+    try { c = fsx.readFileSync(pth.join(home, 'calls.txt'), 'utf8'); } catch (_) { /* not called */ }
+    calls.push(c);
+    return r;
+  };
+  const other = run({ secrets: { command: 'node', args: ['/opt/vault-example/server.js'] } });
+  assert.equal(calls[0], '', 'someone else\'s server is not removed');
+  assert.ok(other.warnings.some((w) => /not zn's/.test(w)));
+  if (process.platform !== 'win32') {
+    run({ secrets: { command: process.execPath, args: ['/x/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] } });
+    assert.match(calls[1], /^mcp remove --scope user secrets/);
+  }
 });

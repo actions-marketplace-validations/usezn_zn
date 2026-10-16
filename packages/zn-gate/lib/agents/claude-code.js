@@ -374,8 +374,14 @@ function uninstall(opts = {}) {
         }
       }
     } else {
-      const claude = opts.claudeBin !== undefined ? opts.claudeBin : whichSync('claude', process.env.PATH || '');
-      if (claude && /\.(?:cmd|bat)$/i.test(claude)) {
+      // Only zn's own server: a user MCP server that happens to be called "secrets" is left alone.
+      const ours = userMcpServerIsOurs(opts);
+      const claude = ours !== true ? null : opts.claudeBin !== undefined ? opts.claudeBin : whichSync('claude', process.env.PATH || '');
+      if (ours === false) {
+        report.warnings.push('left the MCP server named "' + MCP_SERVER_NAME + '" in place: it is not zn\'s');
+      } else if (ours === null) {
+        report.warnings.push('could not read your Claude Code MCP settings, so the MCP server named "' + MCP_SERVER_NAME + '" was left in place; if it is zn\'s, remove it with: claude mcp remove --scope user ' + MCP_SERVER_NAME);
+      } else if (claude && /\.(?:cmd|bat)$/i.test(claude)) {
         report.warnings.push('`claude` is a batch file (' + path.basename(claude) + '), which zn does not run through cmd.exe: remove the MCP server yourself with: claude mcp remove --scope user ' + MCP_SERVER_NAME);
       } else if (claude) {
         spawnSync(claude, ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME], { encoding: 'utf8', windowsHide: true });
@@ -383,6 +389,22 @@ function uninstall(opts = {}) {
     }
   }
   return report;
+}
+
+/* The user-scope MCP servers live in .claude.json (in CLAUDE_CONFIG_DIR when set): true when the "secrets"
+ * server there is zn's, false when it is someone else's, undefined when there is none, null when unreadable. */
+function userMcpServerIsOurs(opts = {}) {
+  const env = opts.env || process.env;
+  const file = env.CLAUDE_CONFIG_DIR ? path.join(configDir(opts), '.claude.json') : path.join(opts.home || os.homedir(), '.claude.json');
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    return err.code === 'ENOENT' ? undefined : null;
+  }
+  const s = data && data.mcpServers && data.mcpServers[MCP_SERVER_NAME];
+  if (!s) return undefined;
+  return JSON.stringify(s).includes('secrets-mcp');
 }
 
 function detect(opts = {}) {
