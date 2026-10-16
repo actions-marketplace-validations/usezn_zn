@@ -51,9 +51,9 @@ function secretToolPath() {
   return null;
 }
 
+/* The system PowerShell only (never SystemRoot or PATH, which the caller controls): it receives the vault identity. */
 function powershellPath() {
-  const root = process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows';
-  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return require('../exe').systemPowerShell();
 }
 
 function detectBackend() {
@@ -184,8 +184,10 @@ const WIN_SCRIPT = [
 ].join('\r\n');
 
 function winCred(op, input) {
+  const ps = powershellPath();
+  if (!ps) return { status: 127, stdout: '', stderr: 'the system PowerShell was not found' };
   const encoded = Buffer.from(WIN_SCRIPT, 'utf16le').toString('base64');
-  return run(powershellPath(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], input,
+  return run(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], input,
     { ZN_CRED_OP: op, ZN_CRED_TARGET: service() + ':' + ACCOUNT });
 }
 

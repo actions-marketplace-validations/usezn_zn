@@ -110,12 +110,13 @@ function confirm(question, io = {}) {
 
 /** Read the clipboard with the platform tool. Returns a string or throws. */
 function readClipboard() {
-  // Absolute paths only: a clipboard tool planted on PATH would receive the value.
-  const ps = path.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  // Absolute paths only: a clipboard tool planted on PATH would receive the value. On Windows, the system
+  // PowerShell from the kernel's \\SystemRoot link, never from SystemRoot (see exe.js).
+  const ps = process.platform === 'win32' ? require('../exe').systemPowerShell() : null;
   const candidates = process.platform === 'darwin'
     ? [['/usr/bin/pbpaste', []]]
     : process.platform === 'win32'
-      ? [[ps, ['-NoProfile', '-Command', 'Get-Clipboard -Raw']]]
+      ? (ps ? [[ps, ['-NoProfile', '-Command', 'Get-Clipboard -Raw']]] : [])
       : [['/usr/bin/wl-paste', ['--no-newline']], ['/usr/bin/xclip', ['-selection', 'clipboard', '-o']], ['/usr/bin/xsel', ['--clipboard', '--output']]];
   for (const [cmd, args] of candidates) {
     const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true });
