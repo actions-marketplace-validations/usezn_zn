@@ -21,7 +21,7 @@ const crypto = require('crypto');
 const GENESIS = '0'.repeat(64);
 const FIELDS = ['secret', 'mode', 'agent', 'tool', 'argv0', 'host', 'decision', 'reason'];
 const MODES = new Set(['proxy', 'env', 'file', 'named', 'detected', 'resolve', 'set', 'remove', 'unlock', 'lock', 'expire']);
-const DECISIONS = new Set(['allow', 'deny', 'ask', 'ask:yes', 'ask:no', 'restore', 'withhold', 'error']);
+const DECISIONS = new Set(['allow', 'deny', 'warn', 'ask', 'ask:yes', 'ask:no', 'restore', 'withhold', 'error']);
 const FORMATS = {
   secret: /^[A-Z0-9_]{1,80}$/,
   agent: /^[A-Za-z0-9_.:/-]{1,64}$/,
@@ -72,7 +72,11 @@ function lastRecord(file) {
       const len = Math.min(size, chunk);
       const buf = Buffer.alloc(len);
       fs.readSync(fd, buf, 0, len, size - len);
-      const text = buf.toString('utf8').replace(/\n+$/, '');
+      // Drop trailing newlines without a regex: /\n+$/ backtracks on a long run of
+      // newlines that is not at the end of the chunk.
+      let end = len;
+      while (end > 0 && buf[end - 1] === 0x0a) end--;
+      const text = buf.toString('utf8', 0, end);
       const nl = text.lastIndexOf('\n');
       if (nl >= 0 || len === size) return JSON.parse(text.slice(nl + 1));
       chunk *= 4;

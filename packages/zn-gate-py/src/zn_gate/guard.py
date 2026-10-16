@@ -14,12 +14,24 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from .rules import Assessment, evaluate, scan_windows
 
 
+def block_message(assessment: Assessment, target: str) -> str:
+    """Plain text for a blocked call or tool result: what was blocked, why, and the next step."""
+    reason = (assessment.reason or "").rstrip(".")
+    if reason:
+        why = f"Reason: {reason} (rule: {assessment.rule})."
+    else:
+        why = f"Reason: the input matched rule {assessment.rule}."
+    if target.endswith((":result", ":tool_output")):
+        step = "Next step: do not use this result; ask the person who runs this agent where the data came from."
+    else:
+        step = "Next step: do not retry with reworded text; tell the person who runs this agent."
+    return f"zn-gate blocked '{target}'. {why} {step}"
+
+
 class GuardBlockError(PermissionError):
     """Raised when an LLM tool call or input is blocked by zn-gate."""
     def __init__(self, assessment: Assessment, target: str = "", payload: Any = None):
-        super().__init__(
-            f"[zn-gate] Blocked execution on '{target}': {assessment.reason or assessment.rule} (rule: {assessment.rule}, confidence: {assessment.confidence})"
-        )
+        super().__init__(block_message(assessment, target))
         self.assessment = assessment
         self.target = target
         self.payload = payload
@@ -44,20 +56,23 @@ def _extract_strings(data: Any, max_depth: int = 10) -> List[str]:
     return strings
 
 
-def check_tool_call(tool_name: str, arguments: Any = None) -> Assessment:
+def check_tool_call(tool_name: str, arguments: Any = None, strict: Optional[bool] = None) -> Assessment:
     """
     Evaluates whether an agent tool call is safe to execute.
     Inspects tool arguments recursively for injection, evasion, or exfiltration attacks.
     """
     strings_to_check = _extract_strings(arguments)
+    advisory = None
     for s in strings_to_check:
-        res = evaluate(s)
+        res = evaluate(s, strict=strict)
         if not res.allowed:
             return res
-    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None)
+        advisory = advisory or res.advisory
+    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None,
+                      advisory=dict(advisory) if advisory else None)
 
 
-def check_tool_result(result: Any, block_truncated: bool = False) -> Assessment:
+def check_tool_result(result: Any, block_truncated: bool = False, strict: Optional[bool] = None) -> Assessment:
     """
     Evaluates data returned by external tools (e.g. web search, file content, DB queries)
     for indirect prompt injections or leaked credentials.
@@ -68,15 +83,18 @@ def check_tool_result(result: Any, block_truncated: bool = False) -> Assessment:
     """
     strings_to_check = _extract_strings(result)
     truncated = False
+    advisory = None
     for s in strings_to_check:
-        res = scan_windows(s)
+        res = scan_windows(s, strict=strict)
         if not res.allowed:
             return res
         truncated = truncated or res.truncated
+        advisory = advisory or res.advisory
     if truncated and (block_truncated or os.environ.get("ZN_BLOCK_TRUNCATED") == "1"):
         return Assessment(verdict="block", confidence=1.0, rule="size:truncated",
                           reason="Output too large to scan in full", truncated=True)
-    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None, truncated=truncated)
+    return Assessment(verdict="allow", confidence=1.0, rule="none", reason=None, truncated=truncated,
+                      advisory=dict(advisory) if advisory else None)
 
 
 def guard(

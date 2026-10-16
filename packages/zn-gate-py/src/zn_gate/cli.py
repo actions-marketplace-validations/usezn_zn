@@ -6,17 +6,46 @@ Pure Python stdlib. Zero external dependencies.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import os
+import stat
+import re
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .rules import RULES_VERSION, evaluate, redact_secrets
+from .rules import RULES_VERSION, evaluate, mask_token_runs
+from .rules import SECRET_PATTERNS as _DLP_PATTERNS, redact_secrets as _dlp_redact
 from .client import analyze, is_cloud_enabled, resolve_endpoint
 from .evidence import log_evidence, verify_evidence_ledger, get_evidence_stats, export_evidence_ledger, EVIDENCE_FILE
+
+# Secrets that span several lines (a PEM private key block). The line-by-line
+# scan never sees BEGIN and END together, so these run on the whole file.
+# Each entry: (rule name, pattern, header pattern shown instead of the match).
+_MULTILINE_RULES = [
+    (name, rx, re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"))
+    for name, rx, _ in _DLP_PATTERNS if name == "secret:private_key"
+]
+
+# A BEGIN marker with no END (a key cut short when pasted or truncated): the
+# lines after it that look like PEM headers or base64 are treated as key
+# material, up to the first empty or other line (an encrypted key has one
+# empty line after its Proc-Type / DEK-Info headers, which is kept).
+_KEY_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_KEY_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+_KEY_BODY = re.compile(r"^(?:[A-Za-z0-9+/=]{16,}|[A-Za-z-]+: )")
+_KEY_HEADER = re.compile(r"^[A-Za-z-]+: ")
+_TRUNCATED_KEY_REASON = "Exposed credential detected by DLP filter (private key without an END marker)"
+
+# Private key files that usually have no extension.
+_KEY_FILE_NAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk"}
+# Files of this size or larger are not scanned, and neither are .key files
+# with a NUL byte near the start (a Keynote document, not a key).
+_MAX_SCAN_BYTES = 2 * 1024 * 1024
+_BINARY_SNIFF = 8192
 
 SHIELD = "\U0001f6e1\ufe0f"
 ALERT = "\U0001f6a8"
@@ -60,7 +89,8 @@ def cmd_test(args: argparse.Namespace) -> int:
     text = args.text
     t0 = time.perf_counter()
     assessment = evaluate(text)
-    clean_text, findings = redact_secrets(text)
+    clean_text, findings = _dlp_redact(text)
+    clean_text = mask_token_runs(clean_text)
     latency_us = (time.perf_counter() - t0) * 1_000_000
 
     if args.json:
@@ -79,6 +109,9 @@ def cmd_test(args: argparse.Namespace) -> int:
         print(f"Rule:       {assessment.rule}")
         if assessment.reason:
             print(f"Reason:     {assessment.reason}")
+        if assessment.advisory:
+            print(f"Note:       not blocked, but worth a look: {assessment.advisory['reason']} "
+                  f"({assessment.advisory['rule']}).")
         if findings:
             noun = "secret" if len(findings) == 1 else "secrets"
             print(f"DLP Alert:  {len(findings)} {noun} detected (verdict unchanged). Redacted: {clean_text}")
@@ -97,6 +130,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         "stage": getattr(args, "stage", None) or os.environ.get("ZN_STAGE") or "v30",
         "api_url": getattr(args, "url", None) or os.environ.get("ZN_API_URL"),
         "local_only": getattr(args, "local_only", False),
+        "long_input": getattr(args, "long_input", None),
     }
 
     t0 = time.perf_counter()
@@ -112,22 +146,96 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 2 if res.get("verdict") == "block" else 0
 
 
+def _skip_reason(file_path: Path) -> Optional[str]:
+    """Why a file that matches the scan is not read, or None."""
+    try:
+        st = os.lstat(file_path)
+        if not stat.S_ISREG(st.st_mode):
+            return "not a regular file"
+        if st.st_size >= _MAX_SCAN_BYTES:
+            return "2 MiB or larger"
+        with open(file_path, "rb") as f:
+            head = f.read(_BINARY_SNIFF)
+        if file_path.suffix.lower() == ".key" and b"\0" in head:
+            return "binary .key file, not a key"
+    except OSError:
+        return "cannot be read"
+    return None
+
+
+def _gh_property(value: str) -> str:
+    """A value for a GitHub workflow command property (file=, title=)."""
+    return (str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            .replace(":", "%3A").replace(",", "%2C"))
+
+
+def _gh_message(value: str) -> str:
+    """The message of a GitHub workflow command: one line, no command of its own."""
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
     violations: List[Dict[str, Any]] = []
     try:
-        content = file_path.read_text(encoding="utf-8", errors="ignore")
+        if file_path.stat().st_size >= _MAX_SCAN_BYTES:
+            return []
+        raw = file_path.read_bytes()
     except Exception:
         return []
+    if file_path.suffix.lower() == ".key" and b"\0" in raw[:_BINARY_SNIFF]:
+        return []
+    content = raw.decode("utf-8", errors="ignore")
+
+    # Line numbers as the line pass counts them (str.splitlines boundaries).
+    starts = [0]
+    for part in content.splitlines(keepends=True):
+        starts.append(starts[-1] + len(part))
+    # Private keys over several lines, found first: a line inside one is never
+    # printed, even when another rule fires on it (the line on its own does
+    # not look like a key, so it would not be redacted).
+    blocks = []  # (rule, first line, last line, header)
+    key_lines = set()
+    for name, rx, header_rx in _MULTILINE_RULES:
+        for m in rx.finditer(content):
+            # A block on one line is redacted by the line pass.
+            if len(m.group(0).splitlines()) < 2:
+                continue
+            first = bisect.bisect_right(starts, m.start())
+            last = bisect.bisect_right(starts, m.end() - 1)
+            h = header_rx.match(m.group(0))
+            blocks.append((name, first, last, h.group(0)[:100] if h else "[REDACTED_PRIVATE_KEY]",
+                           "Exposed credential detected by DLP filter"))
+            key_lines.update(range(first, last + 1))
 
     lines = content.splitlines()
+    # BEGIN markers outside any complete block: a truncated key.
+    for i, line in enumerate(lines, 1):
+        if i in key_lines:
+            continue
+        h = _KEY_BEGIN.search(line)
+        if not h or _KEY_END.search(line, h.end()):
+            continue  # no marker, or a whole key on one line (the line pass redacts it)
+        last = i
+        while last < len(lines) and not _KEY_BEGIN.search(lines[last]):
+            body = lines[last].strip()
+            if _KEY_BODY.match(body):
+                last += 1
+            elif (not body and _KEY_HEADER.match(lines[last - 1].strip())
+                  and last + 1 < len(lines) and _KEY_BODY.match(lines[last + 1].strip())):
+                last += 1  # the empty line after encrypted-key headers
+            else:
+                break
+        key_lines.update(range(i, last + 1))
+        blocks.append(("secret:private_key", i, last, h.group(0)[:100], _TRUNCATED_KEY_REASON))
     for i, line in enumerate(lines, 1):
         if not line.strip():
             continue
         # Snippets are printed to the terminal and, with --format github, to CI
         # logs: always show the line with any detected secret redacted.
-        redacted, findings = redact_secrets(line)
-        snippet = redacted.strip()[:100]
-        res = evaluate(line)
+        redacted, findings = _dlp_redact(line)
+        snippet = "[REDACTED_PRIVATE_KEY]" if i in key_lines else mask_token_runs(redacted.strip())[:100]
+        # A scan reports every match, including the rules that only warn by default.
+        res = evaluate(line, strict=True)
         if not res.allowed:
             violations.append({
                 "file": str(file_path),
@@ -146,6 +254,20 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
                 "type": "secret_leak",
                 "content": snippet,
             })
+    seen = {(v["line"], v["rule"]) for v in violations}
+    for name, first, _last, header, reason in blocks:
+        if (first, name) in seen:
+            continue
+        seen.add((first, name))
+        # Only the BEGIN marker, never the key material.
+        violations.append({
+            "file": str(file_path),
+            "line": first,
+            "rule": name,
+            "reason": reason,
+            "type": "secret_leak",
+            "content": header,
+        })
     return violations
 
 
@@ -164,7 +286,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             if ed:
                 skip_dirs.add(ed)
 
-    valid_exts = {".txt", ".md", ".json", ".yaml", ".yml", ".py", ".ts", ".js", ".prompt", ".env", ".toml"}
+    valid_exts = {".txt", ".md", ".json", ".yaml", ".yml", ".py", ".ts", ".js", ".prompt", ".env", ".toml", ".pem", ".key"}
     if getattr(args, "include", None):
         for ie in args.include.split(","):
             ie = ie.strip().lower()
@@ -180,37 +302,59 @@ def cmd_scan(args: argparse.Namespace) -> int:
             dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in files:
                 p = Path(root) / f
-                if p.suffix in valid_exts or p.name.startswith(".env"):
+                if p.suffix.lower() in valid_exts or p.name.startswith(".env") or p.name in _KEY_FILE_NAMES:
                     files_to_scan.append(p)
 
     all_violations: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, str]] = []
+    scanned = 0
     for fp in files_to_scan:
+        reason = _skip_reason(fp)
+        if reason:
+            skipped.append({"file": str(fp), "reason": reason})
+            continue
+        scanned += 1
         all_violations.extend(_scan_file(fp))
 
-    fmt = getattr(args, "format", "text")
+    _print_report(getattr(args, "format", "text"), scanned, skipped, all_violations)
+    if all_violations and not getattr(args, "no_fail", False):
+        return 1
+    return 0
+
+
+def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_violations: List[Dict[str, Any]]) -> None:
+    """Print the scan report: rule names, fixed text, counts and redacted snippets only."""
     if fmt == "github":
+        # CI logs are public: rule, reason and location only, never the snippet.
         for v in all_violations:
-            print(f"::error file={v['file']},line={v['line']},title=Security Threat ({v['rule']})::{v['reason']} in: {v['content']}")
-        print(f"\n[zn-gate] Scanned {len(files_to_scan)} files. Found {len(all_violations)} security threats.")
+            title = _gh_property("Security Threat (" + str(v["rule"]) + ")")
+            print(f"::error file={_gh_property(v['file'])},line={int(v['line'])},title={title}::{_gh_message(v['reason'])}")
+        for s in skipped:
+            print(f"::notice file={_gh_property(s['file'])},title=Not scanned::{_gh_message(s['reason'])}")
+        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {len(all_violations)} security threats.")
     elif fmt == "json":
         print(json.dumps({
-            "total_files": len(files_to_scan),
+            "total_files": scanned,
+            "total_skipped": len(skipped),
             "total_threats": len(all_violations),
-            "threats": all_violations
+            "threats": all_violations,
+            "skipped": skipped,
         }, indent=2))
     else:
-        print(f"\n{_icon(SHIELD)} zn-gate Security Scanner — Scanned {len(files_to_scan)} files")
+        print(f"\n{_icon(SHIELD)} zn-gate Security Scanner — Scanned {scanned} files")
+        if skipped:
+            print(f"Not scanned ({len(skipped)}):")
+            for s in skipped[:20]:
+                print(f"  {s['file']} ({s['reason']})")
+            if len(skipped) > 20:
+                print(f"  ... and {len(skipped) - 20} more")
         if not all_violations:
             print(f"{_icon(CHECK)} All scanned prompts, tool definitions, and files are clean!\n")
-            return 0
+            return
         print(f"{_icon(ALERT)} Found {len(all_violations)} threat vectors:\n")
         for v in all_violations:
             print(f"  {v['file']}:{v['line']} [{v['rule']}] {v['reason']}")
             print(f"    Snippet: {v['content']}\n")
-
-    if all_violations and not getattr(args, "no_fail", False):
-        return 1
-    return 0
 
 
 def cmd_evidence(args: argparse.Namespace) -> int:
@@ -257,6 +401,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stats(args) -> int:
+    from . import stats as _stats
+    if not (isinstance(args.days, int) and 1 <= args.days <= _stats.KEEP_DAYS):
+        sys.stderr.write("zn-gate stats: --days must be between 1 and {}\n".format(_stats.KEEP_DAYS))
+        return 2
+    days = args.days
+    s = _stats.summary(days=days)
+    if args.json:
+        print(json.dumps(s, indent=2))
+    else:
+        sys.stdout.write(_stats.render(s))
+    return 0
+
+
 def main() -> int:
     _configure_output_streams()
     parser = argparse.ArgumentParser(
@@ -278,6 +436,7 @@ def main() -> int:
     analyze_parser.add_argument("--stage", default="v30", help="Cloud gate stage (default: v30)")
     analyze_parser.add_argument("--url", help="Custom API endpoint URL")
     analyze_parser.add_argument("--local-only", action="store_true", help="Force local deterministic rules only")
+    analyze_parser.add_argument("--long-input", choices=["windows", "off"], help="Long texts sent to the cloud: overlapping 512-token windows (default) or the first 512 tokens only")
     analyze_parser.add_argument("--json", action="store_true", default=True, help="Output results as JSON")
 
     # scan command
@@ -298,6 +457,11 @@ def main() -> int:
     # status command
     subparsers.add_parser("status", help="Show engine status and configuration")
 
+    # stats command
+    st_parser = subparsers.add_parser("stats", help="What zn-gate did on this machine (local counts only)")
+    st_parser.add_argument("--days", type=int, default=30, help="Days to count (1-90, default 30)")
+    st_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
     if args.command == "test":
         return cmd_test(args)
@@ -309,6 +473,8 @@ def main() -> int:
         return cmd_evidence(args)
     elif args.command == "status":
         return cmd_status(args)
+    elif args.command == "stats":
+        return cmd_stats(args)
     else:
         parser.print_help()
         return 0

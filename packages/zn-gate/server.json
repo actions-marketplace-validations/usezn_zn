@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.usezn/zn-gate",
-  "description": "Local security layer for coding agents: prompt-injection checks, secret redaction, MCP proxy.",
+  "description": "Local security layer for coding agents: secret redaction, prompt-injection checks and MCP proxy.",
   "repository": {
     "url": "https://github.com/usezn/zn",
     "source": "github",
     "subfolder": "packages/zn-gate"
   },
   "websiteUrl": "https://usezn.com",
-  "version": "1.5.0",
+  "version": "1.8.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "zn-gate",
-      "version": "1.5.0",
+      "version": "1.8.2",
       "transport": {
         "type": "stdio"
       },

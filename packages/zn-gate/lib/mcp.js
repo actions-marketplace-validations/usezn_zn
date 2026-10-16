@@ -5,9 +5,9 @@ const { analyze, analyzeLocal, checkToolResult, isCloudEnabled, RULES_VERSION, r
 const { sanitizeToolResult } = require('./rules');
 
 const SERVER_NAME = 'zn-gate';
-let SERVER_VERSION = '1.5.0';
+let SERVER_VERSION = '1.6.0';
 try {
-  SERVER_VERSION = require('../package.json').version || '1.5.0';
+  SERVER_VERSION = require('../package.json').version || '1.6.0';
 } catch (_) {}
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -38,6 +38,7 @@ function sendError(id, code, message, data) {
 const TOOLS = [
   {
     name: 'analyze_prompt',
+    annotations: { title: 'Check text for prompt injection', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Analyze text, prompt, or agent messages for security threats (prompt injection, jailbreak, credential exfiltration, role hijacking). Runs locally; only if the user set ZN_CLOUD=1 and ZN_API_KEY is the text, with secrets redacted, also sent to the zn cloud gate. Returns threat assessment, confidence score, and matched rule.',
     inputSchema: {
       type: 'object',
@@ -52,6 +53,7 @@ const TOOLS = [
   },
   {
     name: 'check_tool_call',
+    annotations: { title: 'Check a tool call before it runs', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Pre-flight safety inspection for tool invocations and arguments before execution. Always local: arguments never leave the machine. Defends against tool poisoning, argument injection, and unauthorized exfiltration attempts.',
     inputSchema: {
       type: 'object',
@@ -70,6 +72,7 @@ const TOOLS = [
   },
   {
     name: 'check_tool_result',
+    annotations: { title: 'Check a tool result before the model reads it', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Post-execution safety inspection for tool outputs and third-party content (web pages, git commits, database queries) before LLM context assimilation. Always local: content never leaves the machine. Returns the content with secrets redacted, or neutralized if an injection is detected.',
     inputSchema: {
       type: 'object',
@@ -88,6 +91,7 @@ const TOOLS = [
   },
   {
     name: 'zn_status',
+    annotations: { title: 'zn-gate status', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Get current zn-gate status: engine, rules version, and exactly what (if anything) leaves the machine.',
     inputSchema: {
       type: 'object',
@@ -95,6 +99,12 @@ const TOOLS = [
     },
   },
 ];
+
+/* With the optional cloud check on (ZN_CLOUD=1 and an API key), analyze_prompt sends text to the zn cloud gate. */
+function toolsFor(options) {
+  const cloud = isCloudEnabled(options);
+  return TOOLS.map((t) => (t.name === 'analyze_prompt' && cloud ? { ...t, annotations: { ...t.annotations, openWorldHint: true } } : t));
+}
 
 async function handleRequest(message, options) {
   const { id, method, params } = message;
@@ -123,11 +133,23 @@ async function handleRequest(message, options) {
 
     case 'tools/list': {
       return sendResult(id, {
-        tools: TOOLS,
+        tools: toolsFor(options),
       });
     }
 
     case 'tools/call': {
+      // Local counts for `zn-gate stats` (best effort).
+      function countMcp({ blocked = false, redacted = 0, detections = [] }) {
+        const types = {};
+        for (const d of detections) {
+          const t = String(d && d.rule || '').replace(/^secret:/, '');
+          if (t) types[t] = (types[t] || 0) + 1;
+        }
+        require('./stats').record({
+          layer: 'mcp', agent: options.agent || 'mcp-client', checked: 1, blocked: blocked ? 1 : 0,
+          redacted: redacted || detections.length, detections: types,
+        });
+      }
       if (!params || typeof params.name !== 'string') {
         return sendError(id, -32602, 'Invalid params: name is required');
       }
@@ -139,6 +161,7 @@ async function handleRequest(message, options) {
         const text = typeof args.text === 'string' ? args.text : '';
         const assessment = await analyze(text, options);
         const isBlock = assessment.verdict?.toLowerCase() === 'block';
+        countMcp({ blocked: isBlock });
 
         return sendResult(id, {
           isError: isBlock,
@@ -176,11 +199,15 @@ async function handleRequest(message, options) {
                 isBlock = true;
                 break;
               }
+              if (!worstAssessment.advisory && subRes.advisory) {
+                worstAssessment = { ...worstAssessment, advisory: { ...subRes.advisory } };
+              }
             }
           }
         }
 
         const { sanitized: sanitizedArgs, detections } = sanitizeToolResult(toolArgs);
+        countMcp({ blocked: isBlock, detections });
 
         const output = {
           tool_name: targetTool,
@@ -206,6 +233,7 @@ async function handleRequest(message, options) {
         const rawContent = args.content !== undefined ? (typeof args.content === 'string' ? args.content : JSON.stringify(args.content)) : '';
 
         const output = await checkToolResult(targetTool, rawContent, options);
+        countMcp({ blocked: !output.safe_to_ingest, redacted: output.secrets_redacted || 0 });
 
         return sendResult(id, {
           isError: !output.safe_to_ingest,
@@ -292,9 +320,10 @@ function startMcpServer(options = {}) {
 }
 
 module.exports = {
+  TOOLS,
+  toolsFor,
   startMcpServer,
   handleRequest,
-  TOOLS,
   SERVER_NAME,
   SERVER_VERSION,
   PROTOCOL_VERSION,

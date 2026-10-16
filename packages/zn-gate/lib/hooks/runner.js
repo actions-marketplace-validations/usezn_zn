@@ -9,7 +9,9 @@
  * the vault daemon, reached through lib/vault/client.js. Decisions:
  *
  *   pre_tool    deny reads of credential files and ~/.zn, deny secret
- *               management commands, wrap shell commands (Bash, PowerShell)
+ *               management commands, deny MCP call arguments that carry
+ *               markers or secret values (other servers than zn's own),
+ *               wrap shell commands (Bash, PowerShell)
  *               that carry __ZN_<NAME>__ markers in `zn run --` (ask),
  *               restore detected tokens per the restore policy (ask), refuse
  *               markers in WebFetch URLs (use secrets_http_request instead),
@@ -39,6 +41,7 @@ const markers = require('../broker/markers');
 const { gitStatusOf } = require('../broker/files');
 const deps = require('../deps');
 const { shQuote, SH_QUOTE_ESCAPE, portablePath } = require('../shell-quote');
+const { znCommand } = require('../zn-command');
 
 const SECRET_SOURCES = new Set(['exact', 'pattern']);
 const POST_TOOLS = new Set(['read', 'bash', 'powershell', 'monitor', 'grep', 'lsp', 'webfetch', 'mcp', 'mcpresource']);
@@ -75,9 +78,14 @@ function failModeOf(opts) {
 // Reinstall the running version: `npm install -g zn-gate` alone could install an
 // older release without hooks.
 const { version: ZN_VERSION } = require('../../package.json');
-const REINSTALL = 'The zn scrubber engine is missing from this installation (lib/scrub/engine.js), so zn cannot check this. ' +
-  'Reinstall zn-gate (`npm install -g zn-gate@' + ZN_VERSION + '`) and run `zn hooks install` again. To let events pass unchecked while it is missing, ' +
-  'set {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json.';
+const REINSTALL = 'part of zn-gate is missing from this installation, so zn cannot check this action and blocked it. ' +
+  'Ask the user to reinstall it with `npm install -g zn-gate@' + ZN_VERSION + '` and then run `zn hooks install`.';
+// Only the person sees how to let actions pass unchecked; the model never gets that hint.
+const REINSTALL_USER = 'part of zn-gate is missing from this installation, so zn blocks what it cannot check. ' +
+  'Reinstall it with `npm install -g zn-gate@' + ZN_VERSION + '` and then run `zn hooks install`. ' +
+  'To let actions pass unchecked until then, set {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json.';
+const HOOK_FAILED = 'something went wrong inside the zn hook, so this action was blocked to keep the user\'s secrets safe. ' +
+  'If it happens again, ask the user to run `' + znCommand('hooks install') + '`.';
 
 /** Map every string leaf of a JSON value through an async function, keeping the shape. */
 async function mapStrings(value, fn) {
@@ -132,6 +140,20 @@ function znRunPrefix(opts, agentId) {
   return 'ZN_AGENT=' + String(agentId).replace(/[^a-z0-9-]/g, '') + ' ' + q(opts.nodePath || process.execPath) + ' ' + q(runJs) + ' --';
 }
 
+/* Custom secret formats from the zn Team policy (verified cache), compiled
+ * once per hook process. They only add redactions. */
+let orgDetectors = null;
+function orgDetectorsFor(opts) {
+  if (orgDetectors === null) {
+    try {
+      const team = require('../team/policy');
+      const { detectorsOf } = require('../team/effective');
+      orgDetectors = require('../team/detectors').compile(detectorsOf(team.state({ home: opts && opts.znHome })));
+    } catch (_) { orgDetectors = []; }
+  }
+  return orgDetectors;
+}
+
 async function ctxFor(ev, d, agentId, destination, needVault = true) {
   return {
     project: deps.findProjectRoot(ev.cwd || process.cwd()),
@@ -139,6 +161,7 @@ async function ctxFor(ev, d, agentId, destination, needVault = true) {
     tool: ev.toolName || ev.tool,
     destination,
     vault: needVault ? await d.vault() : undefined,
+    detectors: d.detectors ? d.detectors() : orgDetectorsFor(),
   };
 }
 
@@ -155,6 +178,9 @@ async function decidePre(ev, d, agentId, opts) {
   }
   if (tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit') {
     // A patch can touch several files: every one is checked, not only the first.
+    if (input.tooLong) {
+      return { decision: 'deny', message: 'zn: this patch is too long for zn to check (over 100 KB), so it was blocked. Next step: tell the user; do not resend it in parts.' };
+    }
     if (input.unparsed) return { decision: 'deny', message: 'zn: could not read the file names in this patch, so zn cannot check it.' };
     for (const p of Array.isArray(input.paths) ? input.paths : [input.path]) {
       const deny = policy.writeDenial(p, pathOpts);
@@ -174,6 +200,7 @@ async function decidePre(ev, d, agentId, opts) {
   }
 
   if (tool === 'monitor') return decideMonitor(ev, pathOpts, opts);
+  if (tool === 'mcp' && ev.input && ev.input.args !== undefined) return decideMcp(ev, d, agentId);
 
   if (SHELL_TOOLS.has(tool)) {
     const original = String(input.command || '');
@@ -188,22 +215,27 @@ async function decidePre(ev, d, agentId, opts) {
     if (!wrap.ok) return { decision: 'deny', message: wrap.reason };
     if (wrap.wrapped) {
       command = wrap.command;
-      notes.push('runs through `zn run` for ' + markers.findNamedMarkers(original).map((m) => m.name).join(', ') +
-        ' (allowCommands, first-use approval and output masking apply)');
+      notes.push('runs through zn run (zn\'s secret wrapper) for ' + markers.findNamedMarkers(original).map((m) => m.name).join(', ') +
+        '; the first time, you approve the command, and secret values in its output stay hidden');
     }
 
     const detected = markers.findMarkers(command).filter((m) => m.detected);
+    let context;
     if (detected.length) {
       const network = policy.hasNetworkSignals(command);
       const ctx = await ctxFor(ev, d, agentId, network ? 'bash_network' : 'bash_local');
       const res = await d.engine().detokenize(command, ctx);
       if (res && typeof res.text === 'string' && res.restored && res.restored.length) {
         command = res.text;
-        notes.push('restores ' + res.restored.length + ' scrubbed value(s) for a local command');
+        notes.push('puts back ' + res.restored.length + ' hidden value(s) for a local command');
       }
       if (res && res.withheld && res.withheld.length) {
-        notes.push('kept ' + res.withheld.length + ' token(s) unresolved: ' +
+        notes.push('left ' + res.withheld.length + ' placeholder(s) unfilled: ' +
           res.withheld.map((w) => w.token + ' (' + w.reason + ')').join(', '));
+        if (isOutdated(res.withheld)) {
+          notes.push(outdatedLine().replace(/\.$/, ''));
+          context = 'zn: ' + outdatedLine();
+        }
       }
     }
 
@@ -212,12 +244,12 @@ async function decidePre(ev, d, agentId, opts) {
         // A command that carries markers always asks, even when nothing was rewritten
         // (already wrapped in `zn run` by the agent, or tokens kept unresolved).
         // Never let it run on the user's allow rules alone.
-        return { decision: 'ask', message: 'zn: this command carries secret markers' + (notes.length ? '; ' + notes.join('; ') : '') + '.' };
+        return { decision: 'ask', message: 'zn: this command contains secret placeholders (such as __ZN_NAME__)' + (notes.length ? '; ' + notes.join('; ') : '') + ', so it needs your approval before it runs.', context };
       }
       return notes.length ? { decision: 'allow', message: 'zn: ' + notes.join('; ') } : { decision: 'allow' };
     }
     // kind tells adapters that cannot rewrite input what the rewrite was for.
-    return { decision: 'ask', updatedInput: { command }, kind: wrap.wrapped ? 'wrap' : 'restore', message: 'zn: this command ' + notes.join('; ') + '.' };
+    return { decision: 'ask', updatedInput: { command }, kind: wrap.wrapped ? 'wrap' : 'restore', message: 'zn: this command ' + notes.join('; ') + '.', context };
   }
 
   if ((tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit') && Array.isArray(input.texts)) {
@@ -229,6 +261,7 @@ async function decidePre(ev, d, agentId, opts) {
     const updates = [];
     let restored = 0;
     const withheld = [];
+    const notices = new Set();
     for (const t of withMarkers) {
       const res = await d.engine().detokenize(t.value, ctx);
       if (res && res.restored && res.restored.length && res.text !== t.value) {
@@ -236,22 +269,50 @@ async function decidePre(ev, d, agentId, opts) {
         restored += res.restored.length;
       }
       if (res && res.withheld) withheld.push(...res.withheld);
+      if (res && Array.isArray(res.notices)) for (const n of res.notices) notices.add(n);
     }
-    const why = withheld.length
-      ? ' Kept as tokens: ' + withheld.map((w) => w.token).join(', ') + (destination === 'write_tracked'
+    // Secrets the organization policy blocks: the file keeps the marker.
+    const blocked = [...new Set(withheld.filter((w) => w.reason === 'org_deny').map((w) => w.token.slice(5, -2)))];
+    const why = (withheld.length
+      ? ' Kept as tokens: ' + [...new Set(withheld.map((w) => w.token))].join(', ') + (destination === 'write_tracked'
         ? ' (this file can be committed, so secrets stay as markers; put real values in a git-ignored file such as .env.local).'
         : '.')
-      : '';
+      : '') +
+      (blocked.length ? ' ' + blockedLine(blocked) : '') +
+      (isOutdated(withheld) ? ' ' + outdatedLine() : '') +
+      (notices.size ? ' ' + [...notices].join(' ') : '');
+    // A secret the organization blocks: the write keeps the marker, and the
+    // user is asked so the reason is shown (a plain allow shows nothing).
+    // context: the model reads it, so it knows the value was not put back.
+    const outdated = isOutdated(withheld);
+    const told = [blocked.length ? blockedLine(blocked) : null, outdated ? outdatedLine() : null].filter(Boolean);
+    const context = told.length ? 'zn: ' + told.join(' ') : undefined;
+    if (updates.length === 0 && told.length) return { decision: 'ask', message: 'zn:' + why, context };
     if (updates.length === 0) return { decision: 'allow', message: why ? 'zn:' + why : undefined };
     return {
       decision: 'ask',
       updatedInput: { texts: updates },
       kind: 'restore',
       message: 'zn: restores ' + restored + ' secret value(s) in a git-ignored file.' + why,
+      context,
     };
   }
 
   return { decision: 'allow' };
+}
+
+/* The vault process was started by an older zn-gate: it does not check the
+ * organization policy, so nothing is put back until it is restarted. */
+function outdatedLine() {
+  return 'Your zn vault was started by an older zn-gate version, so secrets stay as markers. Run `' +
+    znCommand('lock') + '`, then `' + znCommand('unlock') + '`.';
+}
+const isOutdated = (list) => (list || []).some((w) => w.reason === 'vault_outdated');
+
+/* A secret the organization policy blocks (for every agent): the file keeps its marker. */
+function blockedLine(names) {
+  return 'Secret ' + names.join(', ') + (names.length > 1 ? ' are' : ' is') +
+    ' blocked by your organization policy, so the file keeps the marker.';
 }
 
 /*
@@ -288,18 +349,107 @@ function isMonitorWrapper(command, opts) {
 function decideMonitor(ev, pathOpts, opts) {
   const raw = (ev.raw && ev.raw.tool_input) || {};
   if (raw.ws !== undefined && raw.command === undefined) {
-    return { decision: 'deny', message: 'zn: a WebSocket monitor streams data to the model without passing through the secret scrubber. Use a command instead (its output is scrubbed).' };
+    return { decision: 'deny', message: 'zn: a WebSocket monitor sends its data to the model without the secret check. Next step: use a monitor that runs a command instead, because zn checks the output of commands.' };
   }
   const original = String(ev.input.command || '');
+  if (original.length > policy.SHELL_SCAN_CAP) return { decision: 'deny', message: policy.bashDenial(original, pathOpts) };
   if (!original.trim()) return { decision: 'allow' };
   const deny = policy.bashDenial(original, pathOpts);
   if (deny) return { decision: 'deny', message: deny };
   if (markers.findMarkers(original).length) {
-    return { decision: 'deny', message: 'zn: secret markers are not supported in Monitor commands. Run the command with the Bash tool (it goes through `zn run`).' };
+    return { decision: 'deny', message: 'zn: a monitor cannot use secret placeholders (such as __ZN_NAME__). Next step: run the command with the Bash tool instead; zn fills in the placeholders there.' };
   }
-  if (isMonitorWrapper(original, opts)) return { decision: 'ask', message: 'zn: this monitor already pipes through the secret scrubber.' };
+  if (isMonitorWrapper(original, opts)) return { decision: 'ask', message: 'zn: this monitor already checks its output for secrets.' };
   const command = wrapMonitor(original, opts);
-  return { decision: 'ask', updatedInput: { command }, kind: 'monitor', message: 'zn: the monitor output is piped through the local secret scrubber, so secret values in it are replaced with __ZN_ tokens.' };
+  return { decision: 'ask', updatedInput: { command }, kind: 'monitor', message: 'zn: this monitor\'s output is checked on this computer before the model sees it. Secret values are replaced with placeholders such as __ZN_AWS_KEY_1__.' };
+}
+
+/*
+ * MCP tool calls. Only Cursor sends the arguments (input.args); any other
+ * agent's MCP pre-tool call is allowed before the vault is touched. The
+ * arguments are checked for __ZN_ markers, which servers other than zn's own
+ * never receive, and for credentials the scrubber finds, which no server
+ * should receive from the agent. zn's "secrets" server takes markers by design,
+ * but only when it is identified strictly (see isOurSecretsServer); it still
+ * gets the credential check. A call with no objection gets no answer, so the
+ * agent's own MCP approval still applies.
+ */
+const MCP_SCAN_CAP = 1024 * 1024; // characters, all arguments together
+const MCP_WINDOW = 128 * 1024; // the scrubber reads the text in windows of this size
+const MCP_OVERLAP = 16 * 1024; // windows overlap, so a secret across a boundary is seen whole
+
+/* Every string of an MCP call's arguments (values and keys), joined with
+ * newlines, or null when they hold more than MCP_SCAN_CAP characters. */
+function mcpArgumentText(args) {
+  const out = [];
+  let total = 0;
+  const stack = [args];
+  while (stack.length) {
+    const v = stack.pop();
+    if (typeof v === 'string') {
+      total += v.length + 1;
+      if (total > MCP_SCAN_CAP) return null;
+      out.push(v);
+    } else if (Array.isArray(v)) {
+      for (const x of v) stack.push(x);
+    } else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) stack.push(k, x);
+    }
+  }
+  return out.join('\n');
+}
+
+/* zn's own "secrets" server: the exact command `zn hooks install` writes (the
+ * matcher of `zn audit`, with the "--agent <id>" suffix it adds), outside the
+ * project. A server reached by URL is never ours, and a name alone is not enough. */
+function isOurSecretsServer(ev, root) {
+  const raw = ev.raw || {};
+  if (!ev.mcp || ev.mcp.server !== 'secrets') return false;
+  if (raw.url || raw.mcp_server_url) return false;
+  if (typeof raw.command !== 'string' || !raw.command.trim()) return false;
+  const argv = require('../audit/patterns').splitCommand(raw.command);
+  return Boolean(require('../audit')._internal.isOurMcp(argv, { rec: { root } }));
+}
+
+/* Server names come from the agent's config: keep the message to plain characters. */
+function mcpServerLabel(server) {
+  const s = String(server || '').replace(/[^A-Za-z0-9 ._-]/g, '').slice(0, 64).trim();
+  return s ? 'the MCP server ' + s : 'an MCP server';
+}
+
+async function decideMcp(ev, d, agentId) {
+  const text = mcpArgumentText(ev.input.args);
+  if (text === null) {
+    return { decision: 'deny', message: 'zn: this MCP call is too large for zn to check (its arguments are over 1 MB). Next step: tell the user; do not resend this content in parts.' };
+  }
+  if (!text) return { decision: 'allow' }; // nothing to check, so the vault is not loaded
+  const server = ev.mcp && ev.mcp.server ? String(ev.mcp.server) : '';
+  const ours = isOurSecretsServer(ev, deps.findProjectRoot(ev.cwd || process.cwd()));
+  if (!ours && markers.findMarkers(text).length) {
+    return {
+      decision: 'deny',
+      message: 'zn: ' + mcpServerLabel(server) + ' never receives secret values, so zn blocked this call. ' +
+        'Next step: for an authenticated web request, use the secrets_http_request tool of the zn "secrets" MCP server; otherwise remove the placeholder from the call.',
+    };
+  }
+
+  const engine = d.engine();
+  let ctx = await ctxFor(ev, d, agentId, 'mcp_input');
+  if (typeof engine.prepare === 'function') ctx = await engine.prepare(ctx);
+  const kinds = new Set();
+  for (let start = 0; ; start += MCP_WINDOW - MCP_OVERLAP) {
+    for (const span of engine.scan(text.slice(start, start + MCP_WINDOW), ctx) || []) {
+      if (SECRET_SOURCES.has(span.source)) kinds.add(kindLabel(span.type));
+    }
+    if (start + MCP_WINDOW >= text.length) break;
+  }
+  if (kinds.size === 0) return { decision: 'allow' };
+  return {
+    decision: 'deny',
+    message: 'zn: this call would send a secret (' + [...kinds].join(', ') + ') to ' + mcpServerLabel(server) + ', so zn blocked it. ' +
+      'A stored secret cannot be passed to this server. ' +
+      'Next step: for a web request, use the secrets_http_request tool of the zn "secrets" MCP server, which sends the stored value itself; do not put the value in this call.',
+  };
 }
 
 /* ---------------------------- post_tool --------------------------- */
@@ -324,15 +474,19 @@ async function decidePost(ev, d, agentId) {
   const summary = [...types.entries()].map(([t, n]) => t + (n > 1 ? ' x' + n : '')).join(', ');
   return {
     decision: 'allow',
+    stats: { redacted: total, detections: Object.fromEntries(types) },
     updatedOutput: updated,
     message: 'zn: ' + total + ' secret value(s) in this output were replaced with __ZN_ tokens (' + summary + '). ' +
-      (locked ? '__ZN_REDACTED_ markers cannot be restored. ' : 'Real values stay on this machine; use the tokens as they are.'),
-    userMessage: locked ? LOCKED_NOTICE : undefined,
+      (locked ? '__ZN_REDACTED_ markers cannot be restored, so do not retry to get the values. ' : 'Real values stay on this machine; use the tokens as they are.'),
+    userMessage: locked ? lockedNotice() : undefined,
   };
 }
 
-const LOCKED_NOTICE = 'zn: the secret vault is locked, so values in this output were redacted irreversibly. ' +
-  'Run `zn unlock` to enable exact-value redaction and restore.';
+/* Shown to the person (systemMessage) when the vault is locked. */
+function lockedNotice() {
+  return 'zn hid secret values in this output. Your vault is locked, so they cannot be put back afterwards. ' +
+    'To keep them restorable next time, unlock it in your terminal: ' + znCommand('unlock');
+}
 
 /* --------------------------- user_prompt -------------------------- */
 
@@ -346,42 +500,86 @@ async function decidePrompt(ev, d, agentId) {
   if (typeof engine.prepare === 'function') ctx = await engine.prepare(ctx);
   const spans = engine.scan(prompt, ctx) || [];
   const secrets = spans.filter((s) => SECRET_SOURCES.has(s.source));
+  // Prompts only: NAME=value in the middle of a sentence, even when the value
+  // does not look random (see lib/scrub/prompt.js).
+  for (const a of require('../scrub/prompt').findPromptAssignments(prompt)) {
+    if (!secrets.some((s) => s.start < a.end && a.start < s.end)) secrets.push(a);
+  }
   if (secrets.length === 0) return { decision: 'allow' };
-  const kinds = [...new Set(secrets.map((s) => s.name || s.type))];
-  const suggestion = kinds.length === 1 && /^[A-Z][A-Z0-9_]*$/.test(String(secrets[0].name || ''))
-    ? secrets[0].name
-    : String(secrets[0].type || 'MY_SECRET').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/_\d+$/, '') || 'MY_SECRET';
+  const names = secrets.map(nameOf);
+  const shown = [...new Set(secrets.map((s, i) => names[i] || kindLabel(s.type)))];
+  const suggestion = names[0] || suggestedName(secrets[0]);
   return {
     decision: 'deny',
-    message: 'zn: this prompt was not sent because it contains a secret (' + kinds.join(', ') + '). ' +
-      'Store it locally instead: run `zn secret set ' + suggestion + '` in your terminal, then refer to it as __ZN_' +
-      suggestion + '__ in your prompt.',
+    stats: { detections: Object.fromEntries([...new Set(secrets.map((s) => s.type || 'SECRET'))].map((k) => [k, 1])) },
+    message: 'zn: this prompt was not sent because it contains a secret (' + shown.join(', ') + '). ' +
+      'Save it in your vault instead: ' + znCommand('secret set ' + suggestion) +
+      ', then ask your agent to use it (as __ZN_' + suggestion + '__).',
   };
+}
+
+// A vault name: upper case, at most 64 characters. A JSON key such as
+// "db_password" is shown as DB_PASSWORD; anything else falls back to the kind.
+const NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const GENERIC_TYPES = new Set(['SECRET', 'CREDENTIAL']);
+
+function nameOf(span) {
+  const n = String(span.name || '').toUpperCase();
+  return NAME_RE.test(n) ? n : null;
+}
+
+// Words that keep their usual capitals in a message a person reads.
+const ACRONYMS = new Set(['AWS', 'API', 'SSH', 'JWT', 'SSN', 'NIE', 'DNI', 'IBAN', 'PAT', 'DB', 'PII', 'URL', 'GCP', 'OAUTH', 'TLS', 'SSL', 'SMTP']);
+const BRANDS = {
+  ANTHROPIC: 'Anthropic', AZURE: 'Azure', DATABRICKS: 'Databricks', DIGITALOCEAN: 'DigitalOcean', DISCORD: 'Discord',
+  DOCKERHUB: 'Docker Hub', GITHUB: 'GitHub', GITLAB: 'GitLab', GOOGLE: 'Google', MAILGUN: 'Mailgun', NEWRELIC: 'New Relic',
+  NPM: 'npm', OPENAI: 'OpenAI', PYPI: 'PyPI', REPLICATE: 'Replicate', SENDGRID: 'SendGrid', SHOPIFY: 'Shopify',
+  SLACK: 'Slack', STRIPE: 'Stripe', SUPABASE: 'Supabase', TELEGRAM: 'Telegram', TWILIO: 'Twilio', XAI: 'xAI',
+};
+
+/* "AWS_KEY" -> "an AWS key", "GITHUB_TOKEN" -> "a GitHub token", for a message
+ * a person reads. Only known acronyms and brands get capitals. */
+function kindLabel(type) {
+  const words = String(type || '').split(/_+/).filter(Boolean).map((w) => {
+    const u = w.toUpperCase();
+    if (Object.prototype.hasOwnProperty.call(BRANDS, u)) return BRANDS[u];
+    if (ACRONYMS.has(u)) return u;
+    return w.toLowerCase();
+  });
+  const label = words.join(' ') || 'secret';
+  return (/^([AEIOU]|AWS\b|API\b|SSH\b|SSN\b|IBAN\b|OAUTH\b)/i.test(label) ? 'an ' : 'a ') + label;
+}
+
+/* The name to suggest for `zn secret set` when the detection has no name. */
+function suggestedName(span) {
+  const t = String(span.type || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/_\d+$/, '');
+  return t && !GENERIC_TYPES.has(t) ? t : 'MY_SECRET';
 }
 
 /* ------------------------------ entry ----------------------------- */
 
 function failDecision(ev, err, mode) {
   const missing = err.code === 'ZN_UNAVAILABLE';
-  const msg = 'zn: hook error (' + (err.code || 'error') + '): ' + (missing ? REINSTALL : err.message);
+  const detail = missing ? '' : ' (' + (err.code ? err.code + ': ' : '') + String(err.message || 'unknown error') + ')';
+  const msg = 'zn: ' + (missing ? REINSTALL : HOOK_FAILED) + detail;
   // Fail open only when the engine itself is missing and the user chose so.
-  if (mode === 'open' && missing) return { decision: 'allow', failOpen: true, warning: msg };
+  if (mode === 'open' && missing) return { decision: 'allow', failOpen: true, warning: 'zn: ' + REINSTALL_USER };
   const r = failClosed(ev, err, msg);
   // The user (not only the model) needs to hear how to fix a broken install.
-  if (missing) r.userMessage = msg;
+  if (missing) r.userMessage = 'zn: ' + REINSTALL_USER;
   return r;
 }
 
 function failClosed(ev, err, msg) {
   if (ev && ev.event === 'post_tool' && ev.output !== undefined) {
-    const withheld = '[zn: output withheld because the secret scrubber is unavailable: ' + (err.code || 'error') + ']';
+    const withheld = '[zn: this output was hidden because zn could not check it for secrets (' + (err.code || 'error') + ')]';
     const shape = (v) => (typeof v === 'string' ? withheld
       : Array.isArray(v) ? v.map(shape)
         : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shape(x)])) : v);
     return { decision: 'allow', updatedOutput: shape(ev.output), message: msg };
   }
-  if (ev && ev.event === 'pre_tool') return { decision: 'deny', message: msg + ' (fail-closed)' };
-  return { decision: 'deny', message: msg + ' (fail-closed)', userMessage: msg };
+  if (ev && ev.event === 'pre_tool') return { decision: 'deny', failClosed: true, message: msg };
+  return { decision: 'deny', failClosed: true, message: msg, userMessage: msg };
 }
 
 /**
@@ -405,7 +603,29 @@ async function handle(adapter, rawEvent, opts = {}) {
     decision = failDecision(ev, err, mode);
   }
   const output = adapter.respond({ ...decision, event: ev });
+  countHook(adapter.id, ev, decision, opts);
   return { output, stderr: decision.warning || null, decision };
+}
+
+/**
+ * Local counts for `zn-gate stats` (best effort; never changes the decision). A denial because zn itself
+ * failed (fail-closed) is not counted as a block; asks and fail-open passes count as warnings.
+ */
+function countHook(agentId, ev, decision, opts = {}) {
+  try {
+    if (!ev || !ev.event || !decision) return;
+    const extra = decision.stats || {};
+    const file = opts.home ? path.join(opts.home, '.zn', 'stats.json') : undefined;
+    require('../stats').record({
+      layer: 'hook', agent: agentId, checked: 1,
+      blocked: decision.decision === 'deny' && !decision.failClosed ? 1 : 0,
+      warned: decision.decision === 'ask' || decision.failOpen ? 1 : 0,
+      redacted: extra.redacted || 0,
+      detections: extra.detections || {},
+    }, file ? { file } : {});
+  } catch {
+    /* counting must never affect a hook */
+  }
 }
 
 function readStdin() {
@@ -433,8 +653,10 @@ function refuseInput(agentId, why) {
     process.stderr.write('zn hook: ' + why + '; passed through (hooks.whenUnavailable is "allow")\n');
     return;
   }
-  const msg = 'zn: ' + why + ', so zn cannot check this call and it is denied. ' +
-    'Set {"hooks": {"whenUnavailable": "allow"}} in ~/.zn/config.json to let such events pass.';
+  // Claude Code and Codex show this stderr to the model, so it never says how to
+  // let actions pass unchecked (docs/compat.md documents that for the user).
+  const msg = 'zn: could not read this action (' + why + '), so it was blocked. ' +
+    'If it happens again, ask the user to run `' + znCommand('hooks install') + '`.';
   process.stderr.write('zn hook: ' + msg + '\n');
   if (agentId === 'cursor') process.stdout.write(JSON.stringify({ permission: 'deny', continue: false, user_message: msg, agent_message: msg }));
   process.exitCode = 2;
@@ -467,7 +689,8 @@ async function handleEvent(args) {
   try {
     raw = JSON.parse(text);
   } catch (err) {
-    return refuseInput(agentId, 'the event on stdin is not valid JSON (' + err.message + ')');
+    // Node's parse error quotes part of the input, which can be tool output: never pass it on.
+    return refuseInput(agentId, 'the event on stdin is not valid JSON');
   }
   // Valid JSON that is not an object (a number, a string, an array) is not an event.
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {

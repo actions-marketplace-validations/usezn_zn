@@ -43,7 +43,7 @@ const path = require('path');
 const { whichSync } = require('../broker/markers');
 const { writeFileAtomic } = require('../broker/files');
 const cfg = require('./config-file');
-const { patchFiles } = require('./codex');
+const { patchScan, PATCH_SCAN_CAP } = require('./codex');
 
 const id = 'opencode';
 const PLUGIN_FILE = 'zn-gate.js';
@@ -85,10 +85,13 @@ function normalize(raw) {
   };
   if (t === 'apply_patch' || t === 'patch') {
     // Every file the patch touches is checked, as in the Codex adapter.
-    const files = patchFiles(args.patchText);
+    const tooLong = String(args.patchText || '').length > PATCH_SCAN_CAP;
+    const scan = tooLong ? { files: [], suspicious: false } : patchScan(args.patchText);
+    const files = scan.files;
     input.paths = files;
     input.path = files[0];
-    input.unparsed = files.length === 0;
+    input.tooLong = tooLong;
+    input.unparsed = !tooLong && (files.length === 0 || scan.suspicious);
   }
   if (raw.hook === 'tool.execute.before') return { ...base, event: 'pre_tool', tool, toolName: t, input };
   if (raw.hook === 'tool.execute.after') {
@@ -135,8 +138,11 @@ function pluginSource(opts = {}) {
   const launch = project ? 'const NODE = "zn";\nconst RUNNER = null;' : `const NODE = ${node};\nconst RUNNER = ${runner};`;
   const argv = project ? '["hook", "opencode"]' : '[RUNNER, "opencode"]';
   // On Windows `zn` is zn.cmd, which spawn runs only through a shell. The
-  // arguments are fixed strings, so the shell adds no input of its own.
+  // arguments are fixed strings, so the shell adds no input of its own; and
+  // cmd.exe must not look for `zn` in the current directory first (the
+  // project, where an agent can write a zn.cmd of its own).
   const shell = project ? 'process.platform === "win32"' : 'false';
+  const env = project ? '{ ...process.env, NoDefaultCurrentDirectoryInExePath: "1" }' : 'process.env';
   return `${PLUGIN_MARK} (written by \`zn hooks install opencode\`; remove with \`zn hooks uninstall opencode\`).
 // Sends tool calls, tool results and chat messages to the local zn hook runner,
 // which blocks reads of secret files, puts commands that use stored secrets
@@ -165,7 +171,7 @@ function runHook(event) {
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
     let child;
     try {
-      child = spawn(NODE, ${argv}, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true, shell: ${shell} });
+      child = spawn(NODE, ${argv}, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true, shell: ${shell}, env: ${env} });
     } catch (err) {
       finish({ action: "error", message: String(err && err.message || err) });
       return;
@@ -248,7 +254,7 @@ function install(opts = {}) {
   if (opts.mcp !== false) {
     const cli = path.resolve(__dirname, '..', '..', 'bin', 'cli.js').replace(/\\/g, '/');
     report.warnings.push('to add the "secrets" MCP server, add to opencode.json under "mcp": "secrets": ' +
-      JSON.stringify({ type: 'local', command: [(opts.nodePath || process.execPath).replace(/\\/g, '/'), cli, 'secrets-mcp'] }));
+      JSON.stringify({ type: 'local', command: [(opts.nodePath || process.execPath).replace(/\\/g, '/'), cli, 'secrets-mcp', '--agent', 'opencode'] }));
   }
   return report;
 }
