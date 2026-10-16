@@ -1,0 +1,2 @@
+### Security
+- Commands that only you may run (`zn secret set` and the other secret commands, `zn unlock`, the guided `zn-gate init`) now also refuse an AI agent that removed its environment variables: zn looks at the parent processes for the agents' command-line programs (`claude`, `codex`, `opencode`, `cursor-agent`). Editor apps such as VS Code or Cursor are not counted, so their integrated terminals keep working.

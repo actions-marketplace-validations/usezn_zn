@@ -20,11 +20,22 @@ function agentEnvDetected(env = process.env) {
   return AGENT_ENV_VARS.find((k) => env[k] !== undefined) || null;
 }
 
+/*
+ * The agent variables, then the parent processes (an agent can remove its variables, not its process).
+ * `io.ancestry` replaces the process check in tests. Returns what was detected, for the message, or null.
+ */
+function agentDetected(env = process.env, io = {}) {
+  const v = agentEnvDetected(env);
+  if (v) return v;
+  const a = (io.ancestry || require('./ancestry').agentAncestor)();
+  return a ? a + ' as a parent process' : null;
+}
+
 /** Throws unless a person is at an interactive terminal. */
 function requireHuman(what, io = {}) {
   const stdin = io.stdin || process.stdin;
   const env = io.env || process.env;
-  const agent = agentEnvDetected(env);
+  const agent = agentDetected(env, io);
   if (agent) {
     const err = new Error(what + ' must be run by you in your own terminal, not by an AI agent (detected ' + agent + ').');
     err.code = 'ZN_POLICY_DENIED';
@@ -107,4 +118,4 @@ function readClipboard() {
   throw err;
 }
 
-module.exports = { AGENT_ENV_VARS, agentEnvDetected, requireHuman, readHidden, confirm, readClipboard };
+module.exports = { AGENT_ENV_VARS, agentEnvDetected, agentDetected, requireHuman, readHidden, confirm, readClipboard };

@@ -28,7 +28,7 @@ const daemon = require('./daemon');
 const keychain = require('./keychain');
 const store = require('./store');
 const { createClient } = require('./client');
-const { agentEnvDetected } = require('../broker/tty');
+const { agentDetected } = require('../broker/tty');
 const { CODES } = require('../errors');
 
 function parseDuration(s, fallback) {
@@ -164,7 +164,7 @@ function unlockedLine(meta, s) {
 }
 
 async function unlockCmd(args) {
-  const agent = agentEnvDetected(process.env);
+  const agent = agentDetected(process.env);
   if (agent) throw new Error('zn unlock must be run by you in your own terminal, not by an AI agent (detected ' + agent + ')');
   const opts = {
     ttlMs: parseDuration(flag(args, '--ttl'), daemon.DEFAULT_TTL_MS),

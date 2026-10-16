@@ -28,7 +28,7 @@ function machine(t, agents) {
     if (a === 'codex') fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
     if (a === 'cursor') fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
   }
-  return { home, env, cwd: tempDir(t, 'zn-init-cwd-'), claude: null };
+  return { home, env, cwd: tempDir(t, 'zn-init-cwd-'), claude: null, ancestry: () => null };
 }
 
 function capture() {
