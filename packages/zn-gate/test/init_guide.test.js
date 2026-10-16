@@ -379,13 +379,13 @@ test('plan: a broken plugin next to zn hooks that do not work either repairs the
   brokenPluginIn(m.home);
   const { items, setup } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
   const cc = items.find((i) => i.id === 'claude-code');
-  assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code', 'zn-gate check', 'claude plugin disable zn-gate@usezn']);
+  assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code', 'zn-gate check (go on only if it says the hooks work)', 'claude plugin disable zn-gate@usezn']);
   assert.equal(setup.length, 0);
   // From a temporary copy, the global install comes first, then the hooks with the global zn, then the plugin off.
   const tmp = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: true, global: { npm: NPM, zn: ZN } });
   const t2 = tmp.items.find((i) => i.id === 'claude-code');
   assert.deepEqual(tmp.setup.map(line), ['npm install -g zn-gate@' + VERSION]);
-  assert.deepEqual(t2.steps.map(line), ['zn hooks install claude-code', 'zn-gate check', 'claude plugin disable zn-gate@usezn']);
+  assert.deepEqual(t2.steps.map(line), ['zn hooks install claude-code', 'zn-gate check (go on only if it says the hooks work)', 'claude plugin disable zn-gate@usezn']);
   assert.deepEqual(t2.steps[0].run, [ZN, ['hooks', 'install', 'claude-code']]);
 });
 
@@ -440,6 +440,16 @@ test('plan: zn rules that do not block .env get the zn-gate repair, never the pl
   const cc = items.find((i) => i.id === 'claude-code');
   assert.deepEqual(cc.steps.map(line), ['install zn-gate again: run `npm install -g zn-gate` in your own terminal, then run `zn-gate check` again']);
   assert.equal(cc.steps[0].run, null);
+  // Claude Code set up with zn hooks only, and a broken plugin next to broken hooks: the same single step.
+  const h = machine(t, ['claude-code']);
+  getAdapter('claude-code').install({ scope: 'user', home: h.home, env: h.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+  const b = machine(t, ['claude-code']);
+  goneNode(b);
+  brokenPluginIn(b.home);
+  for (const mm of [h, b]) {
+    const r = (await plan({ ...mm, claude: path.resolve('/opt/bin/claude'), temporary: false })).items.find((i) => i.id === 'claude-code');
+    assert.deepEqual(r.steps.map(line), cc.steps.map(line));
+  }
 });
 
 test('plan: a Claude Code setting that stops all hooks, with the plugin and zn hooks, touches neither set', async (t) => {

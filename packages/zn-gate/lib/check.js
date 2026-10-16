@@ -290,6 +290,8 @@ async function checkAgent(spec, ctx) {
     return res;
   }
   if (!res.problem && !rulesOk) {
+    // These are the rules of the copy that runs this command (with npx, its cached copy), not necessarily the
+    // installed one; reinstalling zn-gate globally is still the repair that fits most cases.
     // zn's own rules, the ones this command runs, let the read through: the zn-gate install is what needs repair,
     // whatever runs the hooks (installing the plugin again or reinstalling the hooks would not change it).
     res.problem = 'zn did not block the read of .env';
@@ -306,6 +308,14 @@ async function checkAgent(spec, ctx) {
       // The plugin does not work here. Which way out keeps the agent protected depends on zn's own hooks next to
       // it, so they are checked now, also run as Claude Code runs them, before anything is said about them.
       res.pluginBroken = true;
+      if (!rulesOk) {
+        // zn's own rules let the read through, so neither set can work until zn-gate is repaired.
+        res.problem = 'zn did not block the read of .env';
+        res.fix = RULES_FIX;
+        res.rulesFault = true;
+        res.state = 'not-protected';
+        return res;
+      }
       const why = bare(res.problem);
       const h = cliHooks(spec, ctx, userFile);
       let hooksProblem = h.problem;

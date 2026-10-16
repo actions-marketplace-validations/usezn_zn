@@ -143,7 +143,7 @@ async function plan(opts = {}) {
         // Only after the hooks are repaired and seen to work: the steps stop at the first one that is skipped or fails,
         // so the plugin is never turned off while the hooks still do not work.
         if (r.pluginBroken) {
-          item.steps.push({ label: 'check that zn\'s hooks for ' + r.name + ' work now', manual: 'zn-gate check', verify: () => hooksWorkNextToPlugin(opts, r.id) });
+          item.steps.push({ label: 'check that zn\'s hooks for ' + r.name + ' work now', manual: 'zn-gate check (go on only if it says the hooks work)', verify: () => hooksWorkNextToPlugin(opts, r.id) });
           item.steps.push(disablePlugin());
         }
       }
