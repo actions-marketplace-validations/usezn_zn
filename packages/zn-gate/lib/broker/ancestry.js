@@ -75,8 +75,9 @@ function linuxEntry(pid) {
 
 /*
  * macOS (and Linux without /proc): one `ps` call for the whole table, `pid ppid ucomm args`. `ucomm` (the
- * program's own name, one word in practice) decides even when the path in `args` has spaces; `args` is split
- * on spaces, which is enough to find the JavaScript entry points.
+ * program's own name) decides even when the path in `args` has spaces; `args` is split on spaces, which is
+ * enough to find the JavaScript entry points. A `ucomm` with spaces ("Google Chrome Helper") is cut at the first
+ * one; the agents' names (claude, codex, node, ...) are one word, so that only affects programs that never match.
  */
 function parsePs(text) {
   const table = new Map();
