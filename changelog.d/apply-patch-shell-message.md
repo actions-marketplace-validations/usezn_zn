@@ -1,0 +1,2 @@
+### Fixed
+- The agent hooks: when a command is refused because of a secret file, the message names that file (`.env`) rather than a wildcard word such as `***`, and a patch sent as a shell command (`apply_patch` in Codex) is refused with the file it writes, or with the reason (zn cannot check a patch in that form file by file) and the next step. The decision itself does not change. `POLICY_RULES_VERSION` is `2026-10-16.8`.
