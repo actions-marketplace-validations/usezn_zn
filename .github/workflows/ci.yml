@@ -1,27 +1,43 @@
 name: zn CI
 
 # Pull requests into next run the checks the rulesets require and Ubuntu with Node.js 22. The full matrix
-# (Windows and macOS, every Node.js version) runs on pushes to main and next, on pull requests into main
-# and release branches, and on any pull request labelled full-ci.
+# (every Node.js and Python version, Windows and macOS) runs on pushes to main and next, on pull requests
+# into main and release branches, and on any pull request labelled full-ci. Its only macOS job is Python 3.12.
 on:
   push:
     branches: [ main, next ]
+    # Documentation-only pushes skip this workflow. Markdown under packages/, plugins/, skill/,
+    # bench/ and .github/ still runs it (the package and plugin checks read some of it): a stricter
+    # version of the split that .github/scripts/ci-scope.sh makes for pull requests.
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      - 'packages/**'
+      - 'plugins/**'
+      - 'skill/**'
+      - 'bench/**'
+      - '.github/**'
   pull_request:
     branches: [ main, next, 'release/**' ]
-    types: [ opened, synchronize, reopened, labeled ]
+    types: [ opened, synchronize, reopened, labeled, ready_for_review ]
+    # No paths filter here: these jobs give required checks, and a workflow skipped by a
+    # paths filter leaves them pending. ci-scope.sh skips their steps for documentation instead.
 
 permissions:
   contents: read
 
-# A new push to a pull request cancels the previous run for it.
-# Runs for pushes to main and next always complete.
+# A new push to a pull request, or to next, cancels the run still going for it, so a burst of
+# merges into next tests only the newest commit. Runs for main always complete.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || (github.event_name == 'push' && github.ref == 'refs/heads/next') && 'next' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/next') }}
 
 jobs:
   test-node:
     name: Node.js ${{ matrix.node-version }} tests & benchmarks
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -67,6 +83,8 @@ jobs:
 
   test-python:
     name: Python ${{ matrix.python-version }} tests & benchmarks (${{ matrix.os }})
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -115,6 +133,8 @@ jobs:
 
   pack-node:
     name: npm package (pack, inspect, install)
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -186,6 +206,8 @@ jobs:
 
   build-python:
     name: Python package (build, twine check, install)
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

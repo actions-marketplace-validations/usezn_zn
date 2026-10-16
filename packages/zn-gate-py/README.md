@@ -14,7 +14,7 @@
 
 **For:** developers building their own agents with LangChain, CrewAI, LlamaIndex or plain Python tool calling.
 
-> **Using Claude Code, Codex CLI, Cursor or OpenCode?** This Python package does not protect them. Install the Claude Code plugin or the npm package instead: see [Install](https://github.com/usezn/zn#install).
+> **Using Claude Code, Codex CLI, Cursor or OpenCode?** This Python package does not protect them. Run `npx -y zn-gate init` in your own terminal instead (it needs Node.js 18 or later): see [Install](https://github.com/usezn/zn#install).
 
 ---
 
