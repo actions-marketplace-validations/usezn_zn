@@ -76,6 +76,7 @@ test('{minor} in a text fact follows the release line', () => {
     return fs[f];
   });
   assert.deepEqual(runWith(files), []);
+  assert.deepEqual(runWith({ ...files, 'SECURITY.md': '|  2.0.x   |\tyes |\n' }), []);
   const errs = runWith({ ...files, 'SECURITY.md': '| 1.8.x | yes |\n' });
   assert.equal(errs.length, 1);
   assert.match(errs[0], /does not say "\| 2\.0\.x \| yes \|"/);

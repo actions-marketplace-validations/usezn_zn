@@ -128,12 +128,14 @@ export function check(facts, files, read, options = {}) {
   // {minor} in a text fact is the release line of version.value (1.10.0 -> 1.10), so SECURITY.md follows each release.
   const minor = version.split('.').slice(0, 2).join('.');
   const expand = (p) => p.replaceAll('{minor}', minor);
+  // Runs of spaces and tabs compare as one space, so re-padding a Markdown table does not break a fact.
+  const ws = (x) => x.replace(/[ \t]+/g, ' ');
   for (const fact of facts.text || []) {
     for (const f of fact.files) {
       const s = text(f);
       if (s === null) continue;
-      for (const p of (fact.must || []).map(expand)) if (!s.includes(p)) errors.push(`${f}: does not say "${p}" (${fact.id})`);
-      for (const p of (fact.forbid || []).map(expand)) if (s.includes(p)) errors.push(`${f}: says "${p}" (${fact.id})`);
+      for (const p of (fact.must || []).map(expand)) if (!ws(s).includes(ws(p))) errors.push(`${f}: does not say "${p}" (${fact.id})`);
+      for (const p of (fact.forbid || []).map(expand)) if (ws(s).includes(ws(p))) errors.push(`${f}: says "${p}" (${fact.id})`);
     }
   }
 
