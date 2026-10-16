@@ -32,7 +32,7 @@ inputs:
     required: false
     default: '.'
   fail-on-threat:
-    description: 'Whether to fail the CI step if any threat is detected (true/false). For audit, true fails on findings at or above `severity-threshold` (high by default); false reports only, unless `fail-on` is set.'
+    description: 'Whether to fail the CI step if any threat is detected (true/false). For audit, true fails on findings at or above `severity-threshold` (high by default); false reports only, unless `fail-on` is set. true or false, in any case; other values fail the step.'
     required: false
     default: 'true'
   severity-threshold:
@@ -93,7 +93,7 @@ runs:
         pre=${BASH_REMATCH[5]}; pren=${BASH_REMATCH[6]}
         case "$ZN_MODE" in scan|audit|both) ;; *) fail "'mode' must be scan, audit or both" ;; esac
         case "$ZN_FORMAT" in github|text|json|sarif) ;; *) fail "'format' must be github, text, json or sarif" ;; esac
-        case "$ZN_FAIL_ON_THREAT" in true|false) ;; *) fail "'fail-on-threat' must be true or false" ;; esac
+        case "$(printf '%s' "$ZN_FAIL_ON_THREAT" | tr '[:upper:]' '[:lower:]')" in true|false) ;; *) fail "'fail-on-threat' must be true or false" ;; esac
         case "$ZN_FAIL_ON" in ''|low|medium|high|critical|none) ;; *) fail "'fail-on' must be low, medium, high, critical or none" ;; esac
         case "$ZN_SEVERITY_THRESHOLD" in critical|high|medium|low) ;; *) fail "'severity-threshold' must be critical, high, medium or low" ;; esac
         [[ "$ZN_AGENTS" =~ ^[a-z0-9,-]*$ ]] || fail "'agents' must be a comma-separated list of agent names"
@@ -391,7 +391,7 @@ runs:
         if [ "$ZN_RUN_SCAN" = true ]; then
           echo "::group::zn-gate scan"
           scan_args=(scan)
-          if [ "$ZN_FAIL_ON_THREAT" = "false" ]; then scan_args+=(--no-fail); fi
+          if [ "$(printf '%s' "$ZN_FAIL_ON_THREAT" | tr '[:upper:]' '[:lower:]')" = "false" ]; then scan_args+=(--no-fail); fi
           # -I keeps files in the scanned workspace off the import path; -X utf8
           # lets the text report print on runners whose console code page is not
           # UTF-8 (Windows).
@@ -412,7 +412,7 @@ runs:
           # Precedence: fail-on, then fail-on-threat false (none), then severity-threshold.
           fail_on="$ZN_FAIL_ON"
           if [ -z "$fail_on" ]; then
-            if [ "$ZN_FAIL_ON_THREAT" = "false" ]; then fail_on=none; else fail_on="$ZN_SEVERITY_THRESHOLD"; fi
+            if [ "$(printf '%s' "$ZN_FAIL_ON_THREAT" | tr '[:upper:]' '[:lower:]')" = "false" ]; then fail_on=none; else fail_on="$ZN_SEVERITY_THRESHOLD"; fi
           fi
           # zn audit takes the path first; keep a path that starts with "-" from
           # being read as an option.

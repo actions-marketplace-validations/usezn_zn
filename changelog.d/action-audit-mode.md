@@ -4,4 +4,4 @@
 
 ### Changed
 - GitHub Action: the default `version` is now 1.9.0.
-- GitHub Action: `fail-on-threat` must be `true` or `false`; any other value now fails the step instead of being read as `true`.
+- GitHub Action: `fail-on-threat` must be `true` or `false`, in any case (`True` and `FALSE` still work); any other value now fails the step instead of being read as `true`.
