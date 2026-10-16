@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- The Python source distribution is reproducible: two builds of the same commit give the same file, byte for byte, as the wheel and the npm tarball already did. The CI and the release workflow build it twice and fail if the two differ.
+- The Python source distribution is now reproducible: two builds of the same commit with the same build tools give the same file, byte for byte, as the wheel and the npm tarball already did. CI and the release workflow build it twice and fail if the two differ.
 
 ## [1.9.0] - 2026-10-16
 

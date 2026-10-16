@@ -4,7 +4,7 @@
 setuptools stamps the files it generates (PKG-INFO, setup.cfg, *.egg-info) and their folders with the
 build time, and gzip stores the time it wrote the archive. This keeps every name and every byte of
 content and only sets: member order by name, mtime = SOURCE_DATE_EPOCH, owner 0/0 with no names,
-mode 0644 for files and 0755 for folders, and a gzip header with no time and no file name.
+mode 0755 for folders and executable files and 0644 for the others, and a gzip header with no time and no file name.
 
 Usage: normalize-sdist.py <sdist.tar.gz> [...]   (SOURCE_DATE_EPOCH must be set)
 """
@@ -32,7 +32,8 @@ def normalize(path: str, epoch: int) -> None:
             info.mtime = epoch
             info.uid = info.gid = 0
             info.uname = info.gname = ""
-            info.mode = 0o755 if m.isdir() else 0o644
+            # Keep the execute bit of a file that has one (git only knows 644 and 755).
+            info.mode = 0o755 if m.isdir() or (m.mode & 0o111) else 0o644
             if m.isfile():
                 info.size = len(data)
                 out.addfile(info, io.BytesIO(data))
