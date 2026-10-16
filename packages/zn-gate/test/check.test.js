@@ -68,13 +68,51 @@ test('check: every agent installed for the user blocks .env and allows an ordina
   assert.match(s, /zn env shadow \.env/);
 });
 
-test('check: no setup at all is a failure, with the command for each agent', async (t) => {
+/* A PATH with only a stand-in `zn` (or nothing), so what is found does not depend on the machine running the tests. */
+function binDir(t, withZn) {
+  const bin = tempDir(t, 'zn-check-bin-');
+  if (withZn) for (const f of ['zn', 'zn.cmd']) fs.writeFileSync(path.join(bin, f), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  return bin;
+}
+
+test('check: no setup at all is a failure, with the command for each agent found', async (t) => {
   const home = tempDir(t, 'zn-check-empty-');
-  const res = await check({ home, env: { HOME: home, PATH: process.env.PATH }, cwd: home });
+  fs.mkdirSync(path.join(home, '.claude'));
+  fs.mkdirSync(path.join(home, '.codex'));
+  const res = await check({ home, env: { HOME: home, PATH: binDir(t, true) }, cwd: home });
   const { s, code } = textOf(res);
   assert.equal(code, 1);
   assert.match(s, /Codex CLI\s+zn is not set up for this agent\. To protect it, run `zn hooks install codex` in your own terminal/);
   assert.match(s, /claude plugin install zn-gate@usezn/);
+  assert.match(s, /Cursor\s+not found on this machine\n/);
+  assert.match(s, /To set it up, run `npx -y zn-gate init` in your own terminal/);
+});
+
+test('check: without a `zn` command (npx only), the setup starts with a global install', async (t) => {
+  const home = tempDir(t, 'zn-check-npx-');
+  fs.mkdirSync(path.join(home, '.codex'));
+  const res = await check({ home, env: { HOME: home, PATH: binDir(t, false) }, cwd: home });
+  assert.equal(byId(res, 'codex').fix, 'run `npm install -g zn-gate`, then `zn hooks install codex`, in your own terminal');
+  const { s } = textOf(res);
+  assert.match(s, /Claude Code\s+not found on this machine\n/);
+});
+
+test('check: no agent on the machine says so and offers no setup', async (t) => {
+  const home = tempDir(t, 'zn-check-none-');
+  const res = await check({ home, env: { HOME: home, PATH: binDir(t, false) }, cwd: home });
+  const { s, code } = textOf(res);
+  assert.equal(code, 1);
+  assert.match(s, /No supported coding agent was found on this machine/);
+  assert.doesNotMatch(s, /zn hooks install|plugin install/);
+});
+
+test('check: an agent found but not set up is named after the protected ones, with the same exit code', async (t) => {
+  const ctx = homeWithHooks(t, ['codex']);
+  fs.mkdirSync(path.join(ctx.home, '.claude'), { recursive: true });
+  const res = await check({ ...ctx, env: { ...ctx.env, PATH: binDir(t, true) } });
+  const { s, code } = textOf(res);
+  assert.equal(code, 0);
+  assert.match(s, /Not set up yet: Claude Code\. To add it, run `npx -y zn-gate init`/);
 });
 
 test('check: a hook whose Node.js is gone is not protected', async (t) => {
