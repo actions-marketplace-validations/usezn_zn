@@ -243,7 +243,7 @@ jobs:
         id: both
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: both
           path: .github/action-selftest/agent-config
           fail-on: none
@@ -252,7 +252,7 @@ jobs:
       - name: fail-on overrides severity-threshold
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           path: .github/action-selftest/agent-config
           severity-threshold: 'low'
@@ -262,7 +262,7 @@ jobs:
       - name: fail-on-threat false overrides severity-threshold
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           path: .github/action-selftest/agent-config
           severity-threshold: 'low'
@@ -273,7 +273,7 @@ jobs:
         id: filepath
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: both
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           fail-on-threat: 'false'
@@ -284,7 +284,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           format: text
@@ -294,21 +294,21 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           npm-integrity: 'sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=='
           path: .github/action-selftest/agent-config
           fail-on: none
           format: text
 
-      # dist.integrity of zn-gate@1.9.0 on npm (npm view zn-gate@1.9.0 dist.integrity).
+      # dist.integrity of zn-gate@1.10.0 on npm (npm view zn-gate@1.10.0 dist.integrity).
       - name: Matching npm-integrity installs
         id: goodintegrity
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
-          npm-integrity: 'sha512-Jlvgg32fbMqifMs+Qfi9KwJoXdPICh3cNJWbUM6V7nEbktDAh/J6plTfD1npmiwR5kgvm18vrO0+A2GcaLExjA=='
+          npm-integrity: 'sha512-AbaLhuUSgxJeGzF188fU/EbqdgtQltR0+3fkc5kEb01vbohSr/w2eNhWqhFlMyBGk43AhQa4Rq9axVqdvH+zOg=='
           path: .github/action-selftest/agent-config
           fail-on: none
           format: text
@@ -337,7 +337,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: scan
           path: .github/action-selftest/clean
           format: sarif
@@ -348,7 +348,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: scan
           path: .github/action-selftest/clean
           format: sarif
@@ -359,7 +359,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: scan
           path: .github/action-selftest/clean
           format: sarif
@@ -369,7 +369,7 @@ jobs:
         id: sarifnested
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: both
           path: .github/action-selftest/agent-config
           fail-on: none
