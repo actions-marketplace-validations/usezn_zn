@@ -626,11 +626,18 @@ mod tests {
         format!("{}:{}", t.role.as_str(), t.namespace)
     }
 
+    /// The same server's SSE route, where a query-string credential is accepted.
+    fn sse(url: &str) -> String {
+        url.replace("/whoami", "/api/v1/events")
+    }
+
     /// Serves `/whoami` behind the auth middleware with `config` (or without
     /// the AuthConfig extension when None) and returns its URL.
     async fn serve_config(config: Option<AuthConfig>) -> String {
+        // `/api/v1/events` is one of the routes that accept a credential in the query string.
         let app = Router::new()
             .route("/whoami", get(whoami))
+            .route("/api/v1/events", get(whoami))
             .layer(axum::middleware::from_fn(api_key_auth));
         let app = match config {
             Some(c) => app.layer(Extension(Arc::new(c))),
@@ -718,8 +725,13 @@ mod tests {
             call(&url, Some(("X-API-Key", TENANT_KEY.to_string()))).await,
             (200, "user:acme".to_string())
         );
+        // A credential in the query string counts only on the SSE and WebSocket routes.
         assert_eq!(
-            call(&format!("{url}?token={TENANT_KEY}"), None).await,
+            call(&format!("{url}?token={TENANT_KEY}"), None).await.0,
+            401
+        );
+        assert_eq!(
+            call(&format!("{}?token={TENANT_KEY}", sse(&url)), None).await,
             (200, "user:acme".to_string())
         );
         let viewer = token(Some(vec!["viewer"]), Some("acme"), now() + 600);
@@ -751,8 +763,8 @@ mod tests {
         let url = serve_config(Some(config)).await;
         assert_eq!(call(&url, Some(("X-API-Key", String::new()))).await.0, 401);
         assert_eq!(call(&url, bearer("")).await.0, 401);
-        assert_eq!(call(&format!("{url}?api_key="), None).await.0, 401);
-        assert_eq!(call(&format!("{url}?token="), None).await.0, 401);
+        assert_eq!(call(&format!("{}?api_key=", sse(&url)), None).await.0, 401);
+        assert_eq!(call(&format!("{}?token=", sse(&url)), None).await.0, 401);
 
         // The same with a blank legacy key and blank tokens: a query value can
         // carry spaces once percent-decoded.
@@ -762,8 +774,13 @@ mod tests {
             tenant_store: None,
         };
         let url = serve_config(Some(config)).await;
-        assert_eq!(call(&format!("{url}?api_key=%20%20%20"), None).await.0, 401);
-        assert_eq!(call(&format!("{url}?token=%09"), None).await.0, 401);
+        assert_eq!(
+            call(&format!("{}?api_key=%20%20%20", sse(&url)), None)
+                .await
+                .0,
+            401
+        );
+        assert_eq!(call(&format!("{}?token=%09", sse(&url)), None).await.0, 401);
         assert_eq!(call(&url, bearer("   ")).await.0, 401);
     }
 
@@ -782,13 +799,16 @@ mod tests {
         }
         assert_eq!(
             call(
-                &format!("{url}?api_key=enc%2Bkey%2Ffor%3Dunit-tests-only"),
+                &format!("{}?api_key=enc%2Bkey%2Ffor%3Dunit-tests-only", sse(&url)),
                 None
             )
             .await,
             (200, "user:enc".to_string())
         );
-        assert_eq!(call(&format!("{url}?api_key=%zz"), None).await.0, 401);
+        assert_eq!(
+            call(&format!("{}?api_key=%zz", sse(&url)), None).await.0,
+            401
+        );
     }
 
     #[tokio::test]
