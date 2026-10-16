@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-16
+
+zn-gate 1.10.0 adds an audit mode with SARIF output to the GitHub Action, makes the commands that only you may run harder for an AI agent to start, gives the right repair in `zn-gate check` and `zn-gate init` when the zn-gate plugin is broken next to zn's own hooks, and checks long shell commands much faster. Update with `npm install -g zn-gate@1.10.0` and `pip install -U zn-gate`.
+
+**If you run `zn unlock` from a script with the system keychain:** it now needs an interactive terminal (`--passphrase-stdin` with the passphrase backend still works from a pipe). **If you scan docker-compose files or `.env.example`:** database URLs whose password is only a reference such as `${PGPASSWORD}` are no longer reported.
+
+### Added
+- GitHub Action: `mode` input (`scan`, `audit`, `both`; default `scan`). `audit` runs `zn audit` from the npm package on agent configs, hooks, MCP servers, plugins and skills; `both` runs the scan and the audit, and runs the scan only, with a warning, when `version` is older than 1.6.0 or is a PyPI-only `.post` version. `mode: scan` keeps the previous behaviour.
+- GitHub Action: `format: sarif` writes a SARIF file with one run per check and exposes it as the `sarif-file` output, for `github/codeql-action/upload-sarif`. New inputs `severity-threshold` (`critical`, `high`, `medium` or `low`; default `high`: the lowest audit severity that fails the step when `fail-on-threat` is `true`), `fail-on` (passed to `zn audit --fail-on`; overrides `fail-on-threat` and `severity-threshold` for the audit), `agents`, `sarif-file` (inside the workspace or the runner temp directory, never through a symbolic link) and `npm-integrity`; new outputs `audit-exit-code` and `sarif-file`.
+
+### Changed
+- GitHub Action: the default `version` is now 1.9.0.
+- GitHub Action: `fail-on-threat` must be `true` or `false`, in any case (`True` and `FALSE` still work); any other value now fails the step instead of being read as `true`.
+- Contributors: a pull request describes its change in a `changelog.d/` fragment instead of editing `CHANGELOG.md`, and the release collects the fragments into its section. A new `Changelog` check asks for a fragment when a pull request changes what ships.
+
+### Fixed
+- The agent hooks check a long shell command faster: each word is looked up once per command, so a command of 80 KB that repeats its words takes well under a second instead of several seconds. A hook that runs out of time lets the command go ahead unchecked, so this also keeps long commands checked. `POLICY_RULES_VERSION` is `2026-10-16.6`.
+- `zn-gate check` and `zn-gate init`: when both the zn-gate plugin and the hooks of `zn hooks install claude-code` are set up and the plugin does not work (for example on a Node.js the plugin does not support), they now check those hooks too, and run them the way Claude Code does. If the hooks work, the fix is to turn the plugin off with `claude plugin disable zn-gate@usezn`, which keeps them, instead of removing the hooks. If the hooks do not work either, the hooks are repaired first (`npm install -g zn-gate`, then `zn hooks install claude-code`) and only then is the plugin turned off, so the plugin is turned off only after the hooks are repaired. A Claude Code setting that stops all hooks (`disableAllHooks`, managed settings) is reported as such, and neither the plugin nor the hooks are touched.
+- `zn-gate check` and `zn-gate init`: when zn's own rules do not block the test `.env` file, the fix is now to install zn-gate again (`npm install -g zn-gate`), also with the zn-gate plugin; before, they asked to install the plugin that was already installed.
+- `zn-gate init`: with a broken plugin next to zn's own hooks that do not work either, it now checks that the repaired hooks work before it turns the plugin off, and leaves the plugin on when they still do not.
+- A database URL whose password is only a reference to a name (`postgres://${PGUSER}:${PGPASSWORD}@db/app`, `$PASS`, `%PASS%`, `<password>`, `{{ password }}`; `${name}` may also be lower case) is no longer reported or redacted as a secret, in Node.js and Python alike. Anything else is still a password, including a lower-case `$word` or `%word%` and digits inside `<>` or `{{ }}`. `RULES_VERSION` is `2026-10-16.6`.
+
+### Security
+- Commands that only you may run (`zn secret set` and the other secret commands, `zn unlock`, the guided `zn-gate init`) now also check the parent processes for the AI agents' command-line programs (`claude`, `codex`, `opencode`, `cursor-agent`), which makes it harder for an agent that removed its environment variables to run them. It is not a guarantee: a process can detach from its parent, and the hook that denies these commands to agents stays the main guard. Editor apps such as VS Code or Cursor are not counted, so their integrated terminals keep working.
+- `zn unlock` with the system keychain now needs an interactive terminal, since that unlock asks nothing. `--passphrase-stdin` still works from a pipe.
+
 ## [1.9.1] - 2026-10-16
 
 zn-gate 1.9.1 finds more kinds of secrets with `zn-gate scan` and says what to do about each one, gives repairs that work in `zn-gate check` and `zn-gate init` (also after a Node.js version is removed), and closes ways an AI agent could start the guided `zn-gate init`. It also stops clearly on Node.js older than 18. Update with `npm install -g zn-gate@1.9.1` and `pip install -U zn-gate`.
@@ -454,7 +480,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.9.1...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.10.0...next
+[1.10.0]: https://github.com/usezn/zn/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/usezn/zn/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/usezn/zn/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/usezn/zn/compare/v1.8.1...v1.8.2

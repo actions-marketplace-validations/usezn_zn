@@ -1,3 +1,0 @@
-### Security
-- Commands that only you may run (`zn secret set` and the other secret commands, `zn unlock`, the guided `zn-gate init`) now also check the parent processes for the AI agents' command-line programs (`claude`, `codex`, `opencode`, `cursor-agent`), which makes it harder for an agent that removed its environment variables to run them. It is not a guarantee: a process can detach from its parent, and the hook that denies these commands to agents stays the main guard. Editor apps such as VS Code or Cursor are not counted, so their integrated terminals keep working.
-- `zn unlock` with the system keychain now needs an interactive terminal, since that unlock asks nothing. `--passphrase-stdin` still works from a pipe.
