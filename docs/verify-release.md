@@ -18,7 +18,7 @@ Each release has:
 | `SHA256SUMS` | SHA-256 checksums of the three files above |
 | `<file>.sigstore.json` | Sigstore bundle (signature, certificate and transparency log proof) for each file, including `SHA256SUMS` |
 
-Every file also has a GitHub artifact attestation (SLSA build provenance),
+Every file also has a GitHub artifact attestation (SLSA build provenance, Build Level 2: built on a GitHub-hosted runner),
 npm shows a provenance statement for the package, and PyPI stores an
 attestation for each Python file.
 
