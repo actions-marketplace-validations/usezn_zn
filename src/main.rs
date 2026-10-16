@@ -77,7 +77,13 @@ const MAX_AGENT_ID_CHARS: usize = 128;
 
 fn bounded_agent_id(agent_id: Option<&str>) -> String {
     match agent_id {
-        Some(a) if !a.is_empty() => a.chars().take(MAX_AGENT_ID_CHARS).collect(),
+        // Control characters (the reputation key separator among them) become '?', so the key stays
+        // unambiguous: namespaces cannot contain them either.
+        Some(a) if !a.is_empty() => a
+            .chars()
+            .take(MAX_AGENT_ID_CHARS)
+            .map(|c| if c.is_control() { '?' } else { c })
+            .collect(),
         _ => "anonymous".to_string(),
     }
 }
@@ -2222,11 +2228,10 @@ mod gateway_hardening_tests {
             reputation_key("tenant-a", "anonymous"),
             reputation_key("tenant-b", "anonymous")
         );
-        // The separator cannot be forged with a namespace that ends like an agent id.
-        assert_ne!(
-            reputation_key("a", "b\u{1f}c"),
-            reputation_key("a\u{1f}b", "c")
-        );
+        // An agent id cannot carry the key separator, so (namespace, agent id) gives one key only.
+        let key = reputation_key("a", &bounded_agent_id(Some("b\u{1f}c")));
+        assert_eq!(key.matches('\u{1f}').count(), 1);
+        assert_eq!(bounded_agent_id(Some("x\ny")), "x?y");
     }
 
     #[test]
