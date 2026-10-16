@@ -255,13 +255,13 @@ fn strip_bearer(value: &str) -> &str {
     }
 }
 
-/// Value of the first `api_key` or `token` query parameter, percent-decoded.
-/// A malformed value yields no token.
 /// Routes that accept a key or token in the query string: the SSE events stream and the MCP WebSocket.
 fn query_token_allowed(path: &str) -> bool {
     matches!(path, "/api/v1/events" | "/mcp/ws")
 }
 
+/// Value of the first `api_key` or `token` query parameter, percent-decoded.
+/// A malformed value yields no token.
 fn query_token(query: &str) -> Option<String> {
     query
         .split('&')

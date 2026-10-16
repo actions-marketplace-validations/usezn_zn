@@ -72,8 +72,6 @@ mod jsonrpc_error {
     pub const POLICY_DENIED: i32 = -32000; // Server error range
 }
 
-/// Result of validating a JSON-RPC request
-#[derive(Debug)]
 /// Longest agent id kept from a message; longer ids are cut (the id is a label, not an identity).
 const MAX_AGENT_ID_CHARS: usize = 128;
 
@@ -89,27 +87,37 @@ fn reputation_key(namespace: &str, agent_id: &str) -> String {
     format!("{}\u{1f}{}", namespace, agent_id)
 }
 
-/// The JSON-RPC frame with its tool arguments replaced by `arguments` (a JSON text), in the same place
-/// validate_jsonrpc took them from: params.arguments, params.args or params.input, or the whole params
-/// (A2A). None if either side does not parse.
-fn with_arguments(frame: &str, arguments: &str) -> Option<String> {
+/// Where validate_jsonrpc took the tool arguments from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ArgSource {
+    /// `params.<key>` of a tools/call (`arguments`, `args` or `input`).
+    Key(&'static str),
+    /// No arguments in the frame (checked as `{}`).
+    Missing,
+    /// The whole `params` (A2A methods).
+    WholeParams,
+}
+
+/// The JSON-RPC frame with its tool arguments replaced by `arguments` (a JSON text), in exactly the place
+/// validate_jsonrpc took them from. None if either side does not parse or that place is not there.
+/// serde_json does not keep key order, so the rebuilt frame may list keys in another order.
+fn with_arguments(frame: &str, arguments: &str, source: ArgSource) -> Option<String> {
     let mut v: serde_json::Value = serde_json::from_str(frame).ok()?;
     let new_args: serde_json::Value = serde_json::from_str(arguments).ok()?;
     let params = v.get_mut("params")?;
-    let key = ["arguments", "args", "input"]
-        .into_iter()
-        .find(|k| params.get(*k).is_some());
-    match key {
-        Some(k) => {
+    match source {
+        ArgSource::Key(k) => {
+            params.get(k)?;
             params[k] = new_args;
         }
-        None => {
-            *params = new_args;
-        }
+        ArgSource::WholeParams => *params = new_args,
+        ArgSource::Missing => return None,
     }
     serde_json::to_string(&v).ok()
 }
 
+/// Result of validating a JSON-RPC request
+#[derive(Debug)]
 enum JsonRpcValidation {
     /// Valid tool call with extracted name and arguments
     ToolCall {
@@ -117,6 +125,7 @@ enum JsonRpcValidation {
         tool_name: String,
         arguments: String,
         agent_id: Option<String>,
+        source: ArgSource,
     },
     /// Valid JSON-RPC but not a tool call - pass through
     PassThrough,
@@ -204,18 +213,22 @@ fn validate_jsonrpc(json_str: &str) -> JsonRpcValidation {
         };
 
         // Extract arguments as JSON string
-        let arguments = params
-            .get("arguments")
-            .or_else(|| params.get("args"))
-            .or_else(|| params.get("input"))
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "{}".to_string());
+        let source = ["arguments", "args", "input"]
+            .into_iter()
+            .find(|k| params.get(*k).is_some())
+            .map(ArgSource::Key)
+            .unwrap_or(ArgSource::Missing);
+        let arguments = match source {
+            ArgSource::Key(k) => params[k].to_string(),
+            _ => "{}".to_string(),
+        };
 
         return JsonRpcValidation::ToolCall {
             id: request.id,
             tool_name,
             arguments,
             agent_id: request.agent_id,
+            source,
         };
     } else if zn::a2a::is_a2a_method(&request.method) {
         // A2A Protocol Handler - Full Parity
@@ -235,6 +248,7 @@ fn validate_jsonrpc(json_str: &str) -> JsonRpcValidation {
             tool_name: virt_tool_name,
             arguments,
             agent_id: request.agent_id,
+            source: ArgSource::WholeParams,
         };
     }
 
@@ -1060,6 +1074,7 @@ async fn process_mcp_message(
             tool_name,
             arguments,
             agent_id,
+            source,
         } => {
             // Default to "anonymous" if no agent_id provided. The id comes from the message, so it is bounded
             // and never an identity: the reputation (bans, violations) is kept per namespace, so one tenant can
@@ -1300,11 +1315,9 @@ async fn process_mcp_message(
                 // If Neural vetoed, it's a hard DENIED.
                 // Otherwise, we fallback to the deterministic WASM/Static Engine.
                 if neural_veto {
-                    state.reputation.record_violation(
-                        &agent_id_str,
-                        "Neural Anomaly Detection",
-                        10,
-                    );
+                    state
+                        .reputation
+                        .record_violation(&rep_key, "Neural Anomaly Detection", 10);
                     ("DENIED".to_string(), Some("neural_engine".to_string()))
                 } else {
                     match state
@@ -1401,7 +1414,7 @@ async fn process_mcp_message(
                 }
                 // The vision guard changed the arguments: forward what it checked and what the audit vault
                 // stored, never the original images. A frame that cannot be rebuilt is refused.
-                match with_arguments(&scrubbed_line, &arguments) {
+                match with_arguments(&scrubbed_line, &arguments, source) {
                     Some(frame) => Ok(Some(frame)),
                     None => Ok(Some(jsonrpc_error_response(
                         id,
@@ -1824,8 +1837,17 @@ async fn tenants_list_handler(
 /// Reputation endpoint - returns scoring data
 async fn reputation_handler(
     State(state): State<AppState>,
+    tenant: Option<Extension<TenantContext>>,
 ) -> axum::response::Json<serde_json::Value> {
-    let scores = state.reputation.all_scores();
+    let mut scores = state.reputation.all_scores();
+    // Scores are keyed by namespace and agent id: a tenant sees its own namespace only (the super-admin, and a
+    // gateway without authentication, see all).
+    if let Some(Extension(t)) = tenant {
+        if !t.is_super_admin() {
+            let prefix = format!("{}\u{1f}", t.namespace);
+            scores.retain(|k, _| k.starts_with(&prefix));
+        }
+    }
     axum::response::Json(serde_json::json!({
         "status": "ok",
         "scores": scores
@@ -2182,7 +2204,11 @@ mod fusion_wiring_tests {
 
 #[cfg(test)]
 mod gateway_hardening_tests {
-    use super::{bounded_agent_id, reputation_key, with_arguments, MAX_AGENT_ID_CHARS};
+    use super::{bounded_agent_id, reputation_key, with_arguments, ArgSource, MAX_AGENT_ID_CHARS};
+
+    fn parsed(s: Option<String>) -> serde_json::Value {
+        serde_json::from_str(&s.expect("rebuilt frame")).expect("valid JSON")
+    }
 
     #[test]
     fn agent_ids_are_bounded_and_reputation_is_per_namespace() {
@@ -2206,21 +2232,34 @@ mod gateway_hardening_tests {
     #[test]
     fn sanitized_arguments_replace_the_originals_in_the_forwarded_frame() {
         let frame = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"img":"RAW"}}}"#;
-        let out = with_arguments(frame, r#"{"img":"CLEAN"}"#).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let v = parsed(with_arguments(
+            frame,
+            r#"{"img":"CLEAN"}"#,
+            ArgSource::Key("arguments"),
+        ));
         assert_eq!(v["params"]["arguments"]["img"], "CLEAN");
         assert_eq!(v["params"]["name"], "t");
         assert_eq!(v["id"], 1);
         let args_frame = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"t","args":{"x":"RAW"}}}"#;
-        let v: serde_json::Value =
-            serde_json::from_str(&with_arguments(args_frame, r#"{"x":"CLEAN"}"#).unwrap()).unwrap();
+        let v = parsed(with_arguments(
+            args_frame,
+            r#"{"x":"CLEAN"}"#,
+            ArgSource::Key("args"),
+        ));
         assert_eq!(v["params"]["args"]["x"], "CLEAN");
-        // A2A: the whole params were the arguments.
-        let a2a = r#"{"jsonrpc":"2.0","id":3,"method":"tasks/send","params":{"message":"RAW"}}"#;
-        let v: serde_json::Value =
-            serde_json::from_str(&with_arguments(a2a, r#"{"message":"CLEAN"}"#).unwrap()).unwrap();
+        // A2A: the whole params were the arguments, also when they have an "input" key.
+        let a2a = r#"{"jsonrpc":"2.0","id":3,"method":"tasks/send","params":{"message":"RAW","input":"x"}}"#;
+        let v = parsed(with_arguments(
+            a2a,
+            r#"{"message":"CLEAN","input":"x"}"#,
+            ArgSource::WholeParams,
+        ));
         assert_eq!(v["params"]["message"], "CLEAN");
-        assert!(with_arguments("not json", "{}").is_none());
-        assert!(with_arguments(frame, "not json").is_none());
+        assert_eq!(v["params"]["input"], "x");
+        assert!(with_arguments("not json", "{}", ArgSource::WholeParams).is_none());
+        assert!(with_arguments(frame, "not json", ArgSource::Key("arguments")).is_none());
+        // The place the arguments came from must still be there; no arguments: nothing to rebuild.
+        assert!(with_arguments(frame, "{}", ArgSource::Key("input")).is_none());
+        assert!(with_arguments(frame, "{}", ArgSource::Missing).is_none());
     }
 }
