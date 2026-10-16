@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- With Node.js older than 18, the `zn-gate` and `zn` commands you run stop with a short message that names the version and how to install Node.js 18 or later (exit code 1). Hooks, MCP servers and the `zn run` commands that zn's hooks write keep running and print a warning, so a check that works today is not turned off. Node.js 16 and 17 were never supported; some commands happened to run on them.
+- The Python `zn-gate` says that commands such as `hooks`, `init`, `check` and `unlock` are in the npm package and gives `npx -y zn-gate init`, instead of argparse's "invalid choice" error.
+
 ## [1.9.0] - 2026-10-16
 
 zn-gate 1.9.0 makes `npx -y zn-gate init` the one command that sets up zn for the coding agents on your machine, and adds `zn-gate check` to show that zn stops your agent from reading a secret. Block messages for commands only you may run now give the exact command. Update with `npm install -g zn-gate@1.9.0`; the Python package has no code changes and moves to 1.9.0 to keep the versions in step.
