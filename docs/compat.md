@@ -40,6 +40,14 @@ limit applies to a patch (`apply_patch`) in Codex and OpenCode.
     result.
   - Codex's own session log keeps the original output.
   - Hooks are a guardrail, not an enforcement boundary (Codex's own words).
+  - Checked with Codex CLI 0.163.0 on 2026-10-16: the shell tool (`exec_command`
+    inside Codex) reaches hooks as `tool_name: "Bash"`, with the command in
+    `tool_input.command`. zn's `PreToolUse` hook blocked `cat .env` and allowed
+    an ordinary file, and `PostToolUse` and `UserPromptSubmit` ran as expected.
+    New or changed hooks run only after you trust them in `/hooks`
+    (`codex exec --dangerously-bypass-hook-trust` skips that for one run, for
+    automation that already checks its hooks). `apply_patch` was not part of
+    that run.
 - **Cursor** (best effort: its hook documentation leaves the input of some
   tools open, and zn fails closed where it cannot read a path):
   - `beforeReadFile` can only allow or deny. zn sets `failClosed: true` on it
