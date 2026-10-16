@@ -122,6 +122,20 @@ A teammate who clones the project without zn on PATH gets no checks from these
 files: the hook command fails, and in Claude Code and Codex the call goes ahead.
 Install zn on every machine that runs the agent.
 
+## If your agent blocks every prompt
+
+When zn's hook cannot run, Claude Code (with the zn-gate plugin or `zn hooks install`), Cursor and OpenCode block
+prompts instead of letting them through unchecked (see the table above). This usually happens after Node.js is
+upgraded, moved or removed (for example with nvm), because the hook command points to the old one. Codex CLI lets
+prompts through in that case. To fix it, in your own terminal:
+
+1. Run `npx -y zn-gate check`. It names each agent that is not protected and the command that fixes it.
+2. Usually that is `npm install -g zn-gate`, then `zn hooks install <agent>`. With the zn-gate plugin for Claude Code,
+   start a new Claude Code session after fixing Node.js.
+3. If you need your agent right away, turn zn off for it until you have fixed it: `zn hooks uninstall <agent>`, or
+   `claude plugin disable zn-gate@usezn` for the plugin. Turn it back on with `zn hooks install <agent>` or
+   `claude plugin enable zn-gate@usezn`, then run `zn-gate check` again.
+
 ## Limits that apply to every agent
 
 - **An event zn cannot read is refused.** Empty stdin, or stdin that is not
