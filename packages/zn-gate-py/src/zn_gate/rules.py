@@ -1,6 +1,6 @@
 """
 zn deterministic rules engine - Python stdlib implementation.
-RULES_VERSION: 2026-10-16.8
+RULES_VERSION: 2026-10-16.10
 Zero external dependencies. Pure Python stdlib.
 """
 
@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-10-16.8"
+RULES_VERSION = "2026-10-16.10"
 
 # Word boundaries are written as explicit ASCII lookarounds, not \b: Python's \b
 # is Unicode, JavaScript's is ASCII-only. Same patterns as rules.js.
@@ -876,6 +876,12 @@ def _pv_placeholder(s: str) -> bool:
     return bool(re.fullmatch(r'(.)\1+', s) or _PV_PLACEHOLDER_SEQ.match(s))
 
 
+def _pv_prefixed(v: str, prefix: str) -> bool:
+    """patterns.js prefixedRandom: the body after the prefix looks random and is not a placeholder."""
+    body = re.sub(prefix, '', v, count=1)
+    return not _pv_placeholder(body) and _pv_random(body, 2, 3.0)
+
+
 def _pv_hf_check(v: str) -> bool:
     # Letters-only bodies are exactly 34 characters; CamelCase identifiers do not count.
     body = v[3:]
@@ -946,6 +952,31 @@ PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
      "[REDACTED_SQUARE_TOKEN]"),
     ("secret:discord_bot_token", re.compile(_TB + r'[MNO][A-Za-z0-9_-]{22,26}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}' + _TA),
      "[REDACTED_DISCORD_BOT_TOKEN]"),
+    # Provider formats from gitleaks v8.30.1 (MIT License, Copyright (c) 2019 Zachary Rice; notice at the end of this file).
+    ("secret:onepassword_sa_token", re.compile(_TB + r'ops_eyJ[A-Za-z0-9+/]{250,}={0,3}' + _TA), "[REDACTED_ONEPASSWORD_SA_TOKEN]"),
+    ("secret:age_secret_key", re.compile(_TB + r'AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}' + _TA), "[REDACTED_AGE_SECRET_KEY]"),
+    ("secret:alibaba_key_id", re.compile(_TB + r'LTAI[A-Za-z0-9]{20}' + _TA), "[REDACTED_ALIBABA_KEY_ID]"),
+    ("secret:artifactory_key", re.compile(_TB + r'AKCp[A-Za-z0-9]{69}' + _TA), "[REDACTED_ARTIFACTORY_KEY]"),
+    ("secret:cloudflare_origin_ca_key", re.compile(_TB + r'v1\.0-[a-f0-9]{24}-[a-f0-9]{146}' + _TA), "[REDACTED_CLOUDFLARE_ORIGIN_CA_KEY]"),
+    ("secret:dynatrace_token", re.compile(_TB + r'dt0c01\.[A-Za-z0-9]{24}\.[A-Za-z0-9]{64}' + _TA), "[REDACTED_DYNATRACE_TOKEN]"),
+    ("secret:easypost_key", re.compile(_TB + r'EZ(?:AK|TK)[A-Za-z0-9]{54}' + _TA), "[REDACTED_EASYPOST_KEY]"),
+    ("secret:flyio_token", re.compile(_TB + r'(?:fo1_[A-Za-z0-9_-]{43}|fm1[ar]_[A-Za-z0-9+/]{100,}={0,3}|fm2_[A-Za-z0-9+/]{100,}={0,3})' + _TA), "[REDACTED_FLYIO_TOKEN]"),
+    ("secret:grafana_token", re.compile(_TB + r'(?:glc_[A-Za-z0-9+/]{32,400}={0,3}|glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8})' + _TA), "[REDACTED_GRAFANA_TOKEN]"),
+    ("secret:terraform_cloud_token", re.compile(_TB + r'[a-z0-9]{14}\.atlasv1\.[A-Za-z0-9_=-]{60,70}' + _TA), "[REDACTED_TERRAFORM_CLOUD_TOKEN]"),
+    ("secret:heroku_key_v2", re.compile(_TB + r'HRKU-AA[A-Za-z0-9_-]{58}' + _TA), "[REDACTED_HEROKU_KEY_V2]"),
+    ("secret:notion_token", re.compile(_TB + r'ntn_[0-9]{11}[A-Za-z0-9]{35}' + _TA), "[REDACTED_NOTION_TOKEN]"),
+    ("secret:perplexity_key", re.compile(_TB + r'pplx-[A-Za-z0-9]{48}' + _TA), "[REDACTED_PERPLEXITY_KEY]"),
+    ("secret:planetscale_token", re.compile(_TB + r'pscale_(?:tkn|oauth|pw)_[A-Za-z0-9_=.-]{32,64}' + _TA), "[REDACTED_PLANETSCALE_TOKEN]"),
+    ("secret:postman_key", re.compile(_TB + r'PMAK-[A-Fa-f0-9]{24}-[A-Fa-f0-9]{34}' + _TA), "[REDACTED_POSTMAN_KEY]"),
+    ("secret:prefect_key", re.compile(_TB + r'pnu_[A-Za-z0-9]{36}' + _TA), "[REDACTED_PREFECT_KEY]"),
+    ("secret:pulumi_token", re.compile(_TB + r'pul-[a-f0-9]{40}' + _TA), "[REDACTED_PULUMI_TOKEN]"),
+    ("secret:readme_key", re.compile(_TB + r'rdme_[a-z0-9]{70}' + _TA), "[REDACTED_README_KEY]"),
+    ("secret:rubygems_key", re.compile(_TB + r'rubygems_[a-f0-9]{48}' + _TA), "[REDACTED_RUBYGEMS_KEY]"),
+    ("secret:brevo_key", re.compile(_TB + r'xkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16}' + _TA), "[REDACTED_BREVO_KEY]"),
+    ("secret:sentry_user_token", re.compile(_TB + r'sntryu_[a-f0-9]{64}' + _TA), "[REDACTED_SENTRY_USER_TOKEN]"),
+    ("secret:shippo_key", re.compile(_TB + r'shippo_(?:live|test)_[a-fA-F0-9]{40}' + _TA), "[REDACTED_SHIPPO_KEY]"),
+    ("secret:openshift_token", re.compile(_TB + r'sha256~[A-Za-z0-9_-]{43}' + _TA), "[REDACTED_OPENSHIFT_TOKEN]"),
+    ("secret:teams_webhook", re.compile(_TB + r'https://[a-z0-9]+\.webhook\.office\.com/webhookb2/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}@[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}/IncomingWebhook/[a-z0-9]{32}/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}' + _TA), "[REDACTED_TEAMS_WEBHOOK]"),
     ("secret:azure_ad_client_secret", re.compile(r'(?<![A-Za-z0-9_~.-])[A-Za-z0-9_~.]{3}[0-9]Q~[A-Za-z0-9_~.-]{30,33}[A-Za-z0-9_~-](?![A-Za-z0-9_~-])(?!\.[A-Za-z0-9_~-])'), "[REDACTED_AZURE_AD_CLIENT_SECRET]"),
     # Password segment of scheme://user:password@host (any scheme, as DB_PASSWORD in patterns.js).
     # The scheme does not start inside a longer word, Unicode letters included (a long s is not an s).
@@ -984,6 +1015,30 @@ PROVIDER_MATCH_CHECKS: Dict[str, Any] = {
     "secret:supabase_pat": lambda v: bool(_DIGIT_RE.search(v[4:])) and _pv_random(v[4:], 2, 3.3),
     "secret:square_token": lambda v: _pv_random(re.sub(r'^(?:EAAA|sq0atp-|sq0csp-)', '', v), 2, 3.3),
     "secret:discord_bot_token": lambda v: _pv_discord_check(v),
+    "secret:onepassword_sa_token": lambda v: _pv_prefixed(v, r'^ops_eyJ'),
+    "secret:age_secret_key": lambda v: _pv_prefixed(v, r'^AGE-SECRET-KEY-1'),
+    "secret:alibaba_key_id": lambda v: _pv_prefixed(v, r'^LTAI'),
+    "secret:artifactory_key": lambda v: _pv_prefixed(v, r'^AKCp'),
+    "secret:cloudflare_origin_ca_key": lambda v: _pv_prefixed(v, r'^v1\.0-'),
+    "secret:dynatrace_token": lambda v: _pv_prefixed(v, r'^dt0c01\.'),
+    "secret:easypost_key": lambda v: _pv_prefixed(v, r'^EZ(?:AK|TK)'),
+    "secret:flyio_token": lambda v: _pv_prefixed(v, r'^(?:fo1|fm1[ar]|fm2)_'),
+    "secret:grafana_token": lambda v: _pv_prefixed(v, r'^gl(?:c|sa)_'),
+    "secret:terraform_cloud_token": lambda v: _pv_prefixed(v, r'^[a-z0-9]{14}\.atlasv1\.'),
+    "secret:heroku_key_v2": lambda v: _pv_prefixed(v, r'^HRKU-AA'),
+    "secret:notion_token": lambda v: _pv_prefixed(v, r'^ntn_[0-9]{11}'),
+    "secret:perplexity_key": lambda v: _pv_prefixed(v, r'^pplx-'),
+    "secret:planetscale_token": lambda v: _pv_prefixed(v, r'^pscale_(?:tkn|oauth|pw)_'),
+    "secret:postman_key": lambda v: _pv_prefixed(v, r'^PMAK-'),
+    "secret:prefect_key": lambda v: _pv_prefixed(v, r'^pnu_'),
+    "secret:pulumi_token": lambda v: _pv_prefixed(v, r'^pul-'),
+    "secret:readme_key": lambda v: _pv_prefixed(v, r'^rdme_'),
+    "secret:rubygems_key": lambda v: _pv_prefixed(v, r'^rubygems_'),
+    "secret:brevo_key": lambda v: _pv_prefixed(v, r'^xkeysib-'),
+    "secret:sentry_user_token": lambda v: _pv_prefixed(v, r'^sntryu_'),
+    "secret:shippo_key": lambda v: _pv_prefixed(v, r'^shippo_(?:live|test)_'),
+    "secret:openshift_token": lambda v: _pv_prefixed(v, r'^sha256~'),
+    "secret:teams_webhook": lambda v: _pv_prefixed(v, r'^https://[a-z0-9]+\.webhook\.office\.com/webhookb2/'),
     "secret:azure_ad_client_secret": lambda v: _pv_random(v, 3, 3.5),
 }
 
@@ -1032,6 +1087,30 @@ PROVIDER_HINTS: Dict[str, Tuple[str, ...]] = {
     "secret:supabase_pat": ("sbp_",),
     "secret:square_token": ("EAAA", "sq0atp-", "sq0csp-"),
     "secret:discord_bot_token": (".",),
+    "secret:onepassword_sa_token": ('ops_eyJ',),
+    "secret:age_secret_key": ('AGE-SECRET-KEY-1',),
+    "secret:alibaba_key_id": ('LTAI',),
+    "secret:artifactory_key": ('AKCp',),
+    "secret:cloudflare_origin_ca_key": ('v1.0-',),
+    "secret:dynatrace_token": ('dt0c01.',),
+    "secret:easypost_key": ('EZAK', 'EZTK',),
+    "secret:flyio_token": ('fo1_', 'fm1a_', 'fm1r_', 'fm2_',),
+    "secret:grafana_token": ('glc_', 'glsa_',),
+    "secret:terraform_cloud_token": ('.atlasv1.',),
+    "secret:heroku_key_v2": ('HRKU-AA',),
+    "secret:notion_token": ('ntn_',),
+    "secret:perplexity_key": ('pplx-',),
+    "secret:planetscale_token": ('pscale_',),
+    "secret:postman_key": ('PMAK-',),
+    "secret:prefect_key": ('pnu_',),
+    "secret:pulumi_token": ('pul-',),
+    "secret:readme_key": ('rdme_',),
+    "secret:rubygems_key": ('rubygems_',),
+    "secret:brevo_key": ('xkeysib-',),
+    "secret:sentry_user_token": ('sntryu_',),
+    "secret:shippo_key": ('shippo_',),
+    "secret:openshift_token": ('sha256~',),
+    "secret:teams_webhook": ('webhook.office.com',),
     "secret:azure_ad_client_secret": ("Q~",),
     "secret:url_password": ("://",),
 }
@@ -1377,3 +1456,28 @@ def evaluate(input_text: str, strict: Optional[bool] = None) -> Assessment:
     if len(_eval_cache) > _EVAL_CACHE_MAX:
         _eval_cache.pop(next(iter(_eval_cache)))
     return res
+
+
+# Third-party notice for the provider formats marked as taken from gitleaks v8.30.1 (config/gitleaks.toml):
+#
+# MIT License
+#
+# Copyright (c) 2019 Zachary Rice
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.

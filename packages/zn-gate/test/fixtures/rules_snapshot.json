@@ -2,7 +2,7 @@
   "layers": {
     "rules": {
       "version_const": "RULES_VERSION",
-      "version": "2026-10-16.8",
+      "version": "2026-10-16.10",
       "ids": [
         "evasion:bidi_override",
         "exfil:credentials",
@@ -45,20 +45,25 @@
         "secret:private_key"
       ],
       "sha256": {
-        "lib/rules.js": "33b75a5a8831c0c988d6ec82348286a4471852e77b2e9e0d63a3f2f3e8368927"
+        "lib/rules.js": "3af274958d75e4a214fcb1f7231adeab8d69fa372799eba2422f2c3f9b28318e"
       }
     },
     "scrub": {
       "version_const": "SCRUB_RULES_VERSION",
-      "version": "2026-10-16.5",
+      "version": "2026-10-16.7",
       "ids": [
+        "AGE_SECRET_KEY",
+        "ALIBABA_KEY_ID",
         "ANTHROPIC_KEY",
+        "ARTIFACTORY_KEY",
         "AWS_KEY",
         "AWS_SECRET",
         "AZURE_AD_CLIENT_SECRET",
         "AZURE_STORAGE_KEY",
         "BEARER_TOKEN",
+        "BREVO_KEY",
         "CARD",
+        "CLOUDFLARE_ORIGIN_CA_KEY",
         "DATABRICKS_TOKEN",
         "DB_PASSWORD",
         "DIGITALOCEAN_TOKEN",
@@ -67,14 +72,19 @@
         "DNI",
         "DOCKERHUB_PAT",
         "DOPPLER_TOKEN",
+        "DYNATRACE_TOKEN",
+        "EASYPOST_KEY",
         "EMAIL",
         "FIRECRAWL_KEY",
+        "FLYIO_TOKEN",
         "GITHUB_PAT",
         "GITHUB_TOKEN",
         "GITLAB_TOKEN",
         "GOOGLE_API_KEY",
         "GOOGLE_OAUTH_SECRET",
+        "GRAFANA_TOKEN",
         "GROQ_KEY",
+        "HEROKU_KEY_V2",
         "HF_TOKEN",
         "IBAN",
         "IPV4",
@@ -83,15 +93,27 @@
         "MAILGUN_KEY",
         "NEWRELIC_KEY",
         "NIE",
+        "NOTION_TOKEN",
         "NPM_TOKEN",
+        "ONEPASSWORD_SA_TOKEN",
         "OPENAI_KEY",
+        "OPENSHIFT_TOKEN",
+        "PERPLEXITY_KEY",
         "PHONE",
+        "PLANETSCALE_TOKEN",
         "POLAR_TOKEN",
+        "POSTMAN_KEY",
+        "PREFECT_KEY",
         "PRIVATE_KEY",
+        "PULUMI_TOKEN",
         "PYPI_TOKEN",
+        "README_KEY",
         "REPLICATE_TOKEN",
+        "RUBYGEMS_KEY",
         "SECRET",
         "SENDGRID_KEY",
+        "SENTRY_USER_TOKEN",
+        "SHIPPO_KEY",
         "SHOPIFY_TOKEN",
         "SLACK_TOKEN",
         "SLACK_WEBHOOK",
@@ -101,7 +123,9 @@
         "STRIPE_WEBHOOK_SECRET",
         "SUPABASE_PAT",
         "TAVILY_KEY",
+        "TEAMS_WEBHOOK",
         "TELEGRAM_BOT_TOKEN",
+        "TERRAFORM_CLOUD_TOKEN",
         "TWILIO_KEY",
         "URL_PASSWORD",
         "VAULT_TOKEN",
@@ -118,7 +142,7 @@
         "exact.variants"
       ],
       "sha256": {
-        "lib/scrub/patterns.js": "ae3be1a51f501f3f52518935ec06e9c364fa3e76144c0649cd36034eeb93da29",
+        "lib/scrub/patterns.js": "dcf93a5a83caa58711ccbcf10b04e34ca08acb06e26baff84006f4ca7c25da9c",
         "lib/scrub/exact.js": "d104e85ec6a25e7d6d4b6c428bd0bf8b25d43c3ead313f6872f508b65793bf6b"
       }
     },
