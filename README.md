@@ -258,9 +258,9 @@ jobs:
 
 | Output | Description |
 |---|---|
-| `scan-exit-code` | Exit code of the scan: 0 clean (or `fail-on-threat: 'false'`), 1 threats found, 2 error. Empty if the scan did not run. |
+| `scan-exit-code` | Exit code of the scan: 0 clean (or `fail-on-threat: 'false'`), 1 something found (an injection trap or a secret), 2 error. Empty if the scan did not run. |
 
-The scan finds more secret types with each release (1.9.1 added Bearer tokens, URL passwords and secrets in command-line flags and assignments), so a job that fails on findings can start failing on files that passed before: pin `version` and read the findings before you update it.
+The scan finds more secret types with each release (1.9.1 added secrets passed as command-line flags and assigned to names such as `password` or `api_key`), so a job that fails on findings can start failing on files that passed before: pin `version` and read the findings before you update it.
 
 The action needs only `contents: read`. It installs the wheel with `--only-binary=:all: --no-deps` (zn-gate has no dependencies) into a private virtualenv, so no build step runs and your job's own Python packages are not touched. pip still reads the runner's own pip settings (`PIP_*` environment variables and `pip.conf`), so a mirror or proxy you configure there is used; set `package-sha256` so that the wheel is checked whatever index it comes from. The action runs on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow.
 
