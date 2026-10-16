@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent hooks (Node.js): a prompt, tool call or MCP call that holds an opaque `Authorization: Bearer` token is now blocked or has the token replaced, as for the other secret formats the scrubber knows. Use `zn secret set NAME` and the `__ZN_NAME__` marker in its place.
 - Docs: the Python install steps say that Debian and Ubuntu need the `python3-venv` package for `python3 -m venv`.
 - Docs: what to do when your agent blocks every prompt because zn's hook cannot run (usually after Node.js is upgraded or moved): `zn-gate check`, reinstall, or turn zn off for that agent until it is fixed (docs/compat.md).
+- Docs: the README, docs/secrets.md and docs/check.md describe the 1.9.1 behaviour: "Secret found" and its next step in `zn-gate scan`, the secret types it finds (and that a CI job can start failing on files that passed before), the Node.js 18 message, the repair steps of `zn-gate check`, the guided `zn-gate init` without arguments, and `zn hooks uninstall claude-code` keeping other `secrets` MCP servers.
 
 ## [1.9.0] - 2026-10-16
 
