@@ -85,6 +85,9 @@ const EXTRA = [
   ['SQUARE_TOKEN', () => 'sq0csp-' + pick(URLSAFE, 43)],
   // base64url of the 18-digit id 123456789012345678, a timestamp and an HMAC
   ['DISCORD_BOT_TOKEN', () => 'MTIzNDU2Nzg5MDEyMzQ1Njc4.' + pick(URLSAFE, 6) + '.' + pick(URLSAFE, 30)],
+  // ids of 17 and 20 digits (the shortest and longest first parts)
+  ['DISCORD_BOT_TOKEN', () => 'MTIzNDU2Nzg5MDEyMzQ1Njc.' + pick(URLSAFE, 6) + '.' + pick(URLSAFE, 27)],
+  ['DISCORD_BOT_TOKEN', () => 'MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.' + pick(URLSAFE, 6) + '.' + pick(URLSAFE, 38)],
   ['DATABRICKS_TOKEN', () => 'dapi' + pick(HEX, 30) + 'c3'],
   ['VAULT_TOKEN', () => 'hvs.' + pick(URLSAFE, 90)],
   ['DOPPLER_TOKEN', () => 'dp.st.' + pick(ALNUM, 40)],
