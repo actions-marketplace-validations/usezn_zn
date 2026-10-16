@@ -163,6 +163,7 @@ function bare(s) {
   return String(s || '').replace(/[\s.]+$/, '');
 }
 
+const RULES_FIX = 'install zn-gate again: run `npm install -g zn-gate` in your own terminal, then run `zn-gate check` again';
 const REINSTALL = (id) => 'install zn-gate again for the Node.js you use now: run `npm install -g zn-gate`, then `zn hooks install ' + id + '`, in your own terminal';
 
 /*
@@ -288,7 +289,13 @@ async function checkAgent(spec, ctx) {
     }
     return res;
   }
-  if (!res.problem && !rulesOk) res.problem = 'zn did not block the read of .env';
+  if (!res.problem && !rulesOk) {
+    // zn's own rules, the ones this command runs, let the read through: the zn-gate install is what needs repair,
+    // whatever runs the hooks (installing the plugin again or reinstalling the hooks would not change it).
+    res.problem = 'zn did not block the read of .env';
+    res.fix = RULES_FIX;
+    res.rulesFault = true;
+  }
   if (!res.problem && live) {
     res.problem = runLive(spec, ctx, live);
     if (res.problem && live.plugin) res.pluginFault = true;
