@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Node.js scan reports more secret types than before (the provider formats, Bearer tokens, URL passwords, command-line flags and assignments above), so a CI job that fails on findings (`fail-on-threat`, or the exit code of `zn-gate scan`) can start failing on files that passed before.
 - Agent hooks (Node.js): a prompt, tool call or MCP call that holds an opaque `Authorization: Bearer` token is now blocked or has the token replaced, as for the other secret formats the scrubber knows. Use `zn secret set NAME` and the `__ZN_NAME__` marker in its place.
 - Docs: the Python install steps say that Debian and Ubuntu need the `python3-venv` package for `python3 -m venv`.
+- Docs: what to do when your agent blocks every prompt because zn's hook cannot run (usually after Node.js is upgraded or moved): `zn-gate check`, reinstall, or turn zn off for that agent until it is fixed (docs/compat.md).
 
 ## [1.9.0] - 2026-10-16
 
