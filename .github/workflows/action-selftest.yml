@@ -46,6 +46,7 @@ jobs:
         id: clean
         uses: ./
         with:
+          mode: scan
           path: .github/action-selftest/clean
 
       - name: Findings fail the step
@@ -53,6 +54,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
+          mode: scan
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           format: text
 
@@ -60,6 +62,7 @@ jobs:
         id: nofail
         uses: ./
         with:
+          mode: scan
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           fail-on-threat: 'false'
           format: json
@@ -67,6 +70,7 @@ jobs:
       - name: Matching package-sha256 installs
         uses: ./
         with:
+          mode: scan
           version: '1.4.1'
           package-sha256: 'e342c98439086f46a174f2f14d1c233c352093c569d1adcd95f5ef5e69f190b8'
           path: .github/action-selftest/clean
@@ -101,6 +105,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
+          mode: scan
           version: '1.4.1'
           package-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
           path: .github/action-selftest/clean
@@ -123,12 +128,63 @@ jobs:
           version: '>=1.4'
           path: .github/action-selftest/clean
 
-      - name: Check expected failures
+      - name: SARIF output for the scan
+        id: sarif
+        uses: ./
+        with:
+          mode: scan
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          fail-on-threat: 'false'
+          format: sarif
+
+      - name: mode both before 1.6.0 runs the scan only
+        id: bothold
+        uses: ./
+        with:
+          version: '1.4.1'
+          mode: both
+          path: .github/action-selftest/agent-config
+
+      - name: mode audit before 1.6.0 is refused
+        id: auditold
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: audit
+          version: '1.4.1'
+          path: .github/action-selftest/agent-config
+
+      - name: Invalid severity-threshold is refused
+        id: badthreshold
+        continue-on-error: true
+        uses: ./
+        with:
+          severity-threshold: 'urgent'
+          path: .github/action-selftest/clean
+
+      - name: Invalid fail-on-threat is refused
+        id: badfailon
+        continue-on-error: true
+        uses: ./
+        with:
+          fail-on-threat: 'yes'
+          path: .github/action-selftest/clean
+
+      - name: Check results
         shell: bash
         env:
           FINDINGS: ${{ steps.findings.outcome }}
+          BADTHRESHOLD: ${{ steps.badthreshold.outcome }}
+          BADTHRESHOLD_RC: ${{ steps.badthreshold.outputs.scan-exit-code }}
+          BADFAILON: ${{ steps.badfailon.outcome }}
+          BADFAILON_RC: ${{ steps.badfailon.outputs.scan-exit-code }}
           BADHASH: ${{ steps.badhash.outcome }}
           BADVERSION: ${{ steps.badversion.outcome }}
+          AUDITOLD: ${{ steps.auditold.outcome }}
+          SARIF_FILE: ${{ steps.sarif.outputs.sarif-file }}
+          SARIF_SCAN_RC: ${{ steps.sarif.outputs.scan-exit-code }}
+          BOTHOLD_SCAN_RC: ${{ steps.bothold.outputs.scan-exit-code }}
+          BOTHOLD_AUDIT_RC: ${{ steps.bothold.outputs.audit-exit-code }}
           CLEAN_RC: ${{ steps.clean.outputs.scan-exit-code }}
           FINDINGS_RC: ${{ steps.findings.outputs.scan-exit-code }}
           NOFAIL_RC: ${{ steps.nofail.outputs.scan-exit-code }}
@@ -136,11 +192,19 @@ jobs:
           BADVERSION_RC: ${{ steps.badversion.outputs.scan-exit-code }}
         run: |
           set -euo pipefail
-          echo "findings=$FINDINGS badhash=$BADHASH badversion=$BADVERSION"
+          echo "findings=$FINDINGS badhash=$BADHASH badversion=$BADVERSION auditold=$AUDITOLD"
           echo "scan exit codes: clean=$CLEAN_RC findings=$FINDINGS_RC nofail=$NOFAIL_RC badhash=$BADHASH_RC badversion=$BADVERSION_RC"
           test "$FINDINGS" = failure
           test "$BADHASH" = failure
           test "$BADVERSION" = failure
+          test "$AUDITOLD" = failure
+          test "$BADTHRESHOLD" = failure
+          test -z "$BADTHRESHOLD_RC"
+          test "$BADFAILON" = failure
+          test -z "$BADFAILON_RC"
+          test "$SARIF_SCAN_RC" = 0
+          test "$BOTHOLD_SCAN_RC" = 0
+          test -z "$BOTHOLD_AUDIT_RC"
           # Findings fail with exit code 1 from the scan, not a crash or a usage error.
           test "$CLEAN_RC" = 0
           test "$FINDINGS_RC" = 1
@@ -148,3 +212,218 @@ jobs:
           # A refused hash or version stops the action before the scan runs.
           test -z "$BADHASH_RC"
           test -z "$BADVERSION_RC"
+          python - "$SARIF_FILE" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert d["version"] == "2.1.0"
+          runs = d["runs"]
+          assert [r["tool"]["driver"]["name"] for r in runs] == ["zn-gate scan"], runs
+          results = runs[0]["results"]
+          assert results and all(r["locations"][0]["physicalLocation"]["region"]["startLine"] >= 1 for r in results)
+          print(f"SARIF OK: {len(results)} results")
+          PY
+
+  # The audit runs the npm package, so it is tested on every operating system.
+  audit:
+    name: action audit (${{ matrix.os }})
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Audit with SARIF output
+        id: both
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: both
+          path: .github/action-selftest/agent-config
+          fail-on: none
+          format: sarif
+
+      - name: fail-on overrides severity-threshold
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: audit
+          path: .github/action-selftest/agent-config
+          severity-threshold: 'low'
+          fail-on: none
+          format: text
+
+      - name: fail-on-threat false overrides severity-threshold
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: audit
+          path: .github/action-selftest/agent-config
+          severity-threshold: 'low'
+          fail-on-threat: 'false'
+          format: json
+
+      - name: mode both skips the audit for a file path
+        id: filepath
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: both
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          fail-on-threat: 'false'
+          format: text
+
+      - name: mode audit refuses a file path
+        id: fileaudit
+        continue-on-error: true
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: audit
+          path: packages/zn-gate/test/fixtures/rules_parity_samples.json
+          format: text
+
+      - name: Wrong npm-integrity is refused
+        id: badintegrity
+        continue-on-error: true
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: audit
+          npm-integrity: 'sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=='
+          path: .github/action-selftest/agent-config
+          fail-on: none
+          format: text
+
+      # dist.integrity of zn-gate@1.9.0 on npm (npm view zn-gate@1.9.0 dist.integrity).
+      - name: Matching npm-integrity installs
+        id: goodintegrity
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: audit
+          npm-integrity: 'sha512-Jlvgg32fbMqifMs+Qfi9KwJoXdPICh3cNJWbUM6V7nEbktDAh/J6plTfD1npmiwR5kgvm18vrO0+A2GcaLExjA=='
+          path: .github/action-selftest/agent-config
+          fail-on: none
+          format: text
+
+      # A file link and a directory link in the workspace that point outside it, and
+      # a path outside both the workspace and the runner temp directory.
+      - name: Set up links for sarif-file
+        id: links
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I - <<'PY'
+          import os
+          outside = os.path.join(os.path.expanduser("~"), "zn-selftest-outside")
+          os.makedirs(outside, exist_ok=True)
+          assert not os.listdir(outside), os.listdir(outside)
+          os.symlink(os.path.join(outside, "target.sarif"), "zn-selftest-link.sarif")
+          os.symlink(outside, "zn-selftest-linkdir", target_is_directory=True)
+          assert os.path.islink("zn-selftest-link.sarif") and os.path.islink("zn-selftest-linkdir")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"outside={outside}\n")
+          PY
+
+      - name: sarif-file that is a link is refused
+        id: sariflink
+        continue-on-error: true
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: scan
+          path: .github/action-selftest/clean
+          format: sarif
+          sarif-file: zn-selftest-link.sarif
+
+      - name: sarif-file under a linked directory is refused
+        id: sariflinkdir
+        continue-on-error: true
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: scan
+          path: .github/action-selftest/clean
+          format: sarif
+          sarif-file: zn-selftest-linkdir/out.sarif
+
+      - name: sarif-file outside the workspace is refused
+        id: sarifoutside
+        continue-on-error: true
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: scan
+          path: .github/action-selftest/clean
+          format: sarif
+          sarif-file: ${{ steps.links.outputs.outside }}/direct.sarif
+
+      - name: sarif-file in a new directory of the workspace
+        id: sarifnested
+        uses: ./
+        with:
+          version: '1.9.0'
+          mode: both
+          path: .github/action-selftest/agent-config
+          fail-on: none
+          format: sarif
+          sarif-file: zn-selftest-out/nested/zn-gate.sarif
+
+      - name: Check results
+        shell: bash
+        env:
+          SARIF_FILE: ${{ steps.both.outputs.sarif-file }}
+          SCAN_RC: ${{ steps.both.outputs.scan-exit-code }}
+          AUDIT_RC: ${{ steps.both.outputs.audit-exit-code }}
+          FILE_AUDIT_RC: ${{ steps.filepath.outputs.audit-exit-code }}
+          FILE_AUDIT: ${{ steps.fileaudit.outcome }}
+          BADINTEGRITY: ${{ steps.badintegrity.outcome }}
+          BADINTEGRITY_RC: ${{ steps.badintegrity.outputs.audit-exit-code }}
+          GOODINTEGRITY_RC: ${{ steps.goodintegrity.outputs.audit-exit-code }}
+          SARIFLINK: ${{ steps.sariflink.outcome }}
+          SARIFLINK_FILE: ${{ steps.sariflink.outputs.sarif-file }}
+          SARIFLINKDIR: ${{ steps.sariflinkdir.outcome }}
+          SARIFLINKDIR_FILE: ${{ steps.sariflinkdir.outputs.sarif-file }}
+          SARIFOUTSIDE: ${{ steps.sarifoutside.outcome }}
+          SARIFOUTSIDE_FILE: ${{ steps.sarifoutside.outputs.sarif-file }}
+          NESTED_FILE: ${{ steps.sarifnested.outputs.sarif-file }}
+          OUTSIDE: ${{ steps.links.outputs.outside }}
+        run: |
+          set -euo pipefail
+          echo "fileaudit=$FILE_AUDIT badintegrity=$BADINTEGRITY sariflink=$SARIFLINK sariflinkdir=$SARIFLINKDIR sarifoutside=$SARIFOUTSIDE"
+          test "$SCAN_RC" = 0
+          test "$AUDIT_RC" = 0
+          test -z "$FILE_AUDIT_RC"
+          test "$FILE_AUDIT" = failure
+          # A wrong hash stops the action before the audit runs.
+          test "$BADINTEGRITY" = failure
+          test -z "$BADINTEGRITY_RC"
+          test "$GOODINTEGRITY_RC" = 0
+          # A refused sarif-file fails the step, leaves the output empty and writes nothing outside.
+          test "$SARIFLINK" = failure
+          test "$SARIFLINKDIR" = failure
+          test "$SARIFOUTSIDE" = failure
+          test -z "$SARIFLINK_FILE"
+          test -z "$SARIFLINKDIR_FILE"
+          test -z "$SARIFOUTSIDE_FILE"
+          test "$NESTED_FILE" = zn-selftest-out/nested/zn-gate.sarif
+          python -I - "$SARIF_FILE" "$NESTED_FILE" "$OUTSIDE" <<'PY'
+          import json, os, sys
+          outside = sys.argv[3]
+          assert os.listdir(outside) == [], os.listdir(outside)
+          assert os.path.islink("zn-selftest-link.sarif")
+          for path in sys.argv[1:3]:
+              d = json.load(open(path, encoding="utf-8"))
+              names = [r["tool"]["driver"]["name"] for r in d["runs"]]
+              ids = [r["automationDetails"]["id"] for r in d["runs"]]
+              assert names[0] == "zn-gate scan" and len(names) >= 2, names
+              assert len(set(ids)) == len(ids), ids
+              print("SARIF OK:", path, names)
+          PY
