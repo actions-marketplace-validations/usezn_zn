@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- `zn-gate check`: when a hook cannot start because its Node.js or its zn-gate files are gone (for example after `nvm uninstall`), the fix it gives is a fresh `npm install -g zn-gate` and then `zn hooks install <agent>`, since the old Node.js took its `zn` with it. Claude Code set up with `zn hooks install` is told to run that again rather than to install the plugin. The zn-gate plugin together with the hooks of `zn hooks install claude-code` is reported as not protected, because both run and a broken one can block every prompt; the fix is `zn hooks uninstall claude-code`. `zn-gate init` follows the same routes. A Claude Code prompt hook without `onFailure: "block"` gets a note.
+- `zn-gate check`: when a hook cannot start because its Node.js or its zn-gate files are gone (for example after `nvm uninstall`), the fix it gives is a fresh `npm install -g zn-gate` and then `zn hooks install <agent>`, since the old Node.js took its `zn` with it. Claude Code set up with `zn hooks install` is told to run that again rather than to install the plugin. The zn-gate plugin together with the hooks of `zn hooks install claude-code` is reported as not protected, because both run and a broken one can block every prompt; the fix is `zn hooks uninstall claude-code`. A zn-gate plugin that is turned off is fixed with `claude plugin enable zn-gate@usezn`; next to zn's own hooks, which then are the ones that protect Claude Code, it is only noted. `zn-gate init` follows the same routes. A Claude Code prompt hook without `onFailure: "block"` gets a note.
 
 ## [1.9.0] - 2026-10-16
 

@@ -176,17 +176,25 @@ async function checkAgent(spec, ctx) {
   let installed = false;
   if (spec.id === 'claude-code') {
     const plugin = claudePlugin(ctx.home, ctx.env);
-    if (plugin.root) {
+    const cliHooks = hookEntries(readJson(userFile)).some((e) => parseCommand(e.command, spec.id));
+    // A plugin that is turned off runs nothing: with zn's own hooks next to it, those hooks are what protects
+    // the agent, so they are checked as such (below) and never offered for removal.
+    if (plugin.root && plugin.off && cliHooks) res.notes.push('the zn-gate plugin is also installed, but turned off');
+    if (plugin.root && !(plugin.off && cliHooks)) {
       installed = true;
       res.where = 'the zn-gate plugin';
       res.via = 'plugin';
       // zn's own hooks left next to the plugin both run, and a broken prompt hook among them blocks every prompt.
-      if (hookEntries(readJson(userFile)).some((e) => parseCommand(e.command, spec.id))) {
+      if (cliHooks) {
         res.via = 'both';
         res.problem = 'the zn-gate plugin and the hooks of `zn hooks install claude-code` are both set up, so both run, and a broken one can block every prompt';
         res.fix = 'remove the second set: run `zn hooks uninstall claude-code` in your own terminal';
       }
-      if (plugin.off) res.problem = 'the zn-gate plugin is turned off in your Claude Code settings; turn it on with `claude plugin enable zn-gate@usezn`';
+      if (plugin.off) {
+        res.pluginOff = true;
+        res.problem = 'the zn-gate plugin is turned off in your Claude Code settings';
+        res.fix = 'turn it on: run `claude plugin enable zn-gate@usezn` in your own terminal';
+      }
       const pre = spawnHook(process.execPath, [path.join(plugin.root, 'scripts', 'zn-launch.js'), 'check', 'claude-code'], {}, { CLAUDE_PLUGIN_ROOT: plugin.root }, ctx.dir);
       const sys = pre.ran && /"systemMessage"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(pre.stdout || '');
       if (!res.problem && sys) res.problem = oneLine(JSON.parse('"' + sys[1] + '"'), 300);

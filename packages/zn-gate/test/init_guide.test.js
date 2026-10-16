@@ -257,3 +257,36 @@ test('plan: the plugin together with zn hooks gets one step that removes the hoo
   assert.deepEqual(cc.steps.map(line), ['zn hooks uninstall claude-code']);
   assert.match(cc.steps[0].label, /the zn-gate plugin stays/);
 });
+
+function pluginIn(home, enabled) {
+  const root = path.join(home, '.claude', 'plugins', 'cache', 'usezn', 'zn-gate', '1.9.0');
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'zn-launch.js'), 'process.exit(0);\n');
+  fs.writeFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'zn-gate@usezn': [{ scope: 'user', installPath: root }] } }));
+  if (enabled === false) {
+    const file = path.join(home, '.claude', 'settings.json');
+    let tree = {};
+    try { tree = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { /* none yet */ }
+    tree.enabledPlugins = { 'zn-gate@usezn': false };
+    fs.writeFileSync(file, JSON.stringify(tree));
+  }
+}
+
+test('plan: a plugin turned off next to zn hooks never removes the hooks', async (t) => {
+  const m = machine(t, ['claude-code']);
+  getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+  pluginIn(m.home, false);
+  const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.equal(cc.state, 'protected');
+  assert.deepEqual(cc.steps, []);
+});
+
+test('plan: a plugin alone that is turned off gets one step that turns it on', async (t) => {
+  const m = machine(t, ['claude-code']);
+  pluginIn(m.home, false);
+  const { items } = await plan({ ...m, claude: path.resolve('/opt/bin/claude'), temporary: false });
+  const cc = items.find((i) => i.id === 'claude-code');
+  assert.deepEqual(cc.steps.map(line), ['claude plugin enable zn-gate@usezn']);
+});
