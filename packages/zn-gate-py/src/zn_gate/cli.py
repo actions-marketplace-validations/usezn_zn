@@ -363,8 +363,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_violations: List[Dict[str, Any]]) -> None:
     """Print the scan report: rule names, fixed text, counts and redacted snippets only."""
-    secrets = sum(1 for v in all_violations if v.get("type") == "secret_leak")
-    threats = len(all_violations) - secrets
+    secret_count = sum(1 for v in all_violations if v.get("type") == "secret_leak")
+    threat_count = len(all_violations) - secret_count
     if fmt == "github":
         # CI logs are public: rule, reason and location only, never the snippet.
         for v in all_violations:
@@ -377,14 +377,14 @@ def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_vio
             print(f"::error file={_gh_property(v['file'])},line={int(v['line'])},title={title}::{_gh_message(message)}")
         for s in skipped:
             print(f"::notice file={_gh_property(s['file'])},title=Not scanned::{_gh_message(s['reason'])}")
-        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {secrets} secrets and {threats} security threats.")
+        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {secret_count} secrets and {threat_count} security threats.")
     elif fmt == "json":
         print(json.dumps({
             "total_files": scanned,
             "total_skipped": len(skipped),
             # Every finding, secrets included (as before); total_secrets counts the secrets alone.
             "total_threats": len(all_violations),
-            "total_secrets": secrets,
+            "total_secrets": secret_count,
             "threats": all_violations,
             "skipped": skipped,
         }, indent=2))
@@ -399,7 +399,7 @@ def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_vio
         if not all_violations:
             print(f"{_icon(CHECK)} All scanned prompts, tool definitions, and files are clean!\n")
             return
-        print(f"{_icon(ALERT)} Found {secrets} secrets and {threats} threat vectors:\n")
+        print(f"{_icon(ALERT)} Found {secret_count} secrets and {threat_count} threat vectors:\n")
         for v in all_violations:
             label = "Secret found" if v.get("type") == "secret_leak" else "Threat"
             print(f"  {v['file']}:{v['line']} {label} [{v['rule']}] {v['reason']}")
