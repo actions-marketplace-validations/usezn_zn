@@ -27,13 +27,15 @@ zn-gate check: does zn stop your coding agent from reading a secret?
   OK Claude Code  blocked the .env file and allowed the ordinary file. Your agent would be told:
      "zn: ..."
   -  Codex CLI    zn is not set up for this agent. To protect it, run `zn hooks install codex` in your own terminal.
+  -  Cursor       not found on this machine
   ...
 
 Your agent cannot read secret files such as .env through these tools. Nothing was sent anywhere.
 ```
 
 - **OK**: zn is protecting that agent. The quoted text is what your agent is told when it tries to read the file.
-- **-**: zn is not set up for that agent, or only for one project. The line gives the command that sets it up for your user.
+- **-**: zn is not set up for that agent, or only for one project. The line gives the command that sets it up for your user. If you only ran zn-gate with `npx`, that command starts with `npm install -g zn-gate`, because `zn hooks install` needs zn-gate installed for your user. An agent that is not on this machine is listed as *not found on this machine*.
+- When an agent is found but not set up, the summary points to `npx -y zn-gate init`, which shows each step and asks before it runs one.
 - **X ... NOT protected**: zn is set up but would not protect the agent. The line says why and what to run to fix it. When a hook cannot start because the Node.js it was installed with is gone (for example after `nvm uninstall`), the fix is a fresh `npm install -g zn-gate` and then `zn hooks install <agent>`, since the old Node.js took its `zn` with it.
 
 `zn-gate check` exits with 0 only when every agent that is set up for your user is protected.

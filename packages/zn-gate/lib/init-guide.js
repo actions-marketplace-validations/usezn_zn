@@ -109,7 +109,7 @@ async function plan(opts = {}) {
       const disablePlugin = () => {
         const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
         if (claude) return { label: 'turn off the zn-gate plugin (zn\'s own hooks stay)', run: [claude, ['plugin', 'disable', 'zn-gate@usezn']], manual: 'claude plugin disable zn-gate@usezn' };
-        return { label: 'in Claude Code, type this command', run: null, manual: 'in Claude Code, type /plugin disable zn-gate@usezn' };
+        return { label: 'do this yourself', run: null, manual: 'in Claude Code, type /plugin disable zn-gate@usezn' };
       };
       if (r.rulesFault) {
         // zn's own rules let the test .env through: zn-gate itself needs repair, whatever runs the hooks.
@@ -124,14 +124,14 @@ async function plan(opts = {}) {
         // Installed but turned off: installing it again would not turn it on.
         const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
         if (claude) item.steps.push({ label: 'turn on the zn-gate plugin', run: [claude, ['plugin', 'enable', 'zn-gate@usezn']], manual: 'claude plugin enable zn-gate@usezn' });
-        else item.steps.push({ label: 'in Claude Code, type this command', run: null, manual: 'in Claude Code, type /plugin enable zn-gate@usezn' });
+        else item.steps.push({ label: 'do this yourself', run: null, manual: 'in Claude Code, type /plugin enable zn-gate@usezn' });
       } else if (!hooksVerb) {
         const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
         if (claude) {
           item.steps.push({ label: 'add the usezn plugin marketplace', run: [claude, ['plugin', 'marketplace', 'add', 'usezn/zn']], manual: 'claude plugin marketplace add usezn/zn' });
           item.steps.push({ label: 'install the zn-gate plugin', run: [claude, ['plugin', 'install', 'zn-gate@usezn']], manual: 'claude plugin install zn-gate@usezn' });
         } else {
-          item.steps.push({ label: 'in Claude Code, type these two commands', run: null, manual: 'in Claude Code, type /plugin marketplace add usezn/zn and then /plugin install zn-gate@usezn' });
+          item.steps.push({ label: 'do this yourself', run: null, manual: 'in Claude Code, type /plugin marketplace add usezn/zn and then /plugin install zn-gate@usezn' });
         }
       } else {
         needsZn = true;
