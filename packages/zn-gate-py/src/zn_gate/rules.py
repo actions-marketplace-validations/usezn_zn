@@ -1,6 +1,6 @@
 """
 zn deterministic rules engine - Python stdlib implementation.
-RULES_VERSION: 2026-10-16.6
+RULES_VERSION: 2026-10-16.7
 Zero external dependencies. Pure Python stdlib.
 """
 
@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-10-16.6"
+RULES_VERSION = "2026-10-16.7"
 
 # Word boundaries are written as explicit ASCII lookarounds, not \b: Python's \b
 # is Unicode, JavaScript's is ASCII-only. Same patterns as rules.js.
@@ -942,6 +942,10 @@ PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
     ("secret:polar_token", re.compile(_TB + r'polar_(?:oat|pat|(?:at|rt)_[uo]|ci|cs)_[A-Za-z0-9_-]{20,}' + _TA), "[REDACTED_POLAR_TOKEN]"),
     ("secret:replicate_token", re.compile(_TB + r'r8_[A-Za-z0-9]{37}' + _TA), "[REDACTED_REPLICATE_TOKEN]"),
     ("secret:supabase_pat", re.compile(_TB + r'sbp_[A-Za-z0-9_-]{30,}' + _TA), "[REDACTED_SUPABASE_PAT]"),
+    ("secret:square_token", re.compile(_TB + r'(?:EAAA[A-Za-z0-9_-]{60}|sq0atp-[A-Za-z0-9_-]{22}|sq0csp-[A-Za-z0-9_-]{43})' + _TA),
+     "[REDACTED_SQUARE_TOKEN]"),
+    ("secret:discord_bot_token", re.compile(_TB + r'[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}' + _TA),
+     "[REDACTED_DISCORD_BOT_TOKEN]"),
     ("secret:azure_ad_client_secret", re.compile(r'(?<![A-Za-z0-9_~.-])[A-Za-z0-9_~.]{3}[0-9]Q~[A-Za-z0-9_~.-]{30,33}[A-Za-z0-9_~-](?![A-Za-z0-9_~-])(?!\.[A-Za-z0-9_~-])'), "[REDACTED_AZURE_AD_CLIENT_SECRET]"),
     # Password segment of scheme://user:password@host (any scheme, as DB_PASSWORD in patterns.js).
     # The scheme does not start inside a longer word, Unicode letters included (a long s is not an s).
@@ -952,6 +956,17 @@ PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
 ]
 
 # Whole-match checks (patterns.js `check`), keyed by rule id.
+def _pv_discord_check(v: str) -> bool:
+    """A Discord bot token's first part is the base64url of the bot's numeric id (17-20 digits)."""
+    ident, _, rest = v.partition('.')
+    mac = rest.partition('.')[2]
+    try:
+        digits = base64.urlsafe_b64decode(ident + '=' * (-len(ident) % 4)).decode('latin-1')
+    except (ValueError, base64.binascii.Error):
+        return False
+    return re.fullmatch(r'[0-9]{17,20}', digits) is not None and _pv_random(mac, 2, 3.0)
+
+
 PROVIDER_MATCH_CHECKS: Dict[str, Any] = {
     "secret:aws_key_id": lambda v: re.fullmatch(r'(.)\1+', v[4:]) is None and not v.endswith('EXAMPLE'),
     "secret:stripe_key": lambda v: _pv_random(v[8:], 2, 3.5),
@@ -967,6 +982,8 @@ PROVIDER_MATCH_CHECKS: Dict[str, Any] = {
     "secret:polar_token": lambda v: _pv_random(_PV_POLAR_PREFIX.sub('', v, count=1), 2, 3.3),
     "secret:replicate_token": lambda v: _pv_random(v[3:], 2, 3.3),
     "secret:supabase_pat": lambda v: bool(_DIGIT_RE.search(v[4:])) and _pv_random(v[4:], 2, 3.3),
+    "secret:square_token": lambda v: _pv_random(re.sub(r'^(?:EAAA|sq0atp-|sq0csp-)', '', v), 2, 3.3),
+    "secret:discord_bot_token": lambda v: _pv_discord_check(v),
     "secret:azure_ad_client_secret": lambda v: _pv_random(v, 3, 3.5),
 }
 
@@ -1013,6 +1030,8 @@ PROVIDER_HINTS: Dict[str, Tuple[str, ...]] = {
     "secret:polar_token": ("polar_",),
     "secret:replicate_token": ("r8_",),
     "secret:supabase_pat": ("sbp_",),
+    "secret:square_token": ("EAAA", "sq0atp-", "sq0csp-"),
+    "secret:discord_bot_token": (".",),
     "secret:azure_ad_client_secret": ("Q~",),
     "secret:url_password": ("://",),
 }
