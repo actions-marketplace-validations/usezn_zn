@@ -15,5 +15,7 @@ def test_references_are_left_alone():
 
 
 def test_literals_are_redacted():
-    for t in ("postgres://app:ZnTestFakePw42x@db.example.com/app", "mysql://app:$literal$pw9@db.example.com"):
+    for t in ("postgres://app:ZnTestFakePw42x@db.example.com/app", "mysql://app:$literal$pw9@db.example.com",
+              "postgres://app:$kR7vQ2mZx9LpW4@db.example.com", "mysql://app:%Passw0rd%@db.example.com",
+              "postgres://app:<R3al!Pw>@db.example.com", "postgres://app:{{Tr0ub4dor&3}}@db.example.com"):
         assert "[REDACTED_DB_PASSWORD]" in str(_clean(t)), t

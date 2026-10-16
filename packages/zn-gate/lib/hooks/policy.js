@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-16.6';
+const POLICY_RULES_VERSION = '2026-10-16.5';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -839,41 +839,6 @@ function npmExecInit(text) {
   return false;
 }
 
-// Removing the variable that tells zn an AI agent is running (CLAUDECODE, CODEX_SANDBOX...) would let the commands
-// that only a person may run go ahead as if a person ran them: `unset`, `export -n`, `env -u`/`--unset`, PowerShell's
-// Remove-Item Env: and `$env:NAME = $null`, and `env -i` in front of zn. Checked token by token per simple command.
-const { AGENT_ENV_VARS } = require('../broker/tty');
-const AGENT_VAR_SET = new Set(AGENT_ENV_VARS);
-function agentVarRemoval(cmd) {
-  const text = String(cmd || '');
-  for (const part of text.split(/[\n;&|]/)) {
-    const words = part.trim().replace(/^[({\s]+/, '').split(/\s+/).map((w) => w.replace(/^["']|["']$/g, ''));
-    for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      if (w === 'unset' || (w === 'export' && words.slice(i + 1).includes('-n'))) {
-        const hit = words.slice(i + 1).find((x) => AGENT_VAR_SET.has(x));
-        if (hit) return hit;
-      }
-      if (w === 'env' || /(^|\/)env$/.test(w)) {
-        for (let j = i + 1; j < words.length; j++) {
-          const x = words[j];
-          const m = /^(?:-u|--unset=?)(.*)$/.exec(x);
-          if (m) { const name = m[1] || words[j + 1]; if (AGENT_VAR_SET.has(name)) return name; }
-          if ((x === '-i' || x === '-' || x === '--ignore-environment') && words.slice(j + 1).some((y) => /(^|[\/\\])(zn|zn-gate|npx|npm)(\.cmd)?$/i.test(y))) return 'all of them (env -i)';
-        }
-      }
-    }
-    const ps = /Remove-Item\s+(?:-Path\s+)?['"]?Env:([A-Za-z_][A-Za-z0-9_]*)|\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\$null|''|"")|SetEnvironmentVariable\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*,\s*\$null/i.exec(part);
-    if (ps) { const name = (ps[1] || ps[2] || ps[3] || '').toUpperCase(); if (AGENT_VAR_SET.has(name)) return name; }
-  }
-  return null;
-}
-
-function agentVarDenial(name) {
-  return 'zn blocked this: ' + (name.startsWith('all') ? 'clearing the environment' : '`' + name + '` tells zn that an AI agent runs the command, and removing it') +
-    ' would let commands that only the user may run go ahead as if the user ran them. Next step: ask the user to run the command in their own terminal.';
-}
-
 function adminCommand(cmd) {
   const text = String(cmd || '');
   const m = ZN_ADMIN_RE.exec(text);
@@ -901,8 +866,6 @@ function bashDenial(cmd, opts = {}) {
   if (String(cmd || '').length > SHELL_SCAN_CAP) return TOO_LONG_MESSAGE;
   const admin = adminCommand(cmd);
   if (admin) return adminDenial(admin, opts, cmd);
-  const agentVar = agentVarRemoval(cmd);
-  if (agentVar) return agentVarDenial(agentVar);
   // The context (home, project, agent directories) is built once per command.
   opts = { ...opts, ctx: contextOf(opts) };
   // The command is read three times: a backslash before a letter is a Windows
@@ -1004,7 +967,6 @@ module.exports = {
   wrapPowerShell,
   hasNetworkSignals,
   adminCommand,
-  agentVarRemoval,
   bashDenial,
   SHELL_SCAN_CAP,
 };
