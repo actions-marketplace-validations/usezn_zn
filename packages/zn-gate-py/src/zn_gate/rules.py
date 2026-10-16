@@ -1,6 +1,6 @@
 """
 zn deterministic rules engine - Python stdlib implementation.
-RULES_VERSION: 2026-10-14.1
+RULES_VERSION: 2026-10-16.4
 Zero external dependencies. Pure Python stdlib.
 """
 
@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-RULES_VERSION = "2026-10-14.3"
+RULES_VERSION = "2026-10-16.4"
 
 # Word boundaries are written as explicit ASCII lookarounds, not \b: Python's \b
 # is Unicode, JavaScript's is ASCII-only. Same patterns as rules.js.
@@ -891,10 +891,11 @@ def _pv_url_password_not_secret(pw: str, prefix: str) -> bool:
     user = prefix[cut + 3:-1]
     if len(pw) < 6 or _pv_placeholder(pw) or pw == user or pw.lower() == scheme:
         return True
-    # A user that is a shell reference ("https://$TOKEN:x-oauth-basic@host") is a template.
     # A password that is only a reference ($NAME, ${NAME}, %NAME%, <name>, {{name}}) is not a
-    # literal secret; one that merely starts with one of those characters still is.
-    if user[:1] in ("$", "%", "<", "{"):
+    # literal secret; one that merely starts with one of those characters still is. GitHub's
+    # fixed "x-oauth-basic" password is not one either (the token is then the user, found by
+    # its own pattern). A reference as the user does not make a literal password safe.
+    if pw.lower() == "x-oauth-basic":
         return True
     if re.fullmatch(r'\$\{?\w+\}?|%\w+%|<[^<>\s]+>|\{\{?\s*[\w.]+\s*\}?\}', pw):
         return True
@@ -904,7 +905,8 @@ def _pv_url_password_not_secret(pw: str, prefix: str) -> bool:
 
 
 def _pv_bearer_not_secret(token: str, prefix: str) -> bool:
-    return _pv_placeholder(token)
+    # zn's own __ZN_<NAME>__ markers are not secrets.
+    return _pv_placeholder(token) or re.fullmatch(r'__ZN_[A-Z0-9_]+__', token) is not None
 
 
 PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
@@ -944,8 +946,8 @@ PROVIDER_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
     # Password segment of scheme://user:password@host (any scheme, as DB_PASSWORD in patterns.js).
     # The scheme does not start inside a longer word, Unicode letters included (a long s is not an s).
     ("secret:url_password", re.compile(r"((?<!\w)[a-zA-Z][a-zA-Z0-9+.-]{1,24}://[^\s:@/?#'\"`<>]{0,128}:)([^\s@/?#'\"`<>]{1,256})(@(?:[A-Za-z0-9.-]+|\[[0-9a-fA-F:]+\]))"), r'\1[REDACTED_URL_PASSWORD]\3'),
-    # Authorization header with a bearer token (not in patterns.js). zn's own
-    # __ZN_ markers are not secrets.
+    # Authorization header with a bearer token (BEARER_TOKEN in patterns.js). zn's
+    # own __ZN_<NAME>__ markers are not secrets (_pv_bearer_not_secret).
     ("secret:bearer_token", re.compile(r'(Authorization[ \t]*:[ \t]*Bearer[ \t]+)([A-Za-z0-9._~+/=-]{20,})', re.IGNORECASE | re.ASCII), r'\1[REDACTED_BEARER_TOKEN]'),
 ]
 
@@ -1015,6 +1017,29 @@ PROVIDER_HINTS: Dict[str, Tuple[str, ...]] = {
     "secret:url_password": ("://",),
 }
 
+# ---------------------------------------------------------------------------
+# Extra credential forms that only `zn-gate scan` reports (files at rest, not
+# agent traffic). Same table as SCAN_SECRET_PATTERNS in rules.js (see the
+# comment there); they run after SECRET_PATTERNS and the provider formats, on
+# the text those already redacted.
+# ---------------------------------------------------------------------------
+SCAN_SECRET_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
+    ("secret:cli_credential_flag", re.compile(r"""(?<![A-Za-z0-9_-])(--(?:api[-_]?key|password|passwd|token|secret|access[-_]token|auth[-_]token|client[-_]secret)=["']?)([^\s'"]{8,512})[^\s'"]*(["']?)"""), r'\1[REDACTED_SECRET]\3'),
+    # The name is at most 40 characters before the keyword, so each start costs a bounded amount.
+    ("secret:credential_assignment", re.compile(r"""(?<![A-Za-z0-9_$])(\$?[A-Za-z0-9_]{0,40}?(?:[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy])["']?[ \t]*(?::=|=>|=|:)[ \t]*["'])([^\s'"]{8,512})(["'])"""), r'\1[REDACTED_SECRET]\3'),
+]
+
+SCAN_SECRET_VALUE_FILTERS = {
+    "secret:cli_credential_flag": _is_non_secret_value,
+    # Only values that look machine-generated: labels and messages are not secrets.
+    "secret:credential_assignment": _is_non_secret_default,
+}
+
+SCAN_SECRET_PREFILTERS: Dict[str, re.Pattern] = {
+    "secret:cli_credential_flag": re.compile(r"""--(?:api|pass|token|secret|access|auth|client)"""),
+    "secret:credential_assignment": re.compile(r"""[Pp][Aa][Ss][Ss][Ww]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]"""),
+}
+
 
 def _apply_edits(text: str, edits: List[Tuple[int, int, str]]) -> str:
     """Replaces the (start, end, replacement) spans, in ascending order, in text."""
@@ -1062,7 +1087,7 @@ def _rule_candidates(rule_id: str, pattern: re.Pattern, replacement: str, text: 
         hints = PROVIDER_HINTS.get(rule_id)
         if hints and not any(h in hay for h in hints):
             continue
-        prefilter = SECRET_PATTERN_PREFILTERS.get(rule_id)
+        prefilter = SECRET_PATTERN_PREFILTERS.get(rule_id) or SCAN_SECRET_PREFILTERS.get(rule_id)
         if prefilter is not None and not prefilter.search(hay):
             continue
         for m in pattern.finditer(hay):
@@ -1115,6 +1140,19 @@ def redact_secrets(text: str) -> Tuple[str, List[Dict[str, Any]]]:
     characters; the redacted spans are the union of both (see redactSecrets in
     rules.js).
     """
+    return _redact_with(text, SECRET_PATTERNS + PROVIDER_SECRET_PATTERNS)
+
+
+def redact_scan_secrets(text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """redact_secrets plus SCAN_SECRET_PATTERNS, for `zn-gate scan`: the scan
+    rules run on the text redact_secrets already redacted (redactScanSecrets in
+    rules.js, with the provider formats in between as the Node.js scan does)."""
+    redacted, first = _redact_with(text, SECRET_PATTERNS + PROVIDER_SECRET_PATTERNS)
+    redacted, second = _redact_with(redacted, SCAN_SECRET_PATTERNS)
+    return redacted, first + second
+
+
+def _redact_with(text: str, patterns: List[Tuple[str, re.Pattern, str]]) -> Tuple[str, List[Dict[str, Any]]]:
     if not isinstance(text, str) or not text:
         return text, []
 
@@ -1124,12 +1162,13 @@ def redact_secrets(text: str) -> Tuple[str, List[Dict[str, Any]]]:
     view = None
     dirty = True
 
-    for rule_id, pattern, replacement in SECRET_PATTERNS + PROVIDER_SECRET_PATTERNS:
+    for rule_id, pattern, replacement in patterns:
         if dirty:
             view = invisible_view(redacted)
             dirty = False
         cands: List[Tuple[int, int, str, str]] = []
-        value_filter = SECRET_VALUE_FILTERS.get(rule_id) or PROVIDER_VALUE_FILTERS.get(rule_id)
+        value_filter = (SECRET_VALUE_FILTERS.get(rule_id) or PROVIDER_VALUE_FILTERS.get(rule_id)
+                        or SCAN_SECRET_VALUE_FILTERS.get(rule_id))
         _rule_candidates(rule_id, pattern, replacement, redacted, view, budget,
                          value_filter, cands, PROVIDER_MATCH_CHECKS.get(rule_id))
         if not cands:

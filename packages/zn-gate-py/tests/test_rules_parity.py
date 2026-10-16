@@ -107,6 +107,14 @@ class TestPatternParity(unittest.TestCase):
         self.assertEqual({k: _py_regex(v) for k, v in R.SECRET_PATTERN_PREFILTERS.items()},
                          {k: _js_regex(e) for k, e in self.js["secret_prefilters"].items()})
 
+    def test_scan_secret_patterns(self):
+        js = self.js["tables"]["SCAN_SECRET_PATTERNS"]
+        self.assertEqual([(rule_id, _py_regex(pat)) for rule_id, pat, _ in R.SCAN_SECRET_PATTERNS],
+                         [(e["id"], _js_regex(e)) for e in js])
+        self.assertEqual({k: _py_regex(v) for k, v in R.SCAN_SECRET_PREFILTERS.items()},
+                         {k: _js_regex(e) for k, e in self.js["scan_secret_prefilters"].items()})
+        self.assertEqual(set(R.SCAN_SECRET_VALUE_FILTERS), {e["id"] for e in js})
+
     def test_size_limits(self):
         for name, value in self.js["limits"].items():
             with self.subTest(limit=name):
@@ -310,10 +318,13 @@ class TestPrefixedCredentialNames(unittest.TestCase):
             with self.subTest(text=text[:20]):
                 self.assertRedacted(text, RANDOM_24)
         # "$NAME:" is a shell reference followed by text, and "${NAME}" a reference.
-        for text in ("echo $DB_PASSWORD:" + "x7" * 8, "echo ${DB_PASSWORD}" + "x7" * 8,
-                     'URL="https://$API_TOKEN:' + "x7" * 8 + '@example.com"'):
+        for text in ("echo $DB_PASSWORD:" + "x7" * 8, "echo ${DB_PASSWORD}" + "x7" * 8):
             with self.subTest(text=text[:20]):
                 self.assertEqual(R.redact_secrets(text)[1], [])
+        # In a URL the credential rules leave "$API_TOKEN:" alone too, but a literal
+        # password after a reference user is still a URL password.
+        found = R.redact_secrets('URL="https://$API_TOKEN:' + "x7" * 8 + '@example.com"')[1]
+        self.assertEqual([d["rule"] for d in found], ["secret:url_password"])
 
     def test_machine_generated_values_with_code_like_shapes(self):
         cases = {

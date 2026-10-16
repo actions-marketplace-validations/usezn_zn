@@ -138,7 +138,7 @@ returns a value.
 | `zn vault log export --otlp` | The same log as OpenTelemetry logs (OTLP/JSON Lines) for an OpenTelemetry Collector; `--since 7d`, `--out FILE`. See [team.md](team.md#export-the-audit-log-to-opentelemetry) |
 | `zn vault verify` | Check the audit log's HMAC chain |
 | `zn lock` | Lock the vault now |
-| `zn hooks uninstall <agent>` | Remove the hooks |
+| `zn hooks uninstall <agent>` | Remove the hooks. For Claude Code it also removes zn's own `secrets` MCP server, and keeps any other server with that name |
 
 If the vault is locked, the hooks still redact what they can recognise, but
 with markers that cannot be restored (`__ZN_REDACTED_AWS_KEY__`), and remind

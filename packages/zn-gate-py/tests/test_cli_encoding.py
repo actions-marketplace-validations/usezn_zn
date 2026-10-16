@@ -53,7 +53,7 @@ class TestCliLegacyCodePage(unittest.TestCase):
         self._assert_no_crash(proc, 1)
         out = proc.stdout.decode("cp1252")
         self.assertIn("[+] zn-gate Security Scanner", out)
-        self.assertIn("[!] Found 2 threat vectors", out)
+        self.assertIn("[!] Found 0 secrets and 2 threat vectors", out)
 
     def test_scan_github_and_json_on_cp1252(self):
         for fmt in ("github", "json"):
@@ -83,7 +83,7 @@ class TestCliLegacyCodePage(unittest.TestCase):
         self._assert_no_crash(proc, 1)
         out = proc.stdout.decode("utf-8")
         self.assertIn("\U0001f6e1\ufe0f zn-gate Security Scanner", out)
-        self.assertIn("\U0001f6a8 Found 2 threat vectors", out)
+        self.assertIn("\U0001f6a8 Found 0 secrets and 2 threat vectors", out)
         self.assertIn("\u5ffd\u7565", out)
 
 

@@ -2,7 +2,7 @@
   "layers": {
     "rules": {
       "version_const": "RULES_VERSION",
-      "version": "2026-10-14.3",
+      "version": "2026-10-16.4",
       "ids": [
         "evasion:bidi_override",
         "exfil:credentials",
@@ -33,6 +33,8 @@
         "secret:anthropic_key",
         "secret:aws_access_key",
         "secret:aws_secret_key",
+        "secret:cli_credential_flag",
+        "secret:credential_assignment",
         "secret:credential_default",
         "secret:db_url_password",
         "secret:env_credential",
@@ -43,18 +45,19 @@
         "secret:private_key"
       ],
       "sha256": {
-        "lib/rules.js": "a597232ad87c13c48ee88cada4fa60b8ddfd310e2576ac55d4b0da6381c79a6b"
+        "lib/rules.js": "b99e72a9ae847301d8e5323b6504f6782de3fed6297a1e420ba8b1225edafee7"
       }
     },
     "scrub": {
       "version_const": "SCRUB_RULES_VERSION",
-      "version": "2026-10-15.2",
+      "version": "2026-10-16.3",
       "ids": [
         "ANTHROPIC_KEY",
         "AWS_KEY",
         "AWS_SECRET",
         "AZURE_AD_CLIENT_SECRET",
         "AZURE_STORAGE_KEY",
+        "BEARER_TOKEN",
         "CARD",
         "DATABRICKS_TOKEN",
         "DB_PASSWORD",
@@ -113,7 +116,7 @@
         "exact.variants"
       ],
       "sha256": {
-        "lib/scrub/patterns.js": "e290d8666c8d07f9085793d0caff5937246f9a49d85336f431f09577f038c776",
+        "lib/scrub/patterns.js": "e8432674541c66ba9f6578f1185758a315f536c153f1509dc9339fe83b90fd4e",
         "lib/scrub/exact.js": "d104e85ec6a25e7d6d4b6c428bd0bf8b25d43c3ead313f6872f508b65793bf6b"
       }
     },
@@ -167,7 +170,7 @@
     },
     "policy": {
       "version_const": "POLICY_RULES_VERSION",
-      "version": "2026-10-15.21",
+      "version": "2026-10-16.5",
       "ids": [
         "SHELL_SCAN_CAP",
         "_globClassEnd",
@@ -188,7 +191,7 @@
         "writeDenial"
       ],
       "sha256": {
-        "lib/hooks/policy.js": "f5b3a56b06fbe262d2b71ea94ee5c89789f92a699400fd36b82f52ca48d3a780",
+        "lib/hooks/policy.js": "df74a1135a2abba0274e586eccb9656ee3db38305a8c82e7700e6ad78cf07fc2",
         "lib/broker/files.js": "45dd8927cc626ac35e8c036e5118ec3c584a3f3a396640c09cee8b545e67c097",
         "lib/broker/markers.js": "301eb1d763e8e88c32e32a02c344be8f44b342b06b61897f3a2d478dbe55d6b4",
         "lib/broker/dotenv.js": "d12a12bd12108a38f84e9f4772ed50f0b015962a1e68f75362142b9b3449e8fe",

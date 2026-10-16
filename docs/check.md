@@ -34,7 +34,7 @@ Your agent cannot read secret files such as .env through these tools. Nothing wa
 
 - **OK**: zn is protecting that agent. The quoted text is what your agent is told when it tries to read the file.
 - **-**: zn is not set up for that agent, or only for one project. The line gives the command that sets it up for your user.
-- **X ... NOT protected**: zn is set up but would not protect the agent. The line says why and what to run to fix it.
+- **X ... NOT protected**: zn is set up but would not protect the agent. The line says why and what to run to fix it. When a hook cannot start because the Node.js it was installed with is gone (for example after `nvm uninstall`), the fix is a fresh `npm install -g zn-gate` and then `zn hooks install <agent>`, since the old Node.js took its `zn` with it.
 
 `zn-gate check` exits with 0 only when every agent that is set up for your user is protected.
 
