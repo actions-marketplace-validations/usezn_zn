@@ -1,5 +1,6 @@
 """zn-gate scan --format github: the message of each ::error line is the
-rule's fixed description, never text from the scanned file. Secrets are
+rule's fixed description (for a secret, a fixed next step), never text from the
+scanned file. Secrets are
 invented values assembled at runtime."""
 
 import argparse
@@ -61,7 +62,9 @@ class TestGithubReason(unittest.TestCase):
             known = _known_reasons()
             for ln in errors:
                 message = ln.split("::", 2)[2]
-                self.assertTrue(message in known or message.startswith("Truncated") or "private key" in message.lower(), message)
+                # A secret's message is its fixed next step (with the file name for a .env file).
+                self.assertTrue(message in known or message.startswith("Truncated") or message.startswith("Next: ")
+                                or "private key" in message.lower(), message)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

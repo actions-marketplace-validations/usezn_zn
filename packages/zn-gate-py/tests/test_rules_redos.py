@@ -94,6 +94,19 @@ WORST_CASES = [
     fill('A_TOKEN=$a' + '->a' * 160 + '( '),
     fill('X_SECRET=' + 'ab-' * 160 + 'c '),
     fill('API_KEY="<' + 'aB3#' * 120 + '" '),
+    # Scan-only credential forms (SCAN_SECRET_PATTERNS).
+    fill('--token='),
+    fill('--api-key="'),
+    fill('--password=a'),
+    '--secret=' + fill('aB3$', SIZE - 9),
+    fill('password'),
+    fill('xtoken'),
+    fill('a' * 39 + 'Token'),
+    fill('$password = "'),
+    fill('api_key := "a'),
+    fill("'secret' => '"),
+    fill('token: "' + 'aB3#' * 130 + ' '),
+    'password="' + fill('aB3#', SIZE - 11) + '"',
 ]
 
 
@@ -138,6 +151,16 @@ class TestLinearTime(unittest.TestCase):
         for s in WORST_CASES:
             ms = time_ms(redact_secrets, s)
             self.assertLess(ms, PER_RULE_MS * len(R.SECRET_PATTERNS), f"redact_secrets took {ms:.1f} ms on {s[:12]!r}...")
+
+    def test_scan_secret_redaction_on_64k_worst_cases(self):
+        for rule_id, pattern, _ in R.SCAN_SECRET_PATTERNS:
+            for s in WORST_CASES:
+                ms = time_ms(lambda t: list(pattern.finditer(t)), s)
+                self.assertLess(ms, PER_RULE_MS, f"{rule_id} took {ms:.1f} ms on {s[:12]!r}...")
+        for s in WORST_CASES:
+            ms = time_ms(R.redact_scan_secrets, s)
+            budget = PER_RULE_MS * (len(R.SECRET_PATTERNS) + len(R.SCAN_SECRET_PATTERNS))
+            self.assertLess(ms, budget, f"redact_scan_secrets took {ms:.1f} ms on {s[:12]!r}...")
 
     def test_secret_redaction_on_256k_worst_cases(self):
         big = 256 * 1024
