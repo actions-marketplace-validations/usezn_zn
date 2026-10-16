@@ -103,6 +103,7 @@ test('check: no agent on the machine says so and offers no setup', async (t) => 
   const { s, code } = textOf(res);
   assert.equal(code, 1);
   assert.match(s, /No supported coding agent was found on this machine/);
+  assert.match(s, /Install one, then run `npx -y zn-gate init`/);
   assert.doesNotMatch(s, /zn hooks install|plugin install/);
 });
 
