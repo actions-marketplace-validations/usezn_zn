@@ -9,14 +9,14 @@ const { spawnSync } = require('child_process');
 
 const CLI = path.join(__dirname, '..', 'bin', 'cli.js');
 
-function runAs(version, args) {
+function runAs(version, args, input) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-node-guard-'));
   const preload = path.join(dir, 'fake-node.js');
   fs.writeFileSync(preload,
     "Object.defineProperty(process.versions, 'node', { value: '" + version + "' });\n" +
     "Object.defineProperty(process, 'version', { value: 'v" + version + "' });\n");
   try {
-    return spawnSync(process.execPath, ['-r', preload, CLI].concat(args), { encoding: 'utf8', timeout: 30000 });
+    return spawnSync(process.execPath, ['-r', preload, CLI].concat(args), { encoding: 'utf8', timeout: 30000, input: input || '' });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -33,6 +33,27 @@ for (const version of ['12.22.12', '16.20.2', '17.9.1']) {
     assert.strictEqual(r.stderr.trim().split('\n').length, 2);
   });
 }
+
+test('a hook started by an agent on Node.js 16 still runs and still blocks a .env read', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-node-guard-hook-'));
+  try {
+    const env = path.join(dir, '.env');
+    fs.writeFileSync(env, 'EXAMPLE_KEY=zn-check-fake-value-not-a-real-key\n');
+    const event = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: env }, cwd: dir });
+    const r = runAs('16.20.2', ['hook', 'claude-code'], event);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.match(r.stdout, /"permissionDecision":\s*"deny"/);
+    assert.match(r.stderr, /^Warning: zn-gate needs Node\.js 18 or later/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('MCP servers on Node.js 16 keep stdout clean', () => {
+  const r = runAs('16.20.2', ['mcp']);
+  assert.strictEqual(r.stdout, '');
+  assert.match(r.stderr, /^Warning: zn-gate needs Node\.js 18 or later/);
+});
 
 test('Node.js 18 and later run normally', () => {
   const r = runAs('18.0.0', ['--version']);
