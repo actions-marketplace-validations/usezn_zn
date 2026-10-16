@@ -38,7 +38,7 @@
 
 ## Install
 
-Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)).
+Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it.
 
 **One command for the coding agents on your machine:**
 
@@ -46,7 +46,7 @@ Everything runs on your machine; no account or API key is needed. You need Node.
 npx -y zn-gate init
 ```
 
-It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal: when an AI agent or a script runs it, it only prints the steps.
+It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal, with no arguments: when an AI agent or a script runs it, it only prints the steps.
 
 **Check that it works.** In a new terminal, run `npx -y zn-gate check`. For each agent set up for your user it shows **OK** when zn blocked a test `.env` file with a fake key and allowed an ordinary file, or says what to fix. Nothing is sent anywhere and no setting changes. [What the output means](docs/check.md).
 
@@ -156,7 +156,7 @@ Where zn-gate sits in a tool call, as an MCP server or as the `shield` proxy aro
 - **Roadmap:** running Galvanize locally inside zn-gate.
 
 ### Scan: audit what your agent is about to trust
-- **Today:** `zn-gate scan <path>` audits prompt templates, `AGENTS.md` / `SKILL.md` files and configs for injection traps and leaked secrets (exit code 1 on findings, for CI). The same check runs as a [GitHub Action](#github-action). MCP servers can be checked on the web at [usezn.com/scan](https://usezn.com/scan).
+- **Today:** `zn-gate scan <path>` audits prompt templates, `AGENTS.md` / `SKILL.md` files and configs for injection traps and leaked secrets (exit code 1 on findings, for CI). A leaked secret is reported as **Secret found**, with the next step: `npx -y zn-gate env shadow <file>` moves the values of a `.env` file into the local vault, `npx -y zn-gate secret set NAME` stores any other one. It finds provider keys and tokens, opaque `Authorization: Bearer` tokens, passwords in URLs, and secrets passed as command-line flags (`--token=...`) or assigned to a name such as `password` or `api_key`. The same check runs as a [GitHub Action](#github-action). MCP servers can be checked on the web at [usezn.com/scan](https://usezn.com/scan).
 - **Roadmap:** auditing MCP servers and skills from the CLI before you add them.
 
 ## What the cloud adds for teams
@@ -253,12 +253,14 @@ jobs:
 | `version` | current stable release | Exact `zn-gate` version to install from PyPI. Ranges and `latest` are refused. |
 | `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the wheel for `version`, as listed on PyPI. When set, the install fails if the downloaded file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
 | `path` | `.` | File or directory to scan. |
-| `fail-on-threat` | `true` | Fail the step when a threat is found. Set `false` to report only. |
+| `fail-on-threat` | `true` | Fail the step when something is found (an injection trap or a secret). Set `false` to report only. |
 | `format` | `github` | `github` (inline annotations), `text` or `json`. |
 
 | Output | Description |
 |---|---|
 | `scan-exit-code` | Exit code of the scan: 0 clean (or `fail-on-threat: 'false'`), 1 threats found, 2 error. Empty if the scan did not run. |
+
+The scan finds more secret types with each release (1.9.1 added Bearer tokens, URL passwords and secrets in command-line flags and assignments), so a job that fails on findings can start failing on files that passed before: pin `version` and read the findings before you update it.
 
 The action needs only `contents: read`. It installs the wheel with `--only-binary=:all: --no-deps` (zn-gate has no dependencies) into a private virtualenv, so no build step runs and your job's own Python packages are not touched. pip still reads the runner's own pip settings (`PIP_*` environment variables and `pip.conf`), so a mirror or proxy you configure there is used; set `package-sha256` so that the wheel is checked whatever index it comes from. The action runs on `pull_request`, never on `pull_request_target`: do not check out untrusted pull-request code in a `pull_request_target` workflow.
 
