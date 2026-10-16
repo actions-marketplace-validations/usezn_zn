@@ -290,3 +290,58 @@ test('plan: a plugin alone that is turned off gets one step that turns it on', a
   const cc = items.find((i) => i.id === 'claude-code');
   assert.deepEqual(cc.steps.map(line), ['claude plugin enable zn-gate@usezn']);
 });
+
+test('agent guard: a backslash before the option and npm exec options do not unlock the guided init', () => {
+  for (const cmd of ['zn-gate init x\\ --wrap-mcp', 'npx -y zn-gate init a\\ --dry-run', 'npm exec zn-gate init --dry-run',
+    'npm x zn-gate init --wrap-mcp', 'npm exec -y zn-gate@1.9.0 init --revert', 'npm.cmd exec zn-gate init --shadow']) {
+    const d = policy.bashDenial(cmd);
+    assert.ok(d, 'expected a denial for: ' + cmd);
+    assert.match(d, /ask the user to run it in their own terminal/);
+  }
+  for (const cmd of ['npm exec -- zn-gate init --dry-run', 'npm exec zn-gate -- init --wrap-mcp', 'npx -y zn-gate init --wrap-mcp', 'npm exec zn-gate check', 'npm init -y']) {
+    assert.equal(policy.bashDenial(cmd), null, 'expected no denial for: ' + cmd);
+  }
+});
+
+test('agent guard: the npm exec check stays fast', () => {
+  const t0 = process.hrtime.bigint();
+  assert.equal(policy.adminCommand('npm exec ' + 'a '.repeat(40000) + 'zn-gate init --dry-run'), 'init');
+  assert.equal(policy.adminCommand(('npm x ' + 'b'.repeat(50) + ' ').repeat(1500)), null);
+  assert.equal(policy.adminCommand(('npm exec ' + '-- '.repeat(20)).repeat(1500)), null);
+  assert.equal(policy.adminCommand('npm' + ' -a b'.repeat(15000) + ' exec zn-gate init --dry-run'), 'init');
+  policy.adminCommand('npm' + ' -a b'.repeat(15000) + ' install');
+  assert.equal(policy.adminCommand('npm exec ' + '--yes '.repeat(200) + 'zn-gate init --dry-run'), 'init', 'padding does not hide it');
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 500);
+});
+
+test('agent guard: Unicode spaces, carriage returns and more npm exec forms do not unlock it (capitals: the CLI refuses them)', () => {
+  for (const cmd of ['zn-gate init x\u00a0--wrap-mcp', 'zn-gate init --wrap-mcp\u00a0', 'zn-gate init x\r--wrap-mcp', 'zn-gate init --wrap-mcp\r',
+    'zn-gate init x\u3000--dry-run', 'zn-gate init x\ufeff--revert',
+    'npm --yes exec zn-gate init --dry-run', 'npm -y x zn-gate init --wrap-mcp', '/usr/local/bin/npm exec zn-gate init --dry-run',
+    'node /opt/npm/bin/npm-cli.js exec zn-gate init --dry-run', '"npm" exec zn-gate init --dry-run', "npm exec 'zn-gate' init --dry-run",
+    'npm exec "zn-gate@latest" init --wrap-mcp', 'npm exec zn init --dry-run', 'npm exe zn-gate init --revert',
+    'npm --prefix /tmp/x exec zn-gate init --dry-run', 'npm --loglevel warn exec zn-gate init --wrap-mcp']) {
+    assert.ok(policy.bashDenial(cmd), 'expected a denial for: ' + JSON.stringify(cmd));
+  }
+  for (const cmd of ['npm exec -- zn-gate init --dry-run', 'npm exec zn-gate -- init --wrap-mcp', 'npx -y zn-gate@latest init --revert',
+    'npx -y zn-gate init --wrap-mcp --shadow', 'npm x tsc -- --init', 'npm init -y', 'npm -w pkg exec vitest', 'npm --prefix /tmp/x exec -- zn-gate init --dry-run']) {
+    assert.equal(policy.bashDenial(cmd), null, 'expected no denial for: ' + cmd);
+  }
+});
+
+test('the guided init refuses any argument, on the real argument list', () => {
+  const { spawnSync } = require('child_process');
+  const cli = path.join(__dirname, '..', 'bin', 'cli.js');
+  for (const a of ['x --wrap-mcp', '--WRAP-MCP', '--wrap-mcp\u00a0', 'extra']) {
+    const r = spawnSync(process.execPath, [cli, 'init', a], { encoding: 'utf8', env: { ...process.env, ZN_STATS: 'off' }, timeout: 20000 });
+    assert.equal(r.status, 2, a + ': ' + r.stderr);
+    assert.match(r.stderr, /^zn-gate init: unknown argument "/);
+    assert.doesNotMatch(r.stdout, /guided|zn-gate check/i);
+  }
+});
+
+test('agent variables count when present, also when empty', () => {
+  const tty = require('../lib/broker/tty');
+  assert.equal(tty.agentEnvDetected({ CLAUDECODE: '' }), 'CLAUDECODE');
+  assert.equal(tty.agentEnvDetected({ PATH: '/usr/bin' }), null);
+});
