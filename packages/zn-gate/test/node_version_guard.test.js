@@ -1,0 +1,50 @@
+'use strict';
+// An older Node.js gets one clear line and exit code 1 from bin/cli.js, not a stack trace.
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const CLI = path.join(__dirname, '..', 'bin', 'cli.js');
+
+function runAs(version, args) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-node-guard-'));
+  const preload = path.join(dir, 'fake-node.js');
+  fs.writeFileSync(preload,
+    "Object.defineProperty(process.versions, 'node', { value: '" + version + "' });\n" +
+    "Object.defineProperty(process, 'version', { value: 'v" + version + "' });\n");
+  try {
+    return spawnSync(process.execPath, ['-r', preload, CLI].concat(args), { encoding: 'utf8', timeout: 30000 });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+for (const version of ['12.22.12', '16.20.2', '17.9.1']) {
+  test('Node.js ' + version + ' is refused with a clear message', () => {
+    const r = runAs(version, ['--version']);
+    assert.strictEqual(r.status, 1);
+    assert.strictEqual(r.stdout, '');
+    assert.match(r.stderr, /^zn-gate needs Node\.js 18 or later, and this is Node\.js v/);
+    assert.match(r.stderr, /https:\/\/nodejs\.org\//);
+    assert.doesNotMatch(r.stderr, /\n\s+at /, 'no stack trace');
+    assert.strictEqual(r.stderr.trim().split('\n').length, 2);
+  });
+}
+
+test('Node.js 18 and later run normally', () => {
+  const r = runAs('18.0.0', ['--version']);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /needs Node\.js 18/);
+});
+
+test('the guard is plain ES5 before the first require', () => {
+  const src = fs.readFileSync(CLI, 'utf8');
+  const end = src.indexOf('})();') + '})();'.length;
+  assert.ok(end > 5 && end < src.indexOf('require('), 'the guard comes before the first require');
+  const guard = src.slice(0, end).replace(/^#!.*\n/, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(guard.includes('process.exit(1)'));
+  assert.doesNotMatch(guard, /=>|`|\b(const|let|class)\b|\.\.\./);
+});

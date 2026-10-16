@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 
+// zn-gate needs Node.js 18 or later. This check is plain ES5 and runs before
+// any require, so an older Node.js prints one clear line instead of a stack trace.
+(function () {
+  var major = parseInt(String(process.versions && process.versions.node).split('.')[0], 10);
+  if (!(major >= 18)) {
+    process.stderr.write('zn-gate needs Node.js 18 or later, and this is Node.js ' + process.version + '.\n' +
+      'Install the LTS version from https://nodejs.org/ (or run: nvm install --lts), then run the command again.\n');
+    process.exit(1);
+  }
+})();
+
 const fs = require('fs');
 const path = require('path');
 const { startMcpServer } = require('../lib/mcp');
