@@ -187,8 +187,12 @@ pub async fn api_key_auth(mut request: Request, next: Next) -> Result<Response, 
 
     let token = match auth_header {
         Some(header_val) => Some(strip_bearer(header_val).to_string()),
-        // Fallback: query parameters (for SSE/WebSocket)
-        None => request.uri().query().and_then(query_token),
+        // Fallback: query parameters, only where a browser client cannot send headers (SSE and WebSocket):
+        // a key in a query string ends up in proxy and access logs.
+        None if query_token_allowed(request.uri().path()) => {
+            request.uri().query().and_then(query_token)
+        }
+        None => None,
     };
     // An empty or blank token never authenticates.
     let token = token.filter(|t| !t.trim().is_empty());
@@ -253,6 +257,11 @@ fn strip_bearer(value: &str) -> &str {
 
 /// Value of the first `api_key` or `token` query parameter, percent-decoded.
 /// A malformed value yields no token.
+/// Routes that accept a key or token in the query string: the SSE events stream and the MCP WebSocket.
+fn query_token_allowed(path: &str) -> bool {
+    matches!(path, "/api/v1/events" | "/mcp/ws")
+}
+
 fn query_token(query: &str) -> Option<String> {
     query
         .split('&')
@@ -322,6 +331,15 @@ pub fn constant_time_compare(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn query_credentials_only_for_sse_and_websocket() {
+        assert!(query_token_allowed("/api/v1/events"));
+        assert!(query_token_allowed("/mcp/ws"));
+        assert!(!query_token_allowed("/api/v1/tenants"));
+        assert!(!query_token_allowed("/api/v1/policies"));
+        assert!(!query_token_allowed("/mcp/ws/extra"));
+    }
+
     use super::*;
 
     use jsonwebtoken::{encode, EncodingKey, Header};

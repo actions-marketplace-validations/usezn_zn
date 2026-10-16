@@ -74,6 +74,42 @@ mod jsonrpc_error {
 
 /// Result of validating a JSON-RPC request
 #[derive(Debug)]
+/// Longest agent id kept from a message; longer ids are cut (the id is a label, not an identity).
+const MAX_AGENT_ID_CHARS: usize = 128;
+
+fn bounded_agent_id(agent_id: Option<&str>) -> String {
+    match agent_id {
+        Some(a) if !a.is_empty() => a.chars().take(MAX_AGENT_ID_CHARS).collect(),
+        _ => "anonymous".to_string(),
+    }
+}
+
+/// Reputation key: the namespace of the connection and the agent id from the message.
+fn reputation_key(namespace: &str, agent_id: &str) -> String {
+    format!("{}\u{1f}{}", namespace, agent_id)
+}
+
+/// The JSON-RPC frame with its tool arguments replaced by `arguments` (a JSON text), in the same place
+/// validate_jsonrpc took them from: params.arguments, params.args or params.input, or the whole params
+/// (A2A). None if either side does not parse.
+fn with_arguments(frame: &str, arguments: &str) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(frame).ok()?;
+    let new_args: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let params = v.get_mut("params")?;
+    let key = ["arguments", "args", "input"]
+        .into_iter()
+        .find(|k| params.get(*k).is_some());
+    match key {
+        Some(k) => {
+            params[k] = new_args;
+        }
+        None => {
+            *params = new_args;
+        }
+    }
+    serde_json::to_string(&v).ok()
+}
+
 enum JsonRpcValidation {
     /// Valid tool call with extracted name and arguments
     ToolCall {
@@ -1025,8 +1061,11 @@ async fn process_mcp_message(
             arguments,
             agent_id,
         } => {
-            // Default to "anonymous" if no agent_id provided
-            let agent_id_str = agent_id.clone().unwrap_or("anonymous".to_string());
+            // Default to "anonymous" if no agent_id provided. The id comes from the message, so it is bounded
+            // and never an identity: the reputation (bans, violations) is kept per namespace, so one tenant can
+            // neither ban another tenant's agent ids nor share a ban with it.
+            let agent_id_str = bounded_agent_id(agent_id.as_deref());
+            let rep_key = reputation_key(&memory_namespace, &agent_id_str);
 
             // 🎯 OCR GUARD: detect malicious text embedded in images (prompt
             // injection, credentials, destructive commands) on the RAW input,
@@ -1072,6 +1111,7 @@ async fn process_mcp_message(
             }
 
             // MULTIMODAL VISION GUARD: EXIF STRIPPING & SANITIZATION
+            let raw_arguments = arguments.clone();
             let arguments = match zn::engine::vision::VisionEngine::sanitize_multimodal(
                 &arguments,
                 &state.config.managed_rules,
@@ -1099,7 +1139,7 @@ async fn process_mcp_message(
 
             // 1. ACTIVE DEFENSE CHECK
             // Before processing, check if this agent is BANNED
-            if let Err(ban_msg) = state.reputation.check_agent_status(&agent_id_str) {
+            if let Err(ban_msg) = state.reputation.check_agent_status(&rep_key) {
                 log::error(format!(
                     "⛔ BLOCKED BANNED AGENT {}: {}",
                     agent_id_str, ban_msg
@@ -1126,7 +1166,7 @@ async fn process_mcp_message(
                 log::warning(format!("🚫 MANAGED RULE BLOCKED: {}", msg)).ok();
                 state
                     .reputation
-                    .record_violation(&agent_id_str, "Managed Rules Violation", 10);
+                    .record_violation(&rep_key, "Managed Rules Violation", 10);
                 return Ok(Some(jsonrpc_error_response(id, -32001, &msg)));
             }
 
@@ -1139,7 +1179,7 @@ async fn process_mcp_message(
                 log::warning(format!("🚫 LOOP BREAKER: {}", msg)).ok();
                 state
                     .reputation
-                    .record_violation(&agent_id_str, "Recursive Loop Detected", 15);
+                    .record_violation(&rep_key, "Recursive Loop Detected", 15);
                 return Ok(Some(jsonrpc_error_response(id, -32002, &msg)));
             }
 
@@ -1273,14 +1313,14 @@ async fn process_mcp_message(
                     {
                         Ok(true) => {
                             log::success(format!("✅ ALLOWED: {}", tool_name)).ok();
-                            state.reputation.record_success(&agent_id_str);
+                            state.reputation.record_success(&rep_key);
                             ("ALLOWED".to_string(), None)
                         }
                         Ok(false) => {
                             log::warning(format!("🚫 DENIED: {}", tool_name)).ok();
                             state
                                 .reputation
-                                .record_violation(&agent_id_str, "Policy Violation", 5);
+                                .record_violation(&rep_key, "Policy Violation", 5);
                             ("DENIED".to_string(), Some("wasm_policy".to_string()))
                         }
                         Err(e) => {
@@ -1356,7 +1396,19 @@ async fn process_mcp_message(
 
             if status == "ALLOWED" {
                 metrics::record_tool_call(&tool_name, "ALLOWED");
-                Ok(Some(scrubbed_line))
+                if arguments == raw_arguments {
+                    return Ok(Some(scrubbed_line));
+                }
+                // The vision guard changed the arguments: forward what it checked and what the audit vault
+                // stored, never the original images. A frame that cannot be rebuilt is refused.
+                match with_arguments(&scrubbed_line, &arguments) {
+                    Some(frame) => Ok(Some(frame)),
+                    None => Ok(Some(jsonrpc_error_response(
+                        id,
+                        -32001,
+                        "zn could not rebuild the sanitized tool call, so it was not forwarded",
+                    ))),
+                }
             } else {
                 metrics::record_tool_call(&tool_name, "DENIED");
                 if status == "DENIED" {
@@ -1395,6 +1447,9 @@ async fn process_mcp_message(
         }
     }
 }
+
+/// Largest MCP WebSocket message or frame the gateway reads.
+const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 
 async fn mcp_ws_handler(
     State(state): State<AppState>,
@@ -1435,7 +1490,10 @@ async fn mcp_ws_handler(
     }
 
     let namespace = tenant.namespace.clone();
-    ws.on_upgrade(move |socket| handle_ws_socket(socket, state, namespace))
+    // A frame or message over 1 MiB closes the connection (the default limit is 64 MiB).
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_ws_socket(socket, state, namespace))
 }
 
 async fn handle_ws_socket(
@@ -2119,5 +2177,50 @@ mod fusion_wiring_tests {
             .await;
         assert_eq!(benign["verdict"], "allow");
         assert!(benign.get("fusion").is_none());
+    }
+}
+
+#[cfg(test)]
+mod gateway_hardening_tests {
+    use super::{bounded_agent_id, reputation_key, with_arguments, MAX_AGENT_ID_CHARS};
+
+    #[test]
+    fn agent_ids_are_bounded_and_reputation_is_per_namespace() {
+        assert_eq!(bounded_agent_id(None), "anonymous");
+        assert_eq!(bounded_agent_id(Some("")), "anonymous");
+        assert_eq!(
+            bounded_agent_id(Some(&"a".repeat(500))).chars().count(),
+            MAX_AGENT_ID_CHARS
+        );
+        assert_ne!(
+            reputation_key("tenant-a", "anonymous"),
+            reputation_key("tenant-b", "anonymous")
+        );
+        // The separator cannot be forged with a namespace that ends like an agent id.
+        assert_ne!(
+            reputation_key("a", "b\u{1f}c"),
+            reputation_key("a\u{1f}b", "c")
+        );
+    }
+
+    #[test]
+    fn sanitized_arguments_replace_the_originals_in_the_forwarded_frame() {
+        let frame = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"img":"RAW"}}}"#;
+        let out = with_arguments(frame, r#"{"img":"CLEAN"}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["params"]["arguments"]["img"], "CLEAN");
+        assert_eq!(v["params"]["name"], "t");
+        assert_eq!(v["id"], 1);
+        let args_frame = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"t","args":{"x":"RAW"}}}"#;
+        let v: serde_json::Value =
+            serde_json::from_str(&with_arguments(args_frame, r#"{"x":"CLEAN"}"#).unwrap()).unwrap();
+        assert_eq!(v["params"]["args"]["x"], "CLEAN");
+        // A2A: the whole params were the arguments.
+        let a2a = r#"{"jsonrpc":"2.0","id":3,"method":"tasks/send","params":{"message":"RAW"}}"#;
+        let v: serde_json::Value =
+            serde_json::from_str(&with_arguments(a2a, r#"{"message":"CLEAN"}"#).unwrap()).unwrap();
+        assert_eq!(v["params"]["message"], "CLEAN");
+        assert!(with_arguments("not json", "{}").is_none());
+        assert!(with_arguments(frame, "not json").is_none());
     }
 }
