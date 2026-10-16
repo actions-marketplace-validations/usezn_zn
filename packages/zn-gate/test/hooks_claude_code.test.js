@@ -505,7 +505,7 @@ test('install / uninstall write and remove only our hooks, with backups', (t) =>
   const userHook = { matcher: 'Bash', hooks: [{ type: 'command', command: '/usr/local/bin/my-guard.sh' }] };
   fs.writeFileSync(file, JSON.stringify({ model: 'x', hooks: { PreToolUse: [userHook] } }, null, 2));
   const env = {};
-  const rep = adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
+  const rep = adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
   assert.equal(rep.settings, file);
   assert.ok(rep.backup && fs.existsSync(rep.backup));
   const data = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -516,7 +516,7 @@ test('install / uninstall write and remove only our hooks, with backups', (t) =>
   assert.equal(data.hooks.PreToolUse[1].hooks[0].command, "'/usr/bin/node' '/opt/zn/lib/hooks/runner.js' claude-code");
   assert.equal(data.hooks.PostToolUse[0].matcher, adapter.POST_MATCHER);
   assert.ok(Array.isArray(data.hooks.UserPromptSubmit));
-  adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
+  adapter.install({ scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
   const again = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(again.hooks.PreToolUse.length, 2, 'install is idempotent');
   adapter.uninstall({ scope: 'user', home, env, mcp: false });
@@ -526,10 +526,10 @@ test('install / uninstall write and remove only our hooks, with backups', (t) =>
 
 test('project install writes .claude/settings.json and .mcp.json', (t) => {
   const dir = tempDir(t, 'zn-ccp-');
-  const rep = adapter.install({ scope: 'project', projectDir: dir, nodePath: 'node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
+  const rep = adapter.install({ scope: 'project', projectDir: dir, nodePath: 'node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' });
   assert.equal(rep.settings, path.join(dir, '.claude', 'settings.json'));
   const mcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
-  assert.deepEqual(mcp.mcpServers.secrets, { command: 'node', args: ['/opt/zn/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] });
+  assert.deepEqual(mcp.mcpServers.secrets, { command: 'node', args: ['/opt/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] });
   adapter.uninstall({ scope: 'project', projectDir: dir });
   const mcp2 = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
   assert.equal(mcp2.mcpServers.secrets, undefined);
@@ -556,11 +556,14 @@ test('a batch-file claude (npm install on Windows) is never run through cmd.exe'
   const bin = path.join(home, 'claude.cmd');
   fs.writeFileSync(bin, '@echo off\r\necho ran > "' + marker + '"\r\n');
   const env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
-  const opts = { scope: 'user', home, env, claudeBin: bin, nodePath: 'C:/Program Files/nodejs/node.exe', cliPath: 'C:/a & b/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
+  const opts = { scope: 'user', home, env, claudeBin: bin, nodePath: 'C:/Program Files/nodejs/node.exe', cliPath: 'C:/a & b/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
   const rep = adapter.install(opts);
   const warn = rep.warnings.find((w) => /batch file/.test(w));
   assert.ok(warn, JSON.stringify(rep.warnings));
   assert.match(warn, /claude mcp add --scope user secrets -- "/);
+  // zn's own server registered by hand, as the warning above says.
+  fs.mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ mcpServers: { secrets: { command: 'node', args: ['C:/a & b/zn-gate/bin/cli.js', 'secrets-mcp'] } } }));
   const un = adapter.uninstall(opts);
   assert.ok(un.warnings.some((w) => /claude mcp remove --scope user secrets/.test(w)), JSON.stringify(un.warnings));
   assert.equal(fs.existsSync(marker), false, 'the batch file must not run');
@@ -586,7 +589,7 @@ test('Windows: an extensionless file next to its .cmd is not the program (npm la
 test('the prompt hook blocks the prompt when it cannot run; tool hooks do not', (t) => {
   const home = tempDir(t, 'zn-onf-');
   const env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
-  const opts = { scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
+  const opts = { scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
   const read = () => JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).hooks || {};
   adapter.install(opts);
   assert.equal(read().UserPromptSubmit[0].hooks[0].onFailure, 'block');
@@ -703,4 +706,64 @@ test('an older vault process: Write and Bash keep the markers and say how to res
   assert.ok(!JSON.stringify(b.output).includes(AWS));
   assert.match(bo.permissionDecisionReason, /Your zn vault was started by an older zn-gate version/);
   assert.match(bo.additionalContext, OLD);
+});
+
+/* 1.8.0 review: Bash, PowerShell and Monitor commands over 100 KB. */
+test('Bash, PowerShell and Monitor commands over 100 KB are blocked before they are checked', async (t) => {
+  const dir = tmpProject(t);
+  const cap = policy.SHELL_SCAN_CAP;
+  const long = 'echo ' + 'a'.repeat(cap + 1 - 5);
+  for (const tool of ['Bash', 'PowerShell', 'Monitor']) {
+    const start = process.hrtime.bigint();
+    const r = await run(preTool(tool, { command: long, description: 'x' }, dir), { nodePath: '/usr/bin/node' });
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.equal(r.output.hookSpecificOutput.permissionDecision, 'deny', tool);
+    assert.match(r.output.hookSpecificOutput.permissionDecisionReason, /too long for zn to check \(over 100 KB\)/, tool);
+    assert.match(r.output.hookSpecificOutput.permissionDecisionReason, /do not resend it in parts/, tool);
+    assert.ok(ms < 50, tool + ' took ' + ms + ' ms');
+  }
+  // A normal command is unchanged.
+  const ok = await run(preTool('Bash', { command: 'npm test', description: 'x' }, dir));
+  assert.notEqual(ok.output && ok.output.hookSpecificOutput && ok.output.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('uninstall: removes only zn\'s own "secrets" MCP server', (t) => {
+  const os = require('os');
+  const fsx = require('fs');
+  const pth = require('path');
+  const home = fsx.mkdtempSync(pth.join(os.tmpdir(), 'zn-cc-uninstall-'));
+  t.after(() => fsx.rmSync(home, { recursive: true, force: true }));
+  const cc = require('../lib/agents/claude-code');
+  const calls = [];
+  const fakeClaude = pth.join(home, 'claude-fake.js');
+  fsx.writeFileSync(fakeClaude, '#!/usr/bin/env node\nrequire("fs").appendFileSync(' + JSON.stringify(pth.join(home, 'calls.txt')) + ', process.argv.slice(2).join(" ") + "\\n");\n', { mode: 0o755 });
+  const run = (servers) => {
+    fsx.writeFileSync(pth.join(home, '.claude.json'), JSON.stringify({ mcpServers: servers }));
+    try { fsx.rmSync(pth.join(home, 'calls.txt')); } catch (_) { /* none */ }
+    const r = cc.uninstall({ scope: 'user', home, env: { HOME: home }, claudeBin: process.platform === 'win32' ? null : fakeClaude });
+    let c = '';
+    try { c = fsx.readFileSync(pth.join(home, 'calls.txt'), 'utf8'); } catch (_) { /* not called */ }
+    calls.push(c);
+    return r;
+  };
+  const other = run({ secrets: { command: 'node', args: ['/opt/vault-example/server.js'] } });
+  assert.equal(calls[0], '', 'someone else\'s server is not removed');
+  assert.ok(other.warnings.some((w) => /not zn's/.test(w)));
+  if (process.platform !== 'win32') {
+    run({ secrets: { command: process.execPath, args: ['/x/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] } });
+    assert.match(calls[1], /^mcp remove --scope user secrets/);
+  }
+});
+
+test('zn\'s own secrets server is recognised by its exact command, not by the word', () => {
+  const cc = require('../lib/agents/claude-code');
+  assert.equal(cc.isZnSecretsServer({ command: process.execPath, args: ['/x/node_modules/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\npm\\node_modules\\zn-gate\\bin\\cli.js', 'secrets-mcp'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'zn', args: ['secrets-mcp'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'npx', args: ['-y', 'zn-gate@1.9.0', 'secrets-mcp'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'npx', args: ['-y', '@acme/secrets-mcp'] }), false);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/vault-example/server.js'], env: { NOTE: 'like secrets-mcp' } }), false);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/other/server.js', 'secrets-mcp'] }), false);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/zn-gate/bin/cli.js', 'secrets-mcp', '--agent', 'claude-code'] }), true);
+  assert.equal(cc.isZnSecretsServer({ command: 'node', args: ['/opt/acme/bin/cli.js', 'secrets-mcp'] }), false);
 });

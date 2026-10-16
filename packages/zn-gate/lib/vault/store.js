@@ -22,6 +22,7 @@
  */
 
 const fs = require('fs');
+const { trimTrailing } = require('../linear-text');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
@@ -60,7 +61,7 @@ function normalizeProject(project) {
   if (path.isAbsolute(p)) {
     let r = path.resolve(p);
     if (process.platform === 'win32') r = r.toLowerCase();
-    return r.replace(/[\\/]+$/, '') || r;
+    return trimTrailing(r, '\\/') || r;
   }
   return p;
 }

@@ -81,6 +81,17 @@ write `__ZN_NAME__` in the prompt instead.
 
 Codex runs new hooks only after you trust them: open Codex and use `/hooks`.
 
+On a computer managed by an organization, Claude Code can be set up to ignore
+the hooks and MCP servers you install yourself (`disableAllHooks`,
+`allowManagedHooksOnly`, `managed-mcp.json`, or an MCP allowlist or denylist),
+and it does not tell you. `zn hooks install claude-code` and `zn-gate status`
+read the managed settings files on this computer and your own settings, and
+say when one of these stops zn's hooks or its `secrets` server. Ask your
+administrator to add zn to the managed settings. Policy sent through claude.ai,
+device management (MDM) or the Windows registry is not read, and when such a
+policy exists Claude Code may ignore the managed settings files; `claude
+doctor` and `/status` show which source Claude Code used.
+
 ## 4. Let a command use a secret
 
 Allow the program that needs the value:
@@ -127,7 +138,7 @@ returns a value.
 | `zn vault log export --otlp` | The same log as OpenTelemetry logs (OTLP/JSON Lines) for an OpenTelemetry Collector; `--since 7d`, `--out FILE`. See [team.md](team.md#export-the-audit-log-to-opentelemetry) |
 | `zn vault verify` | Check the audit log's HMAC chain |
 | `zn lock` | Lock the vault now |
-| `zn hooks uninstall <agent>` | Remove the hooks |
+| `zn hooks uninstall <agent>` | Remove the hooks. For Claude Code it also removes zn's own `secrets` MCP server, and keeps any other server with that name |
 
 If the vault is locked, the hooks still redact what they can recognise, but
 with markers that cannot be restored (`__ZN_REDACTED_AWS_KEY__`), and remind

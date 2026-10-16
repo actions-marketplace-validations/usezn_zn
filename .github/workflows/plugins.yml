@@ -4,20 +4,48 @@ on:
   push:
     branches: [ main, next ]
     tags: [ 'v*' ]
+    # Documentation-only pushes skip this workflow. Markdown under packages/, plugins/, skill/,
+    # bench/ and .github/ still runs it (the package and plugin checks read some of it): a stricter
+    # version of the split that .github/scripts/ci-scope.sh makes. Tag pushes ignore path filters.
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      - 'packages/**'
+      - 'plugins/**'
+      - 'skill/**'
+      - 'bench/**'
+      - '.github/**'
   pull_request:
     branches: [ main, next, 'release/**' ]
-    types: [ opened, synchronize, reopened, labeled ]
+    types: [ opened, synchronize, reopened, labeled, ready_for_review ]
+    # Documentation-only pull requests skip this workflow (it gives no required check), with the
+    # same split as the push filter above.
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      - 'packages/**'
+      - 'plugins/**'
+      - 'skill/**'
+      - 'bench/**'
+      - '.github/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new push to a pull request, or to next, cancels the run still going for it, so a burst of
+# merges into next tests only the newest commit. Runs for main, tags and manual runs always complete.
 concurrency:
-  group: plugins-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: plugins-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || (github.event_name == 'push' && github.ref == 'refs/heads/next') && 'next' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/next') }}
 
 jobs:
   check:
     name: Plugin checks (${{ matrix.os }}, Node.js ${{ matrix.node-version }})
+    # Draft pull requests skip this job; marking the pull request ready for review runs it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -25,6 +53,8 @@ jobs:
       matrix:
         os: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["20.x", "22.x", "24.x"]' || '["22.x"]') }}
+        # Pushes to next run macOS with Node.js 22.x only; every other full run tests all three.
+        exclude: ${{ fromJSON((github.event_name == 'push' && github.ref == 'refs/heads/next') && '[{"os":"macos-latest","node-version":"20.x"},{"os":"macos-latest","node-version":"24.x"}]' || '[]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

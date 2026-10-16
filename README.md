@@ -38,9 +38,21 @@
 
 ## Install
 
-Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)).
+Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it.
 
-**Claude Code (recommended): the plugin.** You also need Git and Claude Code 2.1.295 or later.
+**One command for the coding agents on your machine:**
+
+```bash
+npx -y zn-gate init
+```
+
+It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal, with no arguments: when an AI agent or a script runs it, it only prints the steps.
+
+**Check that it works.** In a new terminal, run `npx -y zn-gate check`. For each agent set up for your user it shows **OK** when zn blocked a test `.env` file with a fake key and allowed an ordinary file, or says what to fix. Nothing is sent anywhere and no setting changes. [What the output means](docs/check.md).
+
+**Manual install**, one agent at a time (the same steps `init` runs):
+
+**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later.
 
 ```bash
 claude plugin marketplace add usezn/zn
@@ -82,6 +94,8 @@ python3 -m venv .venv
 .venv/bin/pip install zn-gate      # Windows: .venv\Scripts\pip install zn-gate
 ```
 
+On Debian and Ubuntu, `python3 -m venv` needs the `python3-venv` package first: `sudo apt install python3-venv`.
+
 **zn-gate as an MCP server only** (the agent calls it when it decides to; not automatic protection):
 
 ```bash
@@ -95,13 +109,19 @@ Cursor (`~/.cursor/mcp.json`) and other editors: `{ "mcpServers": { "zn-gate": {
 
 ```bash
 npx -y zn-gate init --dry-run   # preview
-npx -y zn-gate init             # wrap (backup first)
+npx -y zn-gate init --wrap-mcp  # wrap (backup first)
 npx -y zn-gate init --revert    # undo
 ```
 
 It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`), Codex CLI (`~/.codex/config.toml`), OpenCode (`~/.config/opencode/opencode.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). [Full list and rules](packages/zn-gate/README.md#wrap-the-mcp-servers-you-already-use).
 
 ## Check that it works
+
+```bash
+npx -y zn-gate check
+```
+
+For each agent set up for your user, zn-gate asks its hook to let the agent read a `.env` file with a fake key and an ordinary file, in a temporary folder. It shows what your agent would be told, and a line that says **NOT protected** says how to fix it. Nothing is sent over the network and no setting changes. [What the output means](docs/check.md).
 
 ```bash
 npx -y zn-gate test
@@ -138,7 +158,7 @@ Where zn-gate sits in a tool call, as an MCP server or as the `shield` proxy aro
 - **Roadmap:** running Galvanize locally inside zn-gate.
 
 ### Scan: audit what your agent is about to trust
-- **Today:** `zn-gate scan <path>` audits prompt templates, `AGENTS.md` / `SKILL.md` files and configs for injection traps and leaked secrets (exit code 1 on findings, for CI). The same check runs as a [GitHub Action](#github-action). MCP servers can be checked on the web at [usezn.com/scan](https://usezn.com/scan).
+- **Today:** `zn-gate scan <path>` audits prompt templates, `AGENTS.md` / `SKILL.md` files and configs for injection traps and leaked secrets (exit code 1 on findings, for CI). A leaked secret is reported as **Secret found**, with the next step: `npx -y zn-gate env shadow <file>` moves the values of a `.env` file into the local vault, `npx -y zn-gate secret set NAME` stores any other one. It finds provider keys and tokens, opaque `Authorization: Bearer` tokens, passwords in URLs, and secrets passed as command-line flags (`--token=...`) or assigned to a name such as `password` or `api_key`. The same check runs as a [GitHub Action](#github-action). MCP servers can be checked on the web at [usezn.com/scan](https://usezn.com/scan).
 - **Roadmap:** auditing MCP servers and skills from the CLI before you add them.
 
 ## What the cloud adds for teams
@@ -227,10 +247,10 @@ jobs:
           persist-credentials: false
       - name: Scan AI agent prompts and tools
         # Pin the action to a full commit SHA; the comment names the release.
-        # v1.4.1 does not have the package-sha256 input (v1.5.0 and later).
-        uses: usezn/zn@d9da1b1a87e12c4da468cb9beec425dc3f972c5f # v1.4.1
+        uses: usezn/zn@dca953a154615595848b1367d0fd40b08ef0c7fd # v1.8.0
         with:
-          version: '1.5.0'
+          version: '1.8.0'
+          package-sha256: '2174e1d9647fb0e8c42922c72363b35c26b0b97065b909eaa7a7d6b7c3950e17'
           path: '.'
           fail-on-threat: 'true'
           format: 'github'
@@ -285,23 +305,25 @@ jobs:
 
 | Input | Default | Description |
 |---|---|---|
-| `version` | current stable release | Exact zn-gate version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
+| `version` | current stable release | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
 | `mode` | `scan` | `scan`, `audit` or `both`. |
 | `path` | `.` | File or directory to scan. `audit` needs a directory: with `both` a file skips the audit with a warning; with `audit` the step fails. |
-| `fail-on-threat` | `true` | Fail the step on findings. For `scan`, any finding; for `audit`, findings at or above `severity-threshold`. Set `false` to report only. |
+| `fail-on-threat` | `true` | Fail the step on findings. For `scan`, anything found (an injection trap or a secret); for `audit`, findings at or above `severity-threshold`. Set `false` to report only. |
 | `severity-threshold` | `high` | Audit only: lowest severity that fails the step when `fail-on-threat` is `true`: `high` (high and critical), `medium` or `low`. The scan has no severities, so any scan finding fails. |
 | `fail-on` | empty | Audit only: lowest severity that fails the step (`low`, `medium`, `high`, `critical`, `none`), passed as is to `zn audit --fail-on`. When set, it overrides `fail-on-threat` and `severity-threshold` for the audit. |
 | `agents` | empty | Audit only: comma-separated agents to audit (`zn audit --agents`). Empty audits all supported agents. |
 | `format` | `github` | `github` (inline annotations), `text`, `json` or `sarif`. |
 | `sarif-file` | empty | With `format: sarif`, where to write the file. Empty writes `zn-gate.sarif` in a new directory under the runner temp directory. |
-| `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the PyPI wheel for `version`. When set, the install fails if the file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
+| `package-sha256` | empty | Requires v1.5.0 or later of the action. SHA-256 of the PyPI wheel for `version`, as listed on PyPI. When set, the install fails if the downloaded file has a different hash. Older releases of the action ignore this input with only a warning, so no hash is checked. |
 | `npm-integrity` | empty | Integrity string (`sha512-...`) of the npm tarball for `version`. When set, the audit fails if the tarball has a different hash. |
 
 | Output | Description |
 |---|---|
 | `sarif-file` | Path of the SARIF file (`format: sarif` only). |
-| `scan-exit-code` | Exit code of the scan: 0 clean, 1 findings, 2 error. Empty if it did not run. |
+| `scan-exit-code` | Exit code of the scan: 0 clean (or `fail-on-threat: 'false'`), 1 something found (an injection trap or a secret), 2 error. Empty if the scan did not run. |
 | `audit-exit-code` | Exit code of the audit: 0 clean, 1 findings at or above `fail-on`, 2 error. Empty if it did not run. |
+
+The scan finds more secret types with each release (1.9.1 added secrets passed as command-line flags and assigned to names such as `password` or `api_key`), so a job that fails on findings can start failing on files that passed before: pin `version` and read the findings before you update it.
 
 Which audit findings fail the step: `fail-on` if it is set; otherwise none when `fail-on-threat` is `false`; otherwise `severity-threshold`. For the scan, only `fail-on-threat` applies.
 

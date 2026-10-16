@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .rules import RULES_VERSION, SECRET_PATTERNS, evaluate, mask_token_runs, redact_secrets
+from .rules import RULES_VERSION, evaluate, mask_token_runs
+from .rules import SECRET_PATTERNS as _DLP_PATTERNS, redact_secrets as _dlp_redact, redact_scan_secrets as _scan_redact
 from .client import analyze, is_cloud_enabled, resolve_endpoint
 from .evidence import log_evidence, verify_evidence_ledger, get_evidence_stats, export_evidence_ledger, EVIDENCE_FILE
 
@@ -26,7 +27,7 @@ from .evidence import log_evidence, verify_evidence_ledger, get_evidence_stats, 
 # Each entry: (rule name, pattern, header pattern shown instead of the match).
 _MULTILINE_RULES = [
     (name, rx, re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"))
-    for name, rx, _ in SECRET_PATTERNS if name == "secret:private_key"
+    for name, rx, _ in _DLP_PATTERNS if name == "secret:private_key"
 ]
 
 # A BEGIN marker with no END (a key cut short when pasted or truncated): the
@@ -40,11 +41,48 @@ _KEY_HEADER = re.compile(r"^[A-Za-z-]+: ")
 _TRUNCATED_KEY_REASON = "Exposed credential detected by DLP filter (private key without an END marker)"
 
 # Private key files that usually have no extension.
-_KEY_FILE_NAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk"}
+_KEY_FILE_NAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk", "id_xmss", "identity"}
 # Files of this size or larger are not scanned, and neither are .key files
 # with a NUL byte near the start (a Keynote document, not a key).
 _MAX_SCAN_BYTES = 2 * 1024 * 1024
 _BINARY_SNIFF = 8192
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+
+
+def _decode_scan_text(raw: bytes) -> str:
+    """File contents as text. UTF-16 files with a byte order mark (common on
+    Windows: PowerShell output, some editors) are decoded as UTF-16."""
+    if raw[:2] == b"\xff\xfe":
+        return raw[2:len(raw) - len(raw) % 2].decode("utf-16-le", errors="ignore")
+    if raw[:2] == b"\xfe\xff":
+        return raw[2:len(raw) - len(raw) % 2].decode("utf-16-be", errors="ignore")
+    return raw.decode("utf-8", errors="ignore")
+
+
+# A file name is put in a suggested command only when it is made of plain
+# characters and does not start with "-" (see secretNextStep in cli.js).
+_SAFE_FILE_ARG = re.compile(r"[A-Za-z0-9._/@+-]+")
+
+
+def _secret_next_step(file: str, rule: str) -> str:
+    """What to do about a secret found by the scan, in plain words (never the
+    value). The same text as secretNextStep in the Node.js package; the file
+    is shown relative to the current directory, as there."""
+    if rule == "secret:private_key":
+        return ("Next: move the key out of this file (for example to ~/.ssh or a secret manager) "
+                "and replace it if the file was ever committed or shared.")
+    if re.match(r"\.env", os.path.basename(file), re.IGNORECASE):
+        try:
+            rel = os.path.relpath(file)
+        except ValueError:  # another drive on Windows
+            rel = file
+        if os.sep != "/":  # Windows: npx takes forward slashes too
+            rel = rel.replace(os.sep, "/")
+        arg = rel if _SAFE_FILE_ARG.fullmatch(rel) and not rel.startswith("-") else "<file>"
+        return (f"Next: run npx -y zn-gate env shadow {arg} to move the values into the local vault, "
+                "and rotate any value that was ever committed or shared.")
+    return ("Next: run npx -y zn-gate secret set NAME to store the value in the local vault, use the "
+            "__ZN_NAME__ marker in its place, and rotate it if it was ever committed or shared.")
 
 SHIELD = "\U0001f6e1\ufe0f"
 ALERT = "\U0001f6a8"
@@ -88,7 +126,7 @@ def cmd_test(args: argparse.Namespace) -> int:
     text = args.text
     t0 = time.perf_counter()
     assessment = evaluate(text)
-    clean_text, findings = redact_secrets(text)
+    clean_text, findings = _dlp_redact(text)
     clean_text = mask_token_runs(clean_text)
     latency_us = (time.perf_counter() - t0) * 1_000_000
 
@@ -155,7 +193,7 @@ def _skip_reason(file_path: Path) -> Optional[str]:
             return "2 MiB or larger"
         with open(file_path, "rb") as f:
             head = f.read(_BINARY_SNIFF)
-        if file_path.suffix.lower() == ".key" and b"\0" in head:
+        if file_path.suffix.lower() == ".key" and head[:2] not in _UTF16_BOMS and b"\0" in head:
             return "binary .key file, not a key"
     except OSError:
         return "cannot be read"
@@ -181,9 +219,9 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
         raw = file_path.read_bytes()
     except Exception:
         return []
-    if file_path.suffix.lower() == ".key" and b"\0" in raw[:_BINARY_SNIFF]:
+    if file_path.suffix.lower() == ".key" and raw[:2] not in _UTF16_BOMS and b"\0" in raw[:_BINARY_SNIFF]:
         return []
-    content = raw.decode("utf-8", errors="ignore")
+    content = _decode_scan_text(raw)
 
     # Line numbers as the line pass counts them (str.splitlines boundaries).
     starts = [0]
@@ -231,7 +269,7 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
             continue
         # Snippets are printed to the terminal and, with --format github, to CI
         # logs: always show the line with any detected secret redacted.
-        redacted, findings = redact_secrets(line)
+        redacted, findings = _scan_redact(line)
         snippet = "[REDACTED_PRIVATE_KEY]" if i in key_lines else mask_token_runs(redacted.strip())[:100]
         # A scan reports every match, including the rules that only warn by default.
         res = evaluate(line, strict=True)
@@ -252,6 +290,7 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
                 "reason": "Exposed credential detected by DLP filter",
                 "type": "secret_leak",
                 "content": snippet,
+                "next_step": _secret_next_step(str(file_path), finding["rule"]),
             })
     seen = {(v["line"], v["rule"]) for v in violations}
     for name, first, _last, header, reason in blocks:
@@ -266,6 +305,7 @@ def _scan_file(file_path: Path) -> List[Dict[str, Any]]:
             "reason": reason,
             "type": "secret_leak",
             "content": header,
+            "next_step": _secret_next_step(str(file_path), name),
         })
     return violations
 
@@ -315,20 +355,36 @@ def cmd_scan(args: argparse.Namespace) -> int:
         scanned += 1
         all_violations.extend(_scan_file(fp))
 
-    fmt = getattr(args, "format", "text")
+    _print_report(getattr(args, "format", "text"), scanned, skipped, all_violations)
+    if all_violations and not getattr(args, "no_fail", False):
+        return 1
+    return 0
+
+
+def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_violations: List[Dict[str, Any]]) -> None:
+    """Print the scan report: rule names, fixed text, counts and redacted snippets only."""
+    secrets = sum(1 for v in all_violations if v.get("type") == "secret_leak")
+    threats = len(all_violations) - secrets
     if fmt == "github":
         # CI logs are public: rule, reason and location only, never the snippet.
         for v in all_violations:
-            title = _gh_property("Security Threat (" + str(v["rule"]) + ")")
-            print(f"::error file={_gh_property(v['file'])},line={int(v['line'])},title={title}::{_gh_message(v['reason'])}")
+            if v.get("type") == "secret_leak":
+                title = _gh_property("Secret found (" + str(v["rule"]) + ")")
+                message = v["next_step"]
+            else:
+                title = _gh_property("Security Threat (" + str(v["rule"]) + ")")
+                message = v["reason"]
+            print(f"::error file={_gh_property(v['file'])},line={int(v['line'])},title={title}::{_gh_message(message)}")
         for s in skipped:
             print(f"::notice file={_gh_property(s['file'])},title=Not scanned::{_gh_message(s['reason'])}")
-        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {len(all_violations)} security threats.")
+        print(f"\n[zn-gate] Scanned {scanned} files ({len(skipped)} not scanned). Found {secrets} secrets and {threats} security threats.")
     elif fmt == "json":
         print(json.dumps({
             "total_files": scanned,
             "total_skipped": len(skipped),
+            # Every finding, secrets included (as before); total_secrets counts the secrets alone.
             "total_threats": len(all_violations),
+            "total_secrets": secrets,
             "threats": all_violations,
             "skipped": skipped,
         }, indent=2))
@@ -342,15 +398,15 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(skipped) - 20} more")
         if not all_violations:
             print(f"{_icon(CHECK)} All scanned prompts, tool definitions, and files are clean!\n")
-            return 0
-        print(f"{_icon(ALERT)} Found {len(all_violations)} threat vectors:\n")
+            return
+        print(f"{_icon(ALERT)} Found {secrets} secrets and {threats} threat vectors:\n")
         for v in all_violations:
-            print(f"  {v['file']}:{v['line']} [{v['rule']}] {v['reason']}")
-            print(f"    Snippet: {v['content']}\n")
-
-    if all_violations and not getattr(args, "no_fail", False):
-        return 1
-    return 0
+            label = "Secret found" if v.get("type") == "secret_leak" else "Threat"
+            print(f"  {v['file']}:{v['line']} {label} [{v['rule']}] {v['reason']}")
+            print(f"    Snippet: {v['content']}")
+            if v.get("next_step"):
+                print(f"    {v['next_step']}")
+            print()
 
 
 def cmd_evidence(args: argparse.Namespace) -> int:
@@ -411,8 +467,31 @@ def cmd_stats(args) -> int:
     return 0
 
 
+# Commands of the npm package. The Python package has none of them, so instead of
+# argparse's "invalid choice" it says where they are.
+NPM_ONLY_COMMANDS = frozenset({
+    "hooks", "hook", "init", "check", "doctor", "unlock", "lock", "run", "secret",
+    "secrets", "env", "vault", "pins", "shield", "mcp", "mcp-shield", "secrets-mcp",
+    "wrap", "team", "audit", "logs", "export",
+})
+
+
+def npm_only_message(command: str) -> str:
+    return (
+        f"zn-gate {command} is in the npm package, not in this Python package.\n"
+        "The Python package protects agents you build yourself (LangChain, CrewAI, "
+        "LlamaIndex or plain tool calling).\n"
+        "To protect Claude Code, Codex CLI, Cursor or OpenCode, run this in your own "
+        "terminal (it needs Node.js 18 or later):\n"
+        "  npx -y zn-gate init\n"
+    )
+
+
 def main() -> int:
     _configure_output_streams()
+    if len(sys.argv) > 1 and sys.argv[1] in NPM_ONLY_COMMANDS:
+        sys.stderr.write(npm_only_message(sys.argv[1]))
+        return 2
     parser = argparse.ArgumentParser(
         prog="zn-gate",
         description="zn deterministic guardrail engine for AI agents and LLM tool calling."

@@ -6,6 +6,7 @@
  */
 
 const path = require('path');
+const { trimTrailing } = require('../linear-text');
 
 const MAX_LINE = 4000;
 
@@ -245,7 +246,7 @@ function claudePermission(entry) {
   if (!m) return null;
   const inner = m[2].trim();
   if (inner === '' || /^[*:\s]+$/.test(inner)) return 'high';
-  const first = inner.split(/[\s:]/)[0].replace(/\*+$/, '');
+  const first = trimTrailing(inner.split(/[\s:]/)[0], '*');
   if (INTERPRETERS.has(first.toLowerCase()) && /[*]/.test(inner)) return 'high';
   return null;
 }

@@ -21,6 +21,8 @@ const {
   MARKDOWN_EXFIL_RULES,
   SENSITIVE_PATH_RULES,
   SECRET_PATTERNS,
+  SCAN_SECRET_PATTERNS,
+  redactScanSecrets,
 } = require('../lib/rules');
 const { checkToolResult } = require('../lib/client');
 
@@ -103,6 +105,19 @@ const WORST_CASES = [
   fill('A_TOKEN=$a' + '->a'.repeat(160) + '( '),
   fill('X_SECRET=' + 'ab-'.repeat(160) + 'c '),
   fill('API_KEY="<' + 'aB3#'.repeat(120) + '" '),
+  // Scan-only credential forms (SCAN_SECRET_PATTERNS).
+  fill('--token='),
+  fill('--api-key="'),
+  fill('--password=a'),
+  '--secret=' + fill('aB3$', SIZE - 9),
+  fill('password'),
+  fill('xtoken'),
+  fill('a'.repeat(39) + 'Token'),
+  fill('$password = "'),
+  fill('api_key := "a'),
+  fill("'secret' => '"),
+  fill('token: "' + 'aB3#'.repeat(130) + ' '),
+  'password="' + fill('aB3#', SIZE - 11) + '"',
 ];
 
 function label(input) {
@@ -151,6 +166,21 @@ test('secret redaction finishes quickly on 64 KB worst-case inputs', () => {
   for (const input of WORST_CASES) {
     const ms = timeMs(() => redactSecrets(input));
     assert.ok(ms < PER_RULE_MS * SECRET_PATTERNS.length, `redactSecrets took ${ms.toFixed(1)} ms on ${label(input)}...`);
+  }
+});
+
+test('scan secret redaction finishes quickly on 64 KB worst-case inputs', () => {
+  for (const rule of SCAN_SECRET_PATTERNS) {
+    const re = new RegExp(rule.pattern.source, rule.pattern.flags);
+    for (const input of WORST_CASES) {
+      re.lastIndex = 0;
+      const ms = timeMs(() => { re.lastIndex = 0; while (re.exec(input) !== null) { /* all matches */ } });
+      assert.ok(ms < PER_RULE_MS, `${rule.id} took ${ms.toFixed(1)} ms on ${label(input)}...`);
+    }
+  }
+  for (const input of WORST_CASES) {
+    const ms = timeMs(() => redactScanSecrets(input));
+    assert.ok(ms < PER_RULE_MS * (SECRET_PATTERNS.length + SCAN_SECRET_PATTERNS.length), `redactScanSecrets took ${ms.toFixed(1)} ms on ${label(input)}...`);
   }
 });
 

@@ -2,7 +2,7 @@
   "layers": {
     "rules": {
       "version_const": "RULES_VERSION",
-      "version": "2026-10-14.3",
+      "version": "2026-10-16.2",
       "ids": [
         "evasion:bidi_override",
         "exfil:credentials",
@@ -33,6 +33,8 @@
         "secret:anthropic_key",
         "secret:aws_access_key",
         "secret:aws_secret_key",
+        "secret:cli_credential_flag",
+        "secret:credential_assignment",
         "secret:credential_default",
         "secret:db_url_password",
         "secret:env_credential",
@@ -43,18 +45,19 @@
         "secret:private_key"
       ],
       "sha256": {
-        "lib/rules.js": "a597232ad87c13c48ee88cada4fa60b8ddfd310e2576ac55d4b0da6381c79a6b"
+        "lib/rules.js": "4dcf4cd34de36a4173fd0563c80700370b35561605df6147e7afc6b3cc2eadae"
       }
     },
     "scrub": {
       "version_const": "SCRUB_RULES_VERSION",
-      "version": "2026-10-14.2",
+      "version": "2026-10-16.3",
       "ids": [
         "ANTHROPIC_KEY",
         "AWS_KEY",
         "AWS_SECRET",
         "AZURE_AD_CLIENT_SECRET",
         "AZURE_STORAGE_KEY",
+        "BEARER_TOKEN",
         "CARD",
         "DATABRICKS_TOKEN",
         "DB_PASSWORD",
@@ -113,13 +116,13 @@
         "exact.variants"
       ],
       "sha256": {
-        "lib/scrub/patterns.js": "5543a859dfbf695635d6288272132ba37a7312ff816914d63707b5fc332856b4",
-        "lib/scrub/exact.js": "38c79642502843d4a88c94cfdb34c1b60f04fce6d778b9a8a3eb751c5aed2888"
+        "lib/scrub/patterns.js": "e8432674541c66ba9f6578f1185758a315f536c153f1509dc9339fe83b90fd4e",
+        "lib/scrub/exact.js": "d104e85ec6a25e7d6d4b6c428bd0bf8b25d43c3ead313f6872f508b65793bf6b"
       }
     },
     "audit": {
       "version_const": "AUDIT_RULES_VERSION",
-      "version": "2026-10-14.1",
+      "version": "2026-10-15.1",
       "ids": [
         "ZNA001",
         "ZNA002",
@@ -161,14 +164,15 @@
         "patterns.weakening"
       ],
       "sha256": {
-        "lib/audit/rules.js": "be6a0c33e3d78dc1a0dbec2998cc23e67adba364ab04b09b00a00b6052ee22a7",
-        "lib/audit/patterns.js": "76144a9cd5b8c9c6d2a1499f58e75d06651c6909280f2fa1e7cee91bdd01de1d"
+        "lib/audit/rules.js": "d5416943f74a530dc7a333f6ab13d250d978ccf60ee730055f8d82552000ee7c",
+        "lib/audit/patterns.js": "88107fd9244b3d97fc841b67c1a2219948205ec4ba6094f5609c9274054ab8eb"
       }
     },
     "policy": {
       "version_const": "POLICY_RULES_VERSION",
-      "version": "2026-10-15.13",
+      "version": "2026-10-16.5",
       "ids": [
+        "SHELL_SCAN_CAP",
         "_globClassEnd",
         "_globClassSource",
         "adminCommand",
@@ -187,7 +191,7 @@
         "writeDenial"
       ],
       "sha256": {
-        "lib/hooks/policy.js": "a1e3b3b7059b90faf8c7dea803daf480fe650dea4280cd0c7ffd751742b1642e",
+        "lib/hooks/policy.js": "df74a1135a2abba0274e586eccb9656ee3db38305a8c82e7700e6ad78cf07fc2",
         "lib/broker/files.js": "45dd8927cc626ac35e8c036e5118ec3c584a3f3a396640c09cee8b545e67c097",
         "lib/broker/markers.js": "301eb1d763e8e88c32e32a02c344be8f44b342b06b61897f3a2d478dbe55d6b4",
         "lib/broker/dotenv.js": "d12a12bd12108a38f84e9f4772ed50f0b015962a1e68f75362142b9b3449e8fe",
