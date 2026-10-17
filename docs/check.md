@@ -40,12 +40,12 @@ Your agent cannot read secret files such as .env through these tools. Nothing wa
 
 `zn-gate check` exits with 0 only when every agent that is set up for your user is protected.
 
-## If something is wrong
+## If something fails
 
 - **`npx: command not found`**: install the LTS version of [Node.js](https://nodejs.org/), open a new terminal and run the command again.
-- **A line starts with `-`**: zn is not set up for that agent. Run `npx -y zn-gate init`. It shows each step and asks before it runs one.
+- **A line starts with `-`**: zn is not set up for that agent. Run `npx -y zn-gate init`. It shows each step and asks before it runs one. If the line says *not found on this machine*, that agent is not installed and `init` does nothing for it.
 - **A line says NOT protected**: read the line. It says what to run. If the Node.js your hook used was removed, run `npm install -g zn-gate`, then `zn hooks install <agent>`.
-- **Still not sure**: run `zn-gate status`, then ask in [Discussions](https://github.com/usezn/zn/discussions).
+- **Still not sure**: re-run `npx -y zn-gate check`, then ask in [Discussions](https://github.com/usezn/zn/discussions).
 
 ## If your agent needs a value from `.env`
 
