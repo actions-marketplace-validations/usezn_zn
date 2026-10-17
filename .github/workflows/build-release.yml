@@ -16,6 +16,10 @@ on:
         description: "Release tag to build; its commit is resolved and checked here again"
         required: true
         type: string
+      expected_sha:
+        description: "Commit the caller verified for the tag: only compared, never checked out"
+        required: true
+        type: string
       npm_version:
         required: true
         type: string
@@ -59,11 +63,14 @@ jobs:
         id: sha
         env:
           TAG: ${{ inputs.tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
           printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$' || { echo "::error::'$TAG' is not a release tag"; exit 1; }
           git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
           sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          # The tag must still point to the commit the caller verified (and whose tag signature it checked).
+          [ "$sha" = "$EXPECTED_SHA" ] || { echo "::error::$TAG is now $sha, but the release verified $EXPECTED_SHA"; exit 1; }
           if git for-each-ref --contains "$sha" --format='%(refname:short)' refs/remotes/origin | grep -Eq '^origin/(main|release/.+)$'; then
             echo "$TAG is $sha, on main or a release branch"
           else
