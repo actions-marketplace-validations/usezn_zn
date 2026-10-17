@@ -943,8 +943,11 @@ function bashDenialOf(cmd, opts = {}) {
     let text = w.text;
     if (text.startsWith('-')) {
       const eq = text.indexOf('=');
-      if (eq < 0) continue;
-      text = text.slice(eq + 1);
+      // git log -L<range>:<file> names a file after the colon.
+      const lineRange = isGit(w.head) ? /^-L[^:]*:(.+)$/.exec(text) : null;
+      if (lineRange) text = lineRange[1];
+      else if (eq < 0) continue;
+      else text = text.slice(eq + 1);
     } else if (NAME_VALUE_RE.test(text)) {
       // name=value carries a path too (dd if=.env, ENV_FILE=.env).
       text = text.slice(text.indexOf('=') + 1);
@@ -1026,12 +1029,14 @@ function gitSubcommand(words) {
   return '';
 }
 
-// Options after which log, diff and show print names or counts, not content (unless -p asks for it too).
-const GIT_SUMMARY_OPTS = new Set(['--stat', '--shortstat', '--numstat', '--name-only', '--name-status', '--oneline', '--summary', '--dirstat']);
-const GIT_PATCH_OPTS = new Set(['-p', '-u', '--patch', '--cc', '-c', '--full-diff', '-W', '--function-context']);
+// log, diff and show print only names or counts with one of these options...
+const GIT_SUMMARY_OPTS = new Set(['--stat', '--shortstat', '--numstat', '--name-only', '--name-status', '--summary', '--dirstat', '--compact-summary']);
+// ...as long as every other option is one that cannot add file content (an allowlist: -U3, --binary or
+// --patch-with-stat bring the patch back, and git has many such options).
+const GIT_SAFE_OPTS_RE = /^(?:--(?:stat|shortstat|numstat|name-only|name-status|summary|dirstat|compact-summary)(?:=[\w,.%-]*)?|--oneline|--no-color|--color(?:=\w+)?|--decorate(?:=\w+)?|--no-decorate|--graph|--reverse|--all|--follow|--no-merges|--merges|--first-parent|--abbrev-commit|--no-abbrev-commit|--cached|--staged|--no-renames|--relative|--date=[\w:%.-]+|--(?:since|until|after|before|author|committer|grep)=[^\s]*|--max-count=\d+|-n|-\d+|--(?:format|pretty)=[^\s]*)$/;
 
 /* Whether a git command prints or brings back a file's stored content. Steps that only clean up stay allowed:
-   git restore --staged .env, git checkout -- .env (from the index to disk), git stash push -- .env, git log --oneline -- .env. */
+   git restore --staged .env, git checkout -- .env (from the index to disk), git stash push -- .env, git log --stat -- .env. */
 function gitReadsContent(sub, args) {
   if (!GIT_READ_SUBCMDS.has(sub)) return false;
   const a = args || [];
@@ -1041,13 +1046,15 @@ function gitReadsContent(sub, args) {
   const before = dashdash >= 0 ? rest.slice(0, dashdash) : rest;
   const positional = before.filter((x) => !x.startsWith('-'));
   if (sub === 'stash') return positional[0] === 'show';
-  if (sub === 'restore') return rest.some((x) => x === '-s' || x.startsWith('--source'));
+  if (sub === 'restore') return rest.some((x) => x.startsWith('-s') || x.startsWith('--source'));
   // checkout <rev> -- <file> (or checkout <rev> <file>) brings back a stored copy; checkout -- <file> uses the index.
   if (sub === 'checkout') return dashdash >= 0 ? positional.length > 0 : positional.length > 1;
   if (['log', 'diff', 'show', 'whatchanged'].includes(sub)) {
-    const summary = rest.some((x) => GIT_SUMMARY_OPTS.has(x.split('=')[0]));
-    const patch = rest.some((x) => GIT_PATCH_OPTS.has(x) || /^-[A-Za-z]*p/.test(x) && !x.startsWith('--'));
-    if (summary && !patch) return false;
+    const opts = before.filter((x) => x.startsWith('-'));
+    const summary = opts.some((x) => GIT_SUMMARY_OPTS.has(x.split('=')[0]));
+    // git log --oneline lists commits only; git show --oneline still prints the patch.
+    const listOnly = sub === 'log' && opts.includes('--oneline');
+    if ((summary || listOnly) && opts.every((x) => GIT_SAFE_OPTS_RE.test(x))) return false;
   }
   return true;
 }

@@ -484,7 +484,9 @@ test('git steps that only clean up a tracked .env stay allowed', (t) => {
     assert.equal(policy.bashDenial(cmd, o), null, cmd);
   }
   for (const cmd of ['git restore --source=HEAD~1 .env', 'git restore -s HEAD .env', 'git checkout HEAD -- .env', 'git checkout main .env',
-    'git stash show -p -- .env', 'git log --oneline -p -- .env', 'git log --stat -p -- .env', 'git diff -- .env']) {
+    'git stash show -p -- .env', 'git log --oneline -p -- .env', 'git log --stat -p -- .env', 'git diff -- .env',
+    'git log --oneline --patch-with-stat -- .env', 'git log --stat --patch-with-raw -- .env', 'git log --stat -U3 -- .env',
+    'git log --stat --unified=1 -- .env', 'git diff --stat --binary HEAD~1 -- .env', 'git show --oneline HEAD -- .env', 'git restore -sHEAD .env', 'git log -L1,5:.env']) {
     assert.ok(policy.bashDenial(cmd, o), cmd);
   }
 });
