@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.28';
+const POLICY_RULES_VERSION = '2026-10-17.29';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1535,9 +1535,9 @@ const KEYCHAIN_SECURITY_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s/i;
 const KEYCHAIN_LIB_LOAD_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)/;
 // zn-gate's own client modules count only by their full path (node_modules, a global install or packages/zn-gate): a
 // project's own lib/client is no business of ours. A relative ./lib/client inside zn-gate itself is not covered.
-// zn-gate's own client modules count only by their full path (node_modules, a global install or packages/zn-gate): a
-// project's own lib/client is no business of ours. A relative ./lib/client inside zn-gate itself is not covered.
-const KEYCHAIN_LIB_NAME_RE = /(?:cloud-key|vault\/keychain|zn-gate[\\/]+lib[\\/]+(?:vault[\\/]+)?client(?![A-Za-z0-9_-]))/;
+// Matching ignores case (macOS and Windows load ZN-GATE/LIB/CLIENT) and drops `/./` segments first.
+const KEYCHAIN_LIB_NAME_RE = /(?:cloud-key|vault[\\/]+keychain|zn-gate[\\/]+lib[\\/]+(?:vault[\\/]+)?client(?![A-Za-z0-9_-]))/i;
+const KEYCHAIN_DOT_RE = /[\\/]\.(?=[\\/])/g;
 const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity|\banalyze\b|\bisCloudEnabled\b)/;
 
 /*
@@ -1579,7 +1579,7 @@ function keychainQuery(cmd, env) {
     // Dumping the keychain would include zn's entries whatever name is given.
     if (KEYCHAIN_DUMP_RE.test(t) && KEYCHAIN_SECURITY_RE.test(t)) return true;
     if (KEYCHAIN_WORD_RE.test(t) && named(t)) return true;
-    if (KEYCHAIN_LIB_NAME_RE.test(t) && KEYCHAIN_LIB_LOAD_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
+    if (KEYCHAIN_LIB_NAME_RE.test(t.replace(KEYCHAIN_DOT_RE, '')) && KEYCHAIN_LIB_LOAD_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
   }
   return false;
 }
