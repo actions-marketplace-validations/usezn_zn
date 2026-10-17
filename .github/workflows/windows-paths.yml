@@ -2,7 +2,8 @@ name: Windows checks for Windows-specific code
 
 # Pull requests into next run Ubuntu only. This workflow adds Windows (Node.js 22) when a pull
 # request touches code with Windows-specific paths: command quoting, launching programs, the
-# keychain, the broker, agent setup and their tests. Not a required check. The full Windows
+# keychain, the broker, agent setup and any change under packages/zn-gate/test, because the job runs
+# the whole unit test suite on Windows. Not a required check. The full Windows
 # matrix still runs on pushes to main and next, on pull requests into main and release branches,
 # and with the full-ci label.
 
@@ -19,11 +20,7 @@ on:
       - 'packages/zn-gate/lib/agents/**'
       - 'packages/zn-gate/lib/init.js'
       - 'packages/zn-gate/bin/**'
-      - 'packages/zn-gate/test/hook_quoting.test.js'
-      - 'packages/zn-gate/test/hooks*.test.js'
-      - 'packages/zn-gate/test/broker*.test.js'
-      - 'packages/zn-gate/test/vault*.test.js'
-      - 'packages/zn-gate/test/init*.test.js'
+      - 'packages/zn-gate/test/**'
       - 'plugins/tools/**'
       - '.github/workflows/windows-paths.yml'
 
