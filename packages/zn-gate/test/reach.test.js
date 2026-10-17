@@ -317,7 +317,7 @@ test('--sarif: one result per finding that is not info, with no value, and --fai
   assert.equal(ok.status, 0, ok.stdout);
 });
 
-test('--remember keeps only counts, and only when asked; the next run shows them', (t) => {
+test('--remember keeps only counts, and only when asked; the next run shows them', async (t) => {
   const m = machine(t, { found: ['.cursor'] });
   const env = { ...m.env, ZN_STATS: 'off' };
   const file = _internal.memoryFile(m.home, env);
@@ -349,6 +349,26 @@ test('--remember keeps only counts, and only when asked; the next run shows them
   const fourth = run('--remember');
   assert.doesNotMatch(fourth.stdout, /[\u001b\u0007]/);
   assert.match(fourth.stdout, /\(last time, an earlier run: 0 high, 0 medium, 2 low\)/);
+  // Other manipulated dates: a newline, a very long string, a date followed by escapes, a non-string.
+  const manipulated = ['2026-10-17\n\u001b[31mFAKE', '2026-10-17' + 'x'.repeat(5000), '2026-10-17\u001b[2J', 20261017, { a: 1 }, ['2026-10-17'], null, true];
+  for (const at of manipulated) {
+    data[k] = { high: 1, medium: 1, low: 1, at };
+    fs.writeFileSync(file, JSON.stringify(data));
+    const out = run('--remember');
+    assert.equal(out.status, 0, out.stderr);
+    assert.doesNotMatch(out.stdout, /[\u001b\u0007]|FAKE|xxxx/, JSON.stringify(at));
+    assert.match(out.stdout, /\(last time, an earlier run: 1 high, 1 medium, 1 low\)/, JSON.stringify(at));
+  }
+  // A well-formed date still shows, and nothing else on that line.
+  data[k] = { high: 1, medium: 1, low: 1, at: '2026-10-17' };
+  fs.writeFileSync(file, JSON.stringify(data));
+  assert.match(run('--remember').stdout, /\(last time, 2026-10-17: 1 high, 1 medium, 1 low\)/);
+  // The report itself neutralises a previous run that did not come through the file reader.
+  const r = await reach({ root: m.root, home: m.home, env });
+  r.previous = { high: 1, medium: 1, low: 1, at: '2026-10-17\u001b[2J\nFAKE' };
+  let outText = '';
+  report(r, (x) => { outText += x; });
+  assert.doesNotMatch(outText, /[\u001b\u0007]|\nFAKE/);
 });
 
 test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) => {
