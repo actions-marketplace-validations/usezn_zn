@@ -53,7 +53,7 @@ Replace `<commit-sha>` with the full commit SHA of the release you want and `vX.
 - `security-events: write` only for the job that uploads SARIF to code scanning. Without the upload step (for example with `format: github`), leave it out.
 - `actions: read` only in private repositories, which `upload-sarif` needs.
 
-Pull requests from forks get a read-only token, so the upload step cannot write to code scanning there. The audit still runs and fails the check; only the upload is skipped.
+On pull requests from forks, GitHub may not allow the SARIF upload. The audit still runs and its result still sets the status of the job.
 
 ## Which version runs
 
