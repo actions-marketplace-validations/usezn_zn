@@ -82,8 +82,9 @@ const SECRET_WORD = '(?:token|secret|passw(?:or)?d|pwd|api[-_]?key|access[-_]?ke
 // the next delimiter. No length limit, so a long token (a JWT) is hidden whole. A value opened with \" (JSON
 // inside a string) ends at the next \"; one opened with " may hold escaped quotes. Each alternative excludes
 // what the other takes, so matching stays linear for each place a lead matches.
-// Inside \"...\", an escaped quote arrives as \\\" and a backslash as \\\\: both stay in the value.
-const QUOTED = '\\\\"(?:[^"\\\\\\n]|\\\\\\\\\\\\"|\\\\\\\\|\\\\[^"\\\\\\n])+(?:\\\\")?|"(?:[^"\\\\\\n]|\\\\.)+"?|\'[^\'\\n]+\'?';
+// Inside \"...\", a backslash arrives as \\\\ and an escaped quote as \\\": both stay in the value, the
+// backslash tried first so that a value ending in one (\\\\\") still ends at its own \".
+const QUOTED = String.raw`\\"(?:[^"\\\n]|\\\\\\\\|\\\\\\"|\\\\|\\[^"\\\n])+(?:\\")?|"(?:[^"\\\n]|\\.)+"?|'[^'\n]+'?`;
 const CONTEXT_RES = [
   new RegExp('(--?[A-Za-z0-9]{0,40}(?:' + SECRET_WORD + '|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}(?:=|\\s{1,8}))(' + QUOTED + '|[^\\s"\'`]+)', 'gi'),
   // user:password after -u or --user; attached to -u (-uuser:pass) too, but there not a URL, because a flag

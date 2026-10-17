@@ -237,6 +237,8 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
     'curl -u deploy:http://zn-test-fake-e6 x', 'curl --user=deploy:git+ssh://zn-test-fake-e7 x']) {
     assert.doesNotMatch(redact(line), /zn-test-fake/, line + ' -> ' + redact(line));
   }
+  // A value that ends in an escaped backslash still ends at its own closing quote.
+  assert.equal(redact(String.raw`{\"password\":\"ab\\\\\",\"user\":\"keepme\"}`), String.raw`{\"password\":[REDACTED],\"user\":\"keepme\"}`);
   assert.doesNotMatch(s, /[\u001b\u0007]/);
   assert.doesNotMatch(json, /\\u001b|\\u0007/);
 });
