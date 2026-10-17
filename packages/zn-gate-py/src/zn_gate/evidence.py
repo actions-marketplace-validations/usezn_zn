@@ -407,7 +407,8 @@ def export_evidence_ledger(file_path: Optional[str] = None, format: str = "jsonl
 
     try:
         with open(target_path, "rb") as f:
-            raw = f.read().decode("utf-8", errors="replace")
+            # Same line endings as reading in text mode (Windows writes CRLF).
+            raw = f.read().decode("utf-8", errors="replace").replace("\r\n", "\n")
     except OSError:
         raw = ""
 
