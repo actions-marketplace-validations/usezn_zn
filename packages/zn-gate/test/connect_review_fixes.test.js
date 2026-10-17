@@ -205,6 +205,9 @@ test('a command that loads zn-gate client code by its path is refused', () => {
     "node -e \"const c = require('./packages/zn-gate/lib/client'); c.analyze('hi')\"",
     "node -e \"require('C:/Users/me/node_modules/zn-gate/lib/client').analyze('x')\"",
     'node -e "require(\'C:\\Users\\me\\node_modules\\zn-gate\\lib\\client\').analyze(1)"',
+    'node -e "require(\'C:\\\\Users\\\\me\\\\node_modules\\\\zn-gate\\\\lib\\\\client\').analyze(1)"',
+    'node -e "require(\'C:\\\\Users\\\\me\\\\node_modules\\\\zn-gate\\\\lib\\\\vault\\\\client\').resolveApiKey()"',
+    "node -e \"require('zn-gate//lib///client').analyze(1)\"",
     "node -e \"import('zn-gate/lib/vault/client').then((m) => m.resolveApiKey())\"",
     "node -e \"require('zn-gate/lib/vault/client').resolve('/', '__ZN_X__', {})\"; analyze",
   ]) {
@@ -234,7 +237,7 @@ test('ordinary commands that mention a lib/client of any project stay allowed', 
 
 test('the client-module check stays linear on 100 KB', () => {
   const n = 100 * 1000;
-  for (const p of ['import '.repeat(n / 7) + 'zn-gate/lib/client', 'analyze '.repeat(n / 8) + 'x', 'zn-gate/lib/'.repeat(n / 12 - 2) + 'require( analyze', 'from '.repeat(n / 5) + '; cat .env']) {
+  for (const p of ['import '.repeat(n / 7) + 'zn-gate/lib/client', 'analyze '.repeat(n / 8) + 'x', 'zn-gate/lib/'.repeat(n / 12 - 2) + 'require( analyze', 'zn-gate' + '/'.repeat(n - 10), 'zn-gate\\'.repeat(n / 8) + 'x', 'zn-gate/lib' + '\\/'.repeat(n / 2 - 20) + ' require( analyze', 'from '.repeat(n / 5) + '; cat .env']) {
     const t0 = process.hrtime.bigint();
     policy.bashDenial(p.slice(0, n), OPTS);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
