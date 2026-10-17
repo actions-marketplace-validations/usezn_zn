@@ -197,23 +197,47 @@ test('with NODE_DEBUG set nothing is sent or saved by analyze, connect or discon
   }
 });
 
-test('a command that loads zn-gate client code to use the key is refused, other uses stay free', () => {
+test('a command that loads zn-gate client code by its path is refused', () => {
   for (const cmd of [
     "node -e \"require('zn-gate/lib/client').analyze('x')\"",
-    "node -e \"require('./lib/client.js').isCloudEnabled()\"",
-    "node -e \"import('zn-gate/lib/client').then((m) => m.analyze('x'))\"",
+    "node -e \"require('/usr/lib/node_modules/zn-gate/lib/client.js').isCloudEnabled()\"",
+    "node -e \"require('./node_modules/zn-gate/lib/client').analyze('x')\"",
     "node -e \"const c = require('./packages/zn-gate/lib/client'); c.analyze('hi')\"",
+    "node -e \"require('C:/Users/me/node_modules/zn-gate/lib/client').analyze('x')\"",
+    'node -e "require(\'C:\\Users\\me\\node_modules\\zn-gate\\lib\\client\').analyze(1)"',
+    "node -e \"import('zn-gate/lib/vault/client').then((m) => m.resolveApiKey())\"",
+    "node -e \"require('zn-gate/lib/vault/client').resolve('/', '__ZN_X__', {})\"; analyze",
   ]) {
     assert.ok(policy.bashDenial(cmd, OPTS), cmd);
   }
+});
+
+test('ordinary commands that mention a lib/client of any project stay allowed', () => {
   for (const cmd of [
+    "node -e \"require('./lib/client').analyze(process.argv[1])\" data.csv",
+    'grep -nE "^import |analyze" src/lib/client.ts',
+    'rg -n "from .* import|def analyze" lib/client.py',
+    'cat lib/client.js | grep -n -e "import " -e analyze',
+    "python3 -c \"import runpy; runpy.run_path('lib/client.py')\" --analyze",
+    "npx tsx -e \"import { analyze } from './src/lib/client'; analyze()\"",
+    'sed -n 1,80p src/lib/client.ts',
+    'npx jest lib/client -t analyze',
+    'npx vitest run src/lib/client.test.ts -t "from analyze"',
+    'git diff src/lib/client.ts | grep -E "import |analyze"',
     'npx -y zn-gate check',
     'zn-gate analyze "hello"',
-    'npx zn-gate status',
-    "node -e \"require('./lib/client-pool').analyze('x')\"",
-    "node -e \"require('./src/client').connect()\"",
-    "node -e \"require('./lib/client')\"",
+    "node -e \"require('zn-gate/lib/client-pool').analyze('x')\"",
   ]) {
     assert.equal(policy.bashDenial(cmd, OPTS), null, cmd);
+  }
+});
+
+test('the client-module check stays linear on 100 KB', () => {
+  const n = 100 * 1000;
+  for (const p of ['import '.repeat(n / 7) + 'zn-gate/lib/client', 'analyze '.repeat(n / 8) + 'x', 'zn-gate/lib/'.repeat(n / 12 - 2) + 'require( analyze', 'from '.repeat(n / 5) + '; cat .env']) {
+    const t0 = process.hrtime.bigint();
+    policy.bashDenial(p.slice(0, n), OPTS);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 2500, p.slice(0, 12) + ' took ' + ms.toFixed(0) + ' ms');
   }
 });
