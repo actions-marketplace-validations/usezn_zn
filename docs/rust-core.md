@@ -23,7 +23,7 @@ Known limits that remain, because the gateway is not distributed: the OCR check 
 
 ## Post-quantum policy signatures
 
-A policy can carry a post-quantum signature next to its Ed25519 one (`.wasm.pqs`, base64). When `ZN_PQ_PUBLIC_KEY` is set (hex), that signature is required. Since 1.12.0 it is ML-DSA-65 (FIPS 204), verified with the RustCrypto `ml-dsa` crate. Earlier versions used Dilithium3 from the unmaintained PQClean bindings: a Dilithium3 key has the same size, but its signatures cannot be decoded as ML-DSA-65, so policies signed that way are refused until they are signed again with an ML-DSA-65 key.
+A policy can carry a post-quantum signature next to its Ed25519 one (`.wasm.pqs`, base64). When `ZN_PQ_PUBLIC_KEY` is set (hex), that signature is required. From the release after 1.11.0 it is ML-DSA-65 (FIPS 204), verified with the RustCrypto `ml-dsa` crate. Sign the raw bytes of the `.wasm` file with pure ML-DSA-65 (not the pre-hash variant) and an empty context string, and write the signature as base64 to `.wasm.pqs`; a signature made with a context or a pre-hash does not verify. Earlier versions used Dilithium3 from the unmaintained PQClean bindings: a Dilithium3 key has the same size, but its signatures cannot be decoded as ML-DSA-65, so policies signed that way are refused until they are signed again with an ML-DSA-65 key.
 
 ## Dependency advisories that cannot be fixed yet
 
