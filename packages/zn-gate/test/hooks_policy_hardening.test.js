@@ -534,3 +534,46 @@ test('reading a key or .env file never blocks and a repeated word is read once',
     assert.ok(Number(process.hrtime.bigint() - t1) / 1e6 < 2000, 'a FIFO must not block');
   }
 });
+
+test('a command with many paths after several cd is refused within the time budget, never let through', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-budget-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const d of ['a', 'b', 'c', 'd']) fs.mkdirSync(path.join(dir, d));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  // A few simple commands, so the 1000-command limit is not what stops it: one cat with thousands of paths.
+  let cmd = 'cd a; cd b; cd c; cd d; cat';
+  for (let i = 0; cmd.length < 98000; i++) cmd += ' x' + i + '/.env';
+  cmd += '; cat .env';
+  const t0 = process.hrtime.bigint();
+  const deny = policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(deny, 'refused');
+  assert.match(deny, /too many paths|holds plain-text secrets/);
+  assert.ok(ms < 8000, 'checked in ' + ms + ' ms');
+});
+
+test('a Python virtualenv named .env is a folder, not a secret file', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-venv-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, '.env', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.env', 'bin', 'activate'), '# fake activate\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['ls .env', 'rm -rf .env', 'python3 -m venv .env', 'source .env/bin/activate']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  assert.equal(policy.readDenial(path.join(dir, '.env'), o), null);
+});
+
+test('a read placed after more than 1000 chained commands is refused, not skipped', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-chain-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, '.aws'));
+  fs.writeFileSync(path.join(dir, '.aws', 'credentials'), '[default]\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const n of [999, 1001, 5000]) {
+    assert.ok(policy.bashDenial('true; '.repeat(n) + 'cat ~/.aws/credentials', o), String(n));
+  }
+  assert.match(policy.bashDenial('true; '.repeat(1500) + 'ls', o), /more than 1000 commands/);
+  assert.equal(policy.bashDenial('true; '.repeat(900) + 'ls', o), null);
+});

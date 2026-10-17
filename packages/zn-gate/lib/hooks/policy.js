@@ -552,6 +552,13 @@ function readDenial(p, opts = {}) {
   return credentialDenial(p, c);
 }
 
+/* Spend `n` looks on disk from a command's budget; true once the time or the looks are used up. */
+function overBudget(budget, n) {
+  if (!budget) return false;
+  budget.disk -= n;
+  return budget.disk < 0 || Date.now() > budget.until;
+}
+
 /* The first `max` bytes of a file, as latin1 text. null when it does not exist; NOT_A_FILE for anything that is not
    a regular file (a FIFO, a device, a directory): opening is non-blocking, so a FIFO cannot hold the hook until the
    agent's timeout lets the command through. */
@@ -565,6 +572,7 @@ function readHead(abs, max) {
   }
   try {
     const st = fs.fstatSync(fd);
+    if (st.isDirectory()) return null; // a folder holds no values (a Python virtualenv named .env)
     if (!st.isFile()) return NOT_A_FILE;
     const n = Math.min(st.size, max);
     const buf = Buffer.allocUnsafe(n);
@@ -702,6 +710,8 @@ function allWords(cmd, posix = false) {
     }
     rest = rest.slice(scan.end + 1);
   }
+  // Simple commands past the limit were not read: the caller refuses the command rather than check only part of it.
+  if (rest.length) out.truncated = true;
   return out;
 }
 
@@ -914,6 +924,12 @@ function vaultMessage(opts = {}) {
     znCommand('secret set NAME', opts) + '` in their own terminal.';
 }
 const TOO_LONG_MESSAGE = 'zn: this command is too long for zn to check (over 100 KB), so it was blocked. Next step: tell the user; do not resend it in parts.';
+// The agent runs a command unchecked when the hook times out (15 s in Claude Code), so checking a command has its
+// own limits, well below that: a time budget and a number of looks on disk. Past either, the command is refused.
+const CHECK_BUDGET_MS = 3000;
+const TOO_MANY_MESSAGE = 'zn: this command chains more than 1000 commands, more than zn checks at once, so it was blocked. Next step: run it as several shorter commands, or tell the user.';
+const CHECK_BUDGET_DISK = 20000;
+const TOO_SLOW_MESSAGE = 'zn: this command has too many paths for zn to check in time, so it was blocked. Next step: run it as several shorter commands, or tell the user.';
 
 /**
  * Bash commands that read credential files or touch ~/.zn.
@@ -964,6 +980,8 @@ function bashDenialOf(cmd, opts = {}) {
   // Bash $'...' quoting spells characters as escapes ($'\x2eenv' is .env), and $"..." is a plain "...":
   // a fourth reading with them decoded.
   if (/\$['"]/.test(String(cmd))) readings.push(allWords(decodeAnsiC(String(cmd)), true));
+  // Each reading splits at most 1000 simple commands; a longer chain is refused, not checked in part.
+  if (readings.some((r) => r.truncated)) return TOO_MANY_MESSAGE;
   const words = readings.flat();
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
@@ -978,6 +996,7 @@ function bashDenialOf(cmd, opts = {}) {
   // Each reading is followed on its own, so a cd counts once.
   opts.cdBases = cdBasesOf(readings, opts);
   opts.elsewhere = new Map();
+  opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
   opts.cmdText = String(cmd);
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
@@ -1007,6 +1026,7 @@ function bashDenialOf(cmd, opts = {}) {
     const writing = !READ_ONLY_CMDS.has(w.head);
     if (!classified.has(text)) {
       if (globDeny && ++afterGlob > GLOB_NAME_LOOKAHEAD) return globDeny;
+      if (overBudget(opts.budget, 1)) return TOO_SLOW_MESSAGE;
       classified.set(text, classifyWord(text, opts));
     }
     const c = classified.get(text);
@@ -1207,6 +1227,7 @@ function dotenvElsewhereOf(text, opts) {
   const cwd = path.resolve(opts.cwd || process.cwd());
   for (const dir of bases.dirs) {
     if (dir === cwd) continue;
+    if (overBudget(opts.budget, 1)) return TOO_SLOW_MESSAGE;
     const deny = readDenial(text, { ...opts, cwd: dir, env: pwdRef ? { ...env, PWD: dir } : env });
     if (deny) {
       // The folder as the user would type it: relative below the current folder, absolute above it.
