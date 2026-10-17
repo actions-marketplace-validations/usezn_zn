@@ -46,8 +46,9 @@ depends on whether a coding agent that zn does not protect is installed here:
 - **info**: every agent found is protected. The finding is shown for
   completeness and is never counted as a problem.
 
-Audit findings keep the severity that `zn audit` gives them, with `critical`
-shown as `high`.
+Environment variables with a secret are always `low`: they reach an agent
+only when it is started from that terminal. Audit findings keep the severity
+that `zn audit` gives them, with `critical` shown as `high`.
 
 ### What is checked, and how
 
@@ -116,8 +117,7 @@ characters, so the file holds no path, file name or value. At most 200 folders
 are kept; the oldest go first. The next `--remember` run in the same folder
 then shows, for example, `(last time, 2026-10-17: 2 high, 1 medium, 0 low)`.
 
-Without `--remember`, reach reads and writes nothing outside the folder it
-checks.
+Without `--remember`, reach writes no file.
 
 ## Example output
 
@@ -177,7 +177,8 @@ With `--fail-on high`, that run exits with code 1.
 - `truncated`: `true` when the audit of the configuration ran out of time or
   entries. Then the report says that some files were not checked, and never
   that nothing needs fixing.
-- `previous`: present only with `--remember` and an earlier run in this folder.
+- `previous`: present only with `--remember`: the counts and date of the
+  earlier run in this folder, or `null` when there is none.
 
 ## SARIF and CI
 
@@ -189,7 +190,8 @@ environment variables) and findings about files outside the folder become
 notifications of the run, because code scanning cannot place them in a file of
 the repository. Info findings are left out.
 
-A workflow that uploads the report to GitHub code scanning:
+A workflow that uploads the report to GitHub code scanning (actions pinned
+to a full commit SHA, as in this repository's own workflows):
 
 ```yaml
 name: zn reach
@@ -207,17 +209,17 @@ jobs:
   reach:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - name: Run zn-gate reach
         run: npx -y zn-gate reach --sarif > zn-reach.sarif
       - name: Upload to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: zn-reach.sarif
 ```
@@ -242,8 +244,8 @@ The SARIF file is written before the exit code is known, so the upload step
 ## Limits
 
 - Reach checks one folder: its own `.env` files and its agent settings. It
-  does not walk sub-folders for `.env` files. Use
-  [`zn-gate scan`](audit.md) or a secret scanner for the whole repository.
+  does not walk sub-folders for `.env` files. Use `npx -y zn-gate scan` or a
+  secret scanner for the whole repository.
 - The list of credential files and the list of secret names are fixed. A
   secret stored under a name that does not look like one is not reported by
   name. The environment check looks at names and at value formats only.
