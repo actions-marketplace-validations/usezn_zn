@@ -86,10 +86,11 @@ function globalInstall(env) {
 /* The plan: {items: [{id, name, found, state, problem, steps}], setup: [step]} ; a step is {label, run: [file, args] | null, manual}. */
 async function plan(opts = {}) {
   const { getAdapter } = require('./agents');
-  const { check } = require('./check');
+  const { check, _internal: { pluginNodeOk } } = require('./check');
   const env = opts.env || process.env;
   const home = opts.home;
-  const res = await check({ home, env, cwd: opts.cwd });
+  const nodeVersion = opts.nodeVersion || process.versions.node;
+  const res = await check({ home, env, cwd: opts.cwd, nodeVersion });
   let temporary = opts.temporary !== undefined ? opts.temporary : fromTemporaryCopy();
   const glob = opts.global || globalInstall(env);
   if (opts.temporary === undefined && !temporary && glob.pkgDir && !samePath(PKG_ROOT, glob.pkgDir)) temporary = true;
@@ -104,8 +105,13 @@ async function plan(opts = {}) {
       // Claude Code set up with zn's own hooks is repaired with them, and with the plugin as well it drops them:
       // installing the plugin on top would run both sets.
       // A broken plugin next to zn's own hooks that do not work either: the hooks are repaired first (below).
-      const hooksVerb = r.id !== 'claude-code' ? 'install' : r.via === 'hooks' ? 'install'
+      let hooksVerb = r.id !== 'claude-code' ? 'install' : r.via === 'hooks' ? 'install'
         : r.via === 'both' && r.duplicate ? 'uninstall' : r.via === 'both' && r.pluginBroken && r.hooksBroken ? 'install' : null;
+      // The plugin needs Node.js 20.12 or later: with an older one it is not installed, and zn's own hooks are set up instead.
+      if (r.id === 'claude-code' && !pluginNodeOk(nodeVersion) && !hooksVerb && !r.rulesFault && (r.via === 'plugin' || r.state === 'not-set-up')) {
+        hooksVerb = 'install';
+        item.note = 'Claude Code plugin skipped: it needs Node.js 20.12 or later (you have ' + nodeVersion + '). zn\'s hooks are set up instead; update Node.js to use the plugin.';
+      }
       const disablePlugin = () => {
         const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
         if (claude) return { label: 'turn off the zn-gate plugin (zn\'s own hooks stay)', run: [claude, ['plugin', 'disable', 'zn-gate@usezn']], manual: 'claude plugin disable zn-gate@usezn' };
@@ -199,6 +205,7 @@ async function guide(opts = {}) {
     else if (i.state === 'protected') w(`  OK ${i.name.padEnd(12)} already protected by zn\n`);
     else w(`  >  ${i.name.padEnd(12)} ${i.state === 'not-protected' ? 'not protected: ' + i.problem : 'not set up yet'}\n`);
   }
+  for (const i of items) if (i.note && i.steps.length) w(`${i.note}\n`);
   w('\n');
   const tail = () => w('(To wrap the MCP servers in your agent configs, which `zn-gate init` used to do: `zn-gate init --wrap-mcp`.)\n');
   if (!items.some((i) => i.found)) {
