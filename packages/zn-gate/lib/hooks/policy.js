@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-16.8';
+const POLICY_RULES_VERSION = '2026-10-17.1';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -868,10 +868,14 @@ const TOO_LONG_MESSAGE = 'zn: this command is too long for zn to check (over 100
  * Only the message changes: the decision is the one bashDenial made.
  */
 const SHELL_PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm;
+// Each file name is resolved on disk, so a long patch is named by its first files only; the decision is already made.
+const SHELL_PATCH_FILES_NAMED = 32;
 function shellPatchMessage(cmd, deny, opts) {
   // Only a refused command that is a patch (apply_patch with *** lines); a too-long command keeps its own message.
   if (!deny || deny === TOO_LONG_MESSAGE || !/^\s*apply_patch\b/.test(String(cmd)) || !/^\*\*\* /m.test(String(cmd))) return deny;
+  let seen = 0;
   for (const m of String(cmd).matchAll(SHELL_PATCH_FILE_RE)) {
+    if (++seen > SHELL_PATCH_FILES_NAMED) break;
     const f = m[1].trim();
     const c = classifyPath(f, opts);
     // The name comes from the agent: no control characters, and short, in a message the user reads.
@@ -909,7 +913,9 @@ function bashDenialOf(cmd, opts = {}) {
   // often repeats the same words.
   const classified = new Map();
   // A word with * ? or [ can match a secret file; the message names a literal file when the command has one too.
+  // The command is refused either way, so after a glob only a few more words are resolved on disk to find that file.
   let globDeny = null;
+  let afterGlob = 0;
   for (const w of words) {
     // --flag=value carries a path too (--kubeconfig=~/.kube/config).
     let text = w.text;
@@ -920,7 +926,10 @@ function bashDenialOf(cmd, opts = {}) {
     }
     if (!text) continue;
     const writing = !READ_ONLY_CMDS.has(w.head);
-    if (!classified.has(text)) classified.set(text, classifyWord(text, opts));
+    if (!classified.has(text)) {
+      if (globDeny && ++afterGlob > SHELL_PATCH_FILES_NAMED) return globDeny;
+      classified.set(text, classifyWord(text, opts));
+    }
     const c = classified.get(text);
     if (!c) {
       if (writing && AGENT_CONFIG_MENTION_RE.test(slash(text))) {

@@ -312,3 +312,20 @@ test('a patch sent as a shell command (Codex apply_patch) is refused with the fi
   const huge = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: a.txt\n+" + 'x'.repeat(policy.SHELL_SCAN_CAP + 10) + "\n*** End Patch\nPATCH";
   assert.doesNotMatch(policy.bashDenial(huge, { cwd: dir, home: dir }), /sent as a shell command/);
 });
+
+test('a long patch sent as a shell command is refused quickly, naming a secret file among its first files', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-ap-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  let body = '';
+  for (let i = 0; body.length < 90 * 1024; i++) body += '*** Add File: src/part' + i + '/file' + i + '.txt\n+x\n';
+  const big = "apply_patch <<'PATCH'\n*** Begin Patch\n" + body + "*** End Patch\nPATCH";
+  assert.ok(big.length < policy.SHELL_SCAN_CAP);
+  const t0 = process.hrtime.bigint();
+  const m = policy.bashDenial(big, { cwd: dir, home: dir });
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 1500, 'too slow');
+  assert.match(m, /sent as a shell command, which zn cannot check file by file/);
+  // A secret file among the first files is still named.
+  const named = policy.bashDenial("apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: .env\n@@\n+X=1\n" + body + "*** End Patch\nPATCH", { cwd: dir, home: dir });
+  assert.match(named, /writes to \.env/);
+});
