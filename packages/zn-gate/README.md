@@ -33,7 +33,7 @@ Everything runs on your machine; no account or API key is needed. You need Node.
 npx -y zn-gate init
 ```
 
-It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal: when an AI agent or a script runs it, it only prints the steps.
+It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, or zn's hooks when your Node.js is older than 20.12; zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal: when an AI agent or a script runs it, it only prints the steps.
 
 > **Windows PowerShell:** `npm` and `npx` can fail with "running scripts is disabled on this system", because the default execution policy blocks `npm.ps1`. Use `npm.cmd`, `npx.cmd` and `zn.cmd` instead (for example `npm.cmd install -g zn-gate`), run the commands from Command Prompt, or allow local scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
@@ -53,7 +53,7 @@ Five-minute walkthrough: [docs/secrets.md](https://github.com/usezn/zn/blob/main
 
 **One agent at a time** (the same steps `init` runs):
 
-**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later.
+**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later. The plugin needs Node.js 20.12 or later. With an older Node.js, `npx -y zn-gate init` skips the plugin and sets up zn's hooks for Claude Code instead (`zn-gate check` says so if the plugin is installed); update Node.js to use the plugin.
 
 ```bash
 claude plugin marketplace add usezn/zn
