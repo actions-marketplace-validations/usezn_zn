@@ -1,0 +1,88 @@
+{
+  "_comment": "p95 of each hook case divided by the p50 start-up of a bare node in the same run (bench/hook_latency_matrix.js). Update with: node bench/hook_latency_gate.js report.json --update-baseline",
+  "meta": {
+    "date": "2026-10-17",
+    "node": "v22.23.3",
+    "platform": "linux 6.17.0-1022-azure",
+    "cpu": "AMD EPYC 7763 64-Core Processor x4",
+    "runs": 20,
+    "bareNodeP50": 23.8
+  },
+  "results": [
+    {
+      "agent": "claude-code",
+      "case": "PreToolUse Bash",
+      "ratio": 2.639
+    },
+    {
+      "agent": "codex",
+      "case": "PreToolUse Bash",
+      "ratio": 2.223
+    },
+    {
+      "agent": "cursor",
+      "case": "beforeShellExecution",
+      "ratio": 2.256
+    },
+    {
+      "agent": "claude-code",
+      "case": "PostToolUse Bash 1 KB",
+      "ratio": 2.71
+    },
+    {
+      "agent": "codex",
+      "case": "PostToolUse Bash 1 KB",
+      "ratio": 2.592
+    },
+    {
+      "agent": "cursor",
+      "case": "postToolUse MCP 1 KB",
+      "ratio": 2.622
+    },
+    {
+      "agent": "claude-code",
+      "case": "PostToolUse Bash 100 KB",
+      "ratio": 2.807
+    },
+    {
+      "agent": "codex",
+      "case": "PostToolUse Bash 100 KB",
+      "ratio": 2.845
+    },
+    {
+      "agent": "cursor",
+      "case": "postToolUse MCP 100 KB",
+      "ratio": 2.992
+    },
+    {
+      "agent": "claude-code",
+      "case": "PostToolUse Bash 100 KB with 2 secrets",
+      "ratio": 3.097
+    },
+    {
+      "agent": "codex",
+      "case": "PostToolUse Bash 100 KB with 2 secrets",
+      "ratio": 3.113
+    },
+    {
+      "agent": "cursor",
+      "case": "postToolUse MCP 100 KB with 2 secrets",
+      "ratio": 3.16
+    },
+    {
+      "agent": "claude-code",
+      "case": "PostToolUse Bash 1000 KB",
+      "ratio": 4.231
+    },
+    {
+      "agent": "codex",
+      "case": "PostToolUse Bash 1000 KB",
+      "ratio": 3.584
+    },
+    {
+      "agent": "cursor",
+      "case": "postToolUse MCP 1000 KB",
+      "ratio": 3.748
+    }
+  ]
+}

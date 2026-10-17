@@ -34,6 +34,12 @@ function compare(report, baseline, maxIncrease, log = () => {}) {
   return fail;
 }
 
+/** The cases of the report that are over their limit (missing ones are not: they cannot be measured again). */
+function overLimit(report, baseline, maxIncrease) {
+  const base = new Map((baseline.results || []).map((r) => [key(r), r]));
+  return report.results.filter((r) => base.has(key(r)) && r.ratio > base.get(key(r)).ratio * (1 + maxIncrease)).map(key);
+}
+
 function main() {
   const args = process.argv.slice(2);
   const file = args[0];
@@ -51,4 +57,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { compare };
+module.exports = { compare, overLimit };

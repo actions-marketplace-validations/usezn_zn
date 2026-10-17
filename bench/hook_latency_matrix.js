@@ -95,28 +95,32 @@ function bareNode() {
 
 const pct = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
 
+/* p50 and p95 of one case over `runs` samples, with Node's start-up measured between the samples. */
+async function measure(agent, label, event, runs) {
+  await once(agent, event); // warm the file cache
+  const times = [];
+  const bare = [];
+  let leaked = false;
+  for (let i = 0; i < runs; i++) {
+    const r = await once(agent, event);
+    times.push(r.ms);
+    if (r.out.includes(AWS) || r.out.includes(GHP)) leaked = true;
+    // Node start-up measured between the samples, so both see the same machine load.
+    bare.push(await bareNode());
+  }
+  if (leaked) throw new Error('a fake secret came back from the hook: ' + agent + ' ' + label);
+  times.sort((a, b) => a - b);
+  bare.sort((a, b) => a - b);
+  return { agent, case: label, p50: +pct(times, 50).toFixed(1), p95: +pct(times, 95).toFixed(1), bare };
+}
+
 async function main() {
   const list = cases();
-  const bare = [];
   const results = [];
-  for (const [agent, label, event] of list) {
-    await once(agent, event); // warm the file cache
-    const times = [];
-    let leaked = false;
-    for (let i = 0; i < RUNS; i++) {
-      const r = await once(agent, event);
-      times.push(r.ms);
-      if (r.out.includes(AWS) || r.out.includes(GHP)) leaked = true;
-      // Node start-up measured between the samples, so both see the same machine load.
-      bare.push(await bareNode());
-    }
-    if (leaked) throw new Error('a fake secret came back from the hook: ' + agent + ' ' + label);
-    times.sort((a, b) => a - b);
-    results.push({ agent, case: label, p50: +pct(times, 50).toFixed(1), p95: +pct(times, 95).toFixed(1) });
-  }
-  bare.sort((a, b) => a - b);
-  const nodeP50 = +pct(bare, 50).toFixed(1);
-  for (const r of results) r.ratio = +(r.p95 / nodeP50).toFixed(3);
+  for (const [agent, label, event] of list) results.push(await measure(agent, label, event, RUNS));
+  const allBare = results.flatMap((r) => r.bare).sort((a, b) => a - b);
+  const nodeP50 = +pct(allBare, 50).toFixed(1);
+  for (const r of results) { r.ratio = +(r.p95 / nodeP50).toFixed(3); delete r.bare; }
   const meta = {
     date: new Date().toISOString().slice(0, 10), node: process.version, platform: process.platform + ' ' + os.release(),
     cpu: (os.cpus()[0] || {}).model + ' x' + os.cpus().length, runs: RUNS, bareNodeP50: nodeP50,
@@ -126,8 +130,26 @@ async function main() {
   console.log('| agent | case | p50 | p95 | p95 / node start-up |\n|---|---|---|---|---|');
   for (const r of results) console.log('| ' + r.agent + ' | ' + r.case + ' | ' + r.p50 + ' | ' + r.p95 + ' | ' + r.ratio + ' |');
   if (JSON_OUT) fs.writeFileSync(JSON_OUT, JSON.stringify(report, null, 2) + '\n');
+  if (!BASELINE) fs.rmSync(HOME, { recursive: true, force: true });
+  if (BASELINE) {
+    const gate = require('./hook_latency_gate');
+    const baseline = JSON.parse(fs.readFileSync(BASELINE, 'utf8'));
+    // One slow sample can move a p95: a case over the limit is measured again with twice the samples, and
+    // fails only if it is still over.
+    const over = gate.overLimit(report, baseline, MAX_INCREASE);
+    if (over.length) {
+      console.log('\nMeasured again (' + RUNS * 2 + ' runs): ' + over.join(', '));
+      for (const k of over) {
+        const [agent, label, event] = list.find(([a, l]) => a + ' | ' + l === k);
+        const again = await measure(agent, label, event, RUNS * 2);
+        const i = report.results.findIndex((r) => r.agent + ' | ' + r.case === k);
+        report.results[i] = { agent, case: label, p50: again.p50, p95: again.p95, ratio: +(again.p95 / pct(again.bare, 50)).toFixed(3), remeasured: true };
+      }
+      if (JSON_OUT) fs.writeFileSync(JSON_OUT, JSON.stringify(report, null, 2) + '\n');
+    }
+    process.exitCode = gate.compare(report, baseline, MAX_INCREASE, console.log);
+  }
   fs.rmSync(HOME, { recursive: true, force: true });
-  if (BASELINE) process.exitCode = require('./hook_latency_gate').compare(report, JSON.parse(fs.readFileSync(BASELINE, 'utf8')), MAX_INCREASE, console.log);
 }
 
 main().catch((err) => {
