@@ -235,6 +235,7 @@ COMMANDS:
   analyze <text>      Inspect a prompt from the CLI (local; cloud only with ZN_CLOUD=1 + key)
   test                Run the local self-test (51 curated vectors: 26 attacks, 25 benign)
   stats               What zn-gate did on this machine (local counts; --days N, --json; "stats share" to opt in)
+  report              Weekly report of what zn-gate did on this machine (--since Nd, --json, --no-team-line; nothing is sent)
   pins                Tool pins of the MCP servers that shield wraps ("pins approve <server>|--all" accepts changes)
   status              Show engine configuration and gateway connectivity
   version, -V         Show package version
@@ -994,6 +995,11 @@ Recent Events (last ${Math.min(options.tail, stats.total)}):
 
   if (command === 'pins') {
     process.exitCode = await require('../lib/pins-cli').run(args.slice(1));
+    return;
+  }
+
+  if (command === 'report') {
+    process.exitCode = require('../lib/report').run(args.slice(1));
     return;
   }
 
