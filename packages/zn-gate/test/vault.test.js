@@ -185,6 +185,21 @@ test('daemon: resolve refuses withheld destinations and audits it', async () => 
   c.close();
 });
 
+test('daemon: the key of zn-gate connect is resolved only for zn-gate own cloud code', async () => {
+  const c = clientMod.createClient({});
+  const value = 'zn_' + crypto.randomBytes(24).toString('hex');
+  await c.setSecret('ZN_CLOUD_API_KEY', value, { mode: 'proxy', allowHosts: ['api.usezn.com'] });
+  const marker = '__ZN_ZN_CLOUD_API_KEY__';
+  await assert.rejects(c.resolve('/work/app', marker), (e) => e.code === 'ZN_POLICY_DENIED');
+  await assert.rejects(c.resolve('/work/app', marker, { destination: 'bash_local', agent: 'claude-code', tool: 'Bash' }), (e) => e.code === 'ZN_POLICY_DENIED');
+  const quiet = await c.resolve('/work/app', marker, { destination: 'write_local', withPolicy: true });
+  assert.strictEqual(quiet.value, null);
+  assert.strictEqual(await c.resolve('/work/app', marker, { purpose: 'zn-cloud-key' }), value);
+  assert.strictEqual(await c.resolve('/work/app', marker, { purpose: 'something-else' }).catch(() => 'denied'), 'denied');
+  await c.removeSecret('ZN_CLOUD_API_KEY');
+  c.close();
+});
+
 test('daemon: named secrets, reserved names, metadata updates, backups', async () => {
   const c = clientMod.createClient({});
   const value = 'ghp_' + fake(36);

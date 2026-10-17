@@ -123,3 +123,76 @@ test('secrets_http_request refuses the key stored by connect, even for an allowe
     assert.equal(seen.length, 1);
   } finally { server.close(); }
 });
+
+/* ---- review 2: underscore options, NODE_DEBUG, the vault and the cloud key marker ---- */
+
+test('Node reads underscores in an option name like dashes: those spellings are refused too', () => {
+  const why = (o) => cloudKey.tlsRefusal({ NODE_OPTIONS: o });
+  for (const o of [
+    '--tls_keylog=/tmp/k.log', '--inspect_brk', '--inspect_brk=9229', '--inspect_port=9230', '--inspect_wait', '--experimental_loader ./l.mjs',
+    '--experimental_loader=./l.mjs', '--use_openssl_ca', '--openssl_config=/tmp/o.cnf', '--openssl_shared_config=/tmp/o.cnf', '"--tls_keylog=/tmp/k.log"',
+  ]) {
+    assert.match(why(o), /NODE_OPTIONS/, o);
+  }
+  // only the name is normalised, never the value
+  assert.equal(why('--title=my_--inspect_app'), null);
+  assert.equal(why('--max_old_space_size=512'), null);
+});
+
+test('zn audit reads --experimental_loader in NODE_OPTIONS like --experimental-loader', () => {
+  const { classifyEnv } = require('../lib/audit/patterns');
+  for (const v of ['--experimental_loader ./l.mjs', '--experimental-loader ./l.mjs', '--experimental_policy=p.json']) {
+    assert.deepEqual(classifyEnv('NODE_OPTIONS', v), { kind: 'code' }, v);
+  }
+  assert.equal(classifyEnv('NODE_OPTIONS', '--max-old-space-size=512'), null);
+});
+
+test('NODE_DEBUG holds back the saved key, with one line', () => {
+  for (const v of ['https', 'http,https', 'tls', 'net', 'anything', '*']) {
+    const why = cloudKey.tlsRefusal({ NODE_DEBUG: v });
+    assert.match(why, /NODE_DEBUG is set/, v);
+    assert.ok(!why.includes('\n'));
+  }
+  assert.equal(cloudKey.tlsRefusal({ NODE_DEBUG: '' }), null);
+  assert.equal(cloudKey.tlsRefusal({ NODE_DEBUG: '  ' }), null);
+});
+
+test('with NODE_DEBUG set nothing is sent or saved by analyze, connect or disconnect', async () => {
+  const fs = require('fs');
+  const crypto = require('crypto');
+  const { EventEmitter } = require('events');
+  const client = require('../lib/client');
+  const connectCli = require('../lib/connect-cli');
+  const https = require('https');
+  const real = https.request;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-nodedebug-'));
+  process.env.ZN_HOME = home;
+  let requests = 0;
+  https.request = () => {
+    requests++;
+    const req = new EventEmitter();
+    req.write = () => {}; req.destroy = () => {};
+    req.end = () => setImmediate(() => req.emit('error', new Error('stubbed')));
+    return req;
+  };
+  let mem = null;
+  const deps = { native: { name: 'fake', slot: {}, impl: { store: (k) => { mem = k; }, load: () => mem, remove: () => { mem = null; return true; } } }, vault: { isUnlocked: async () => false } };
+  try {
+    cloudKey._use(deps);
+    const key = 'zn_' + crypto.randomBytes(24).toString('hex');
+    await cloudKey.saveKey(key, deps);
+    process.env.NODE_DEBUG = 'https';
+    const r = await client.analyze('What is the weather today?', {});
+    assert.equal(requests, 0);
+    assert.equal(r.mode, 'oss-local');
+    assert.match(r.cloud_error, /NODE_DEBUG/);
+    const res = await connectCli.request(https, 'DELETE', '/prod/keys/self', key);
+    assert.equal(requests, 0);
+    assert.match(res.error, /NODE_DEBUG/);
+  } finally {
+    https.request = real;
+    cloudKey._use(null);
+    delete process.env.NODE_DEBUG; delete process.env.ZN_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

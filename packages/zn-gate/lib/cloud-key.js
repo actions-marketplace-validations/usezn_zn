@@ -27,13 +27,15 @@ const path = require('path');
 
 const KEY_RE = /^[A-Za-z0-9._-]{16,256}$/;
 const VAULT_SECRET = 'ZN_CLOUD_API_KEY';
+// The vault resolves the cloud key only for a request that says this: the hooks and the secrets broker never do.
+const RESOLVE_PURPOSE = 'zn-cloud-key';
 const STORES = ['keychain', 'vault'];
 const TLS_REFUSAL = 'NODE_TLS_REJECT_UNAUTHORIZED=0 is set, so zn-gate will not send the saved key over a connection whose certificate is not checked';
 
 /**
  * Why a saved key must not be sent now, or null. The key goes only over a connection checked against the
  * system's certificate authorities: not while the environment turns checking off or adds authorities or code
- * (NODE_TLS_REJECT_UNAUTHORIZED=0, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, or NODE_OPTIONS with --require, --import,
+ * (NODE_TLS_REJECT_UNAUTHORIZED=0, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, NODE_DEBUG, or NODE_OPTIONS with --require, --import,
  * -r, --use-openssl-ca, --tls-keylog or --inspect*). A key given with --key or ZN_API_KEY is the person's own choice and is not held back.
  */
 function tlsRefusal(env = process.env) {
@@ -42,7 +44,11 @@ function tlsRefusal(env = process.env) {
     if (env[name]) return name + ' is set, so zn-gate will not send the saved key: the connection could trust other certificate authorities';
   }
   if (env.OPENSSL_CONF) return 'OPENSSL_CONF is set, so zn-gate will not send the saved key: the TLS settings could be changed';
-  if (nodeOptionsList(env.NODE_OPTIONS).some((t) => RISKY_NODE_OPTION.test(t))) {
+  // Node prints the request headers, Authorization included, when NODE_DEBUG names http, https, tls or net: any value is refused.
+  if (typeof env.NODE_DEBUG === 'string' && env.NODE_DEBUG.trim()) {
+    return 'NODE_DEBUG is set, so zn-gate will not use the saved key: Node could print it';
+  }
+  if (nodeOptionsList(env.NODE_OPTIONS).some((t) => RISKY_NODE_OPTION.test(optionName(t)))) {
     return 'NODE_OPTIONS loads code, changes the TLS settings or opens a debugger, so zn-gate will not send the saved key';
   }
   return null;
@@ -51,6 +57,13 @@ function tlsRefusal(env = process.env) {
 // Options that load code, change the certificates or TLS settings Node uses, write the TLS session keys to a file,
 // or open a debugger that can read the key from memory.
 const RISKY_NODE_OPTION = /^(?:-r|--require|--import|--loader|--experimental-loader|--use-openssl-ca|--openssl-config|--openssl-shared-config|--tls-keylog|--inspect(?:-brk|-port|-wait)?)(?:=|$)/;
+
+/** Node reads `_` in the name of a `--option` like `-` (--tls_keylog is --tls-keylog); the value after `=` is left alone. */
+function optionName(token) {
+  if (!token.startsWith('--')) return token;
+  const eq = token.indexOf('=');
+  return (eq < 0 ? token : token.slice(0, eq)).replace(/_/g, '-') + (eq < 0 ? '' : token.slice(eq));
+}
 
 /** NODE_OPTIONS split the way Node does: on spaces outside quotes, quotes removed (a backslash escapes inside double quotes). */
 function nodeOptionsList(value) {
@@ -229,7 +242,7 @@ async function loadStoredKey(deps) {
       const v = n ? usableApiKey(n.impl.load(n.slot)) : null;
       return v && provesMarker(m, v) ? { key: v, store: 'keychain' } : null;
     }
-    const raw = await vaultClient(deps).resolve(process.cwd(), '__ZN_' + VAULT_SECRET + '__');
+    const raw = await vaultClient(deps).resolve(process.cwd(), '__ZN_' + VAULT_SECRET + '__', { purpose: RESOLVE_PURPOSE });
     const v = usableApiKey(raw);
     return v && provesMarker(m, v) ? { key: v, store: 'vault' } : null;
   } catch (_) {
@@ -293,5 +306,6 @@ module.exports = {
   TLS_REFUSAL,
   tlsRefusal,
   VAULT_SECRET,
+  RESOLVE_PURPOSE,
   _use,
 };
