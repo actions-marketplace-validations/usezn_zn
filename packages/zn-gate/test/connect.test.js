@@ -127,7 +127,7 @@ function harness(over = {}) {
   const err = [];
   const kc = over.deps || fakeKeychain();
   const t = over.tty || fakeTty({ key: over.key });
-  const h = over.https || fakeHttps({ status: 200, body: JSON.stringify({ key: { scope: 'analyze' } }) });
+  const h = over.https || fakeHttps({ status: 403, body: JSON.stringify({ error: 'key_scope', message: 'This key can only analyze prompts.' }) });
   const opened = [];
   return {
     out, err, kc, t, h, opened,
@@ -255,23 +255,30 @@ test('connect with the browser unavailable prints the address', async () => {
   } finally { cleanup(home); }
 });
 
-test('a key that the server does not report as limited gets one warning line', async () => {
+test('a full-access key (the server answers 200) is refused, not stored, with the way to get an analysis-only one', async () => {
   const home = tmpHome();
   try {
-    const h = harness({ key: freshKey(), https: fakeHttps({ status: 200, body: JSON.stringify({ plan: 'free' }) }) });
-    assert.equal(await connectCli.connect([], h.io), 0);
-    const warn = h.out.join('').split('\n').filter((l) => /^Warning: /.test(l));
-    assert.equal(warn.length, 1);
-    assert.match(warn[0], /not limited to analyzing text/);
+    const key = freshKey();
+    const h = harness({ key, https: fakeHttps({ status: 200, body: JSON.stringify({ plan: 'free' }) }) });
+    assert.equal(await connectCli.connect([], h.io), 1);
+    assert.equal(h.kc.map.size, 0);
+    assert.equal(cloudKey.readMarker(), null);
+    assert.match(h.err.join(''), /only accepts a key limited to analyzing/);
+    assert.match(h.err.join(''), /https:\/\/usezn\.com\/connect\?source=cli&utm_source=cli/);
+    assert.ok(!h.text().includes(key));
+    assert.equal(client.isCloudEnabled(), false);
   } finally { cleanup(home); }
 });
 
-test('a key with a wider scope is warned about by name', async () => {
+test('a 403 that is not key_scope does not count as an analysis-only key', async () => {
   const home = tmpHome();
   try {
-    const h = harness({ key: freshKey(), https: fakeHttps({ status: 200, body: JSON.stringify({ key: { scope: 'full' } }) }) });
-    assert.equal(await connectCli.connect([], h.io), 0);
-    assert.match(h.out.join(''), /Warning: this key can do more than analyze text \(scope: full\)/);
+    for (const body of ['{"error":"email_not_verified"}', 'not json', '']) {
+      const h = harness({ key: freshKey(), https: fakeHttps({ status: 403, body }) });
+      assert.equal(await connectCli.connect([], h.io), 1, body);
+      assert.equal(h.kc.map.size, 0);
+      assert.match(h.err.join(''), /Could not verify the key.*HTTP 403.*nothing was saved/);
+    }
   } finally { cleanup(home); }
 });
 
@@ -288,15 +295,16 @@ test('a rejected key (HTTP 401) is not saved', async () => {
   } finally { cleanup(home); }
 });
 
-test('when the check cannot run (network error, HTTP 503) the key is saved and the person is told', async () => {
-  for (const ans of [{ error: 'ENOTFOUND' }, { status: 503, body: '' }]) {
+test('when the check cannot run (network error, HTTP 503) nothing is stored', async () => {
+  for (const ans of [{ error: 'ENOTFOUND' }, { status: 503, body: '' }, { status: 429, body: '{}' }]) {
     const home = tmpHome();
     try {
       const key = freshKey();
       const h = harness({ key, https: fakeHttps(ans) });
-      assert.equal(await connectCli.connect([], h.io), 0);
-      assert.match(h.out.join(''), /Could not check the key right now/);
-      assert.equal(h.kc.map.get('zn-cloud:cloud-api-key'), key);
+      assert.equal(await connectCli.connect([], h.io), 1);
+      assert.match(h.err.join(''), /Could not verify the key with usezn\.com \(.+\), so nothing was saved/);
+      assert.equal(h.kc.map.size, 0);
+      assert.equal(cloudKey.readMarker(), null);
       assert.ok(!h.text().includes(key));
     } finally { cleanup(home); }
   }
@@ -416,47 +424,19 @@ async function connected(extra = {}) {
   return { key, kc: h.kc };
 }
 
-test('disconnect removes the local copy and the marker; the key keeps working until revoked, and it says so', async () => {
+test('disconnect removes the local copy and the marker, makes no network call and says how to revoke the key', async () => {
   const home = tmpHome();
   try {
     const { key, kc } = await connected();
-    const h = harness({ deps: kc, tty: fakeTty({ confirms: [false] }), https: fakeHttps({ status: 204, body: '' }) });
+    const h = harness({ deps: kc, tty: fakeTty({ confirms: [] }), https: fakeHttps({ status: 204, body: '' }) });
     assert.equal(await connectCli.disconnect([], h.io), 0);
     assert.equal(kc.map.size, 0);
     assert.equal(cloudKey.readMarker(), null);
-    assert.equal(h.h.calls.length, 0, 'no request without the confirmation');
-    assert.match(h.out.join(''), /still works until you revoke it at usezn\.com\/api-keys/);
+    assert.equal(h.h.calls.length, 0, 'disconnect never contacts the network');
+    assert.equal(h.t.calls.confirm.length, 0, 'nothing to confirm: no revoke call is offered');
+    assert.match(h.out.join(''), /still works until you revoke it\. Revoke it at https:\/\/usezn\.com\/api-keys: the CLI key is the one created via cli with scope analyze/);
     assert.ok(!h.text().includes(key));
     assert.equal(client.isCloudEnabled(), false);
-  } finally { cleanup(home); }
-});
-
-test('disconnect with confirmation revokes on the fixed host, then removes the copy', async () => {
-  const home = tmpHome();
-  try {
-    const { key, kc } = await connected();
-    const h = harness({ deps: kc, tty: fakeTty({ confirms: [true] }), https: fakeHttps({ status: 204, body: '' }) });
-    assert.equal(await connectCli.disconnect([], h.io), 0);
-    assert.equal(h.h.calls.length, 1);
-    const req = h.h.calls[0];
-    assert.equal(req.hostname, 'api.usezn.com');
-    assert.equal(req.method, 'DELETE');
-    assert.equal(req.path, connectCli.REVOKE_PATH);
-    assert.equal(req.headers.Authorization, 'Bearer ' + key);
-    assert.equal(kc.map.size, 0);
-    assert.match(h.out.join(''), /revoked on usezn\.com/);
-    assert.ok(!h.text().includes(key));
-  } finally { cleanup(home); }
-});
-
-test('when the server cannot revoke yet, the copy is still removed and the person is sent to the dashboard', async () => {
-  const home = tmpHome();
-  try {
-    const { kc } = await connected();
-    const h = harness({ deps: kc, tty: fakeTty({ confirms: [true] }), https: fakeHttps({ status: 404, body: '{"message":"Not Found"}' }) });
-    assert.equal(await connectCli.disconnect([], h.io), 0);
-    assert.equal(kc.map.size, 0);
-    assert.match(h.out.join(''), /could not revoke the key from here \(HTTP 404\)\. Revoke it at usezn\.com\/api-keys/);
   } finally { cleanup(home); }
 });
 

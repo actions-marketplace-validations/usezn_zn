@@ -77,9 +77,6 @@ test('connect and disconnect requests verify the certificate and are not made un
     const a = await connectCli.request(https, 'GET', connectCli.VERIFY_PATH, key);
     assert.ok(a.error);
     assert.equal(seen.at(-1).reject, true);
-    const b = await connectCli.request(https, 'DELETE', connectCli.REVOKE_PATH, key);
-    assert.ok(b.error);
-    assert.equal(seen.at(-1).reject, true);
     const n = seen.length;
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     const c = await connectCli.request(https, 'GET', connectCli.VERIFY_PATH, key);

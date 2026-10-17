@@ -12,9 +12,9 @@ zn-gate works fully on your computer, needs no account and sends nothing. This c
 
 1. It only runs in a terminal you are typing in. If an AI agent started it, it refuses.
 2. It tells you what will change and asks you to confirm.
-3. It opens https://usezn.com/connect in your browser. Create a free account (or log in) and create an API key there.
+3. It opens https://usezn.com/connect in your browser. Create a free account (or log in) and create an analysis-only API key there (the connect page does this for you).
 4. Back in the terminal, paste the key at the hidden prompt. Nothing you type is shown, and the key is never taken from the command line or an environment variable.
-5. It checks the key once with https://api.usezn.com (only the key is sent, as a request header, to that one address, over a verified TLS connection). A key the server rejects is not saved.
+5. It checks the key once with https://api.usezn.com (only the key is sent, as a request header, to that one address, over a verified TLS connection). It accepts only a key limited to analyzing text: such a key cannot read your usage, list, create or revoke keys, or use the dashboard, so a leaked copy can do little. A full-access key is refused with a pointer to the connect page, and so is a key the server rejects, or one that could not be checked (no answer, an error): nothing is saved in those cases.
 6. It saves the key, and prints the last four characters so you can recognise it.
 
 ## Where the key is kept
@@ -30,7 +30,7 @@ If neither is available (for example Linux without a desktop session), nothing i
 
 The key is never written to a file in plain text, and zn's hooks refuse the direct ways for your agent to read it: commands that ask the system keychain for zn's own entries (`security find-generic-password` and `dump-keychain`, `secret-tool lookup`, `cmdkey /list`, `Get-StoredCredential`, picked by zn's service, account or label), code that loads it through zn's own modules or a keyring library, and anything under `~/.zn`. zn also hides the key's format (`zn_` followed by 48 characters) in what the agent sees. Other uses of those tools are not affected.
 
-This is a barrier, not a vault wall: a program running as you can still ask the keychain for the key, as it can for any keychain entry. That is why the key can be limited to analyzing text when the server offers it, and why `zn-gate disconnect` can revoke it. A key you give in `ZN_API_KEY` or `--key` can be read from your environment, as before.
+This is a barrier, not a vault wall: a program running as you can still ask the keychain for the key, as it can for any keychain entry. That is why `connect` only accepts a key limited to analyzing text (a copy can do little with it), and why you can revoke it at https://usezn.com/api-keys. A key you give in `ZN_API_KEY` or `--key` can be read from your environment, as before.
 
 A saved key is only ever sent to https://api.usezn.com. `--url` and `ZN_API_URL` are ignored for it; use `--key` or `ZN_API_KEY` to send to another URL.
 
@@ -38,7 +38,7 @@ A saved key is only ever sent to https://api.usezn.com. `--url` and `ZN_API_URL`
 
 - `zn-gate status` shows whether a key is connected and where it comes from (`ZN_API_KEY`, `--key`, the keychain or the vault), never the key.
 - `zn-gate connect --reconnect` replaces the saved key.
-- `zn-gate disconnect` removes the key from this computer and turns the cloud check off. It then offers to revoke the key on usezn.com so it stops working everywhere (you confirm). If the server cannot revoke it from here, it tells you to do it at usezn.com/api-keys.
+- `zn-gate disconnect` removes the key from this computer and turns the cloud check off. It makes no network call. The key itself keeps working until you revoke it at https://usezn.com/api-keys, where the CLI key is the one created via cli with scope analyze. Revoking needs your signed-in dashboard session, which is why the command cannot do it.
 - A key in `--key` or `ZN_API_KEY` is used instead of the saved one. `ZN_LOCAL_ONLY=true` or `--local-only` turns the cloud check off even when connected.
 
 ## What is sent

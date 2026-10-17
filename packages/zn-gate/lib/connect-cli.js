@@ -2,7 +2,7 @@
 
 /**
  * zn-gate connect      turn on the optional cloud check (opt-in, you in your own terminal)
- * zn-gate disconnect   forget the key on this computer, and optionally revoke it on usezn.com
+ * zn-gate disconnect   forget the key on this computer (it is revoked on usezn.com/api-keys)
  *
  * `connect` opens https://usezn.com/connect in the browser, where you create an
  * API key, then asks you to paste it into a hidden prompt here (no echo; never
@@ -18,8 +18,8 @@ const cloudKey = require('./cloud-key');
 const CONNECT_URL = 'https://usezn.com/connect?source=cli&utm_source=cli';
 // The only host this module talks to, and the routes on it.
 const API_HOST = 'api.usezn.com';
-const VERIFY_PATH = '/prod/usage';          // GET; 200 for a live key, 401 for a revoked or unknown one
-const REVOKE_PATH = '/prod/keys/self';      // DELETE with the key itself, once the API offers it
+// GET: 200 = a full-access key, 403 key_scope = a key limited to analyzing text, 401 = revoked or unknown.
+const VERIFY_PATH = '/prod/usage';
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_BODY = 64 * 1024;
 
@@ -106,28 +106,24 @@ function version() {
   try { return require('../package.json').version; } catch (_) { return '0.0.0'; }
 }
 
-/** The scope the server reports for a key, when it reports one (a limited key says "analyze"). */
-function scopeOf(body) {
-  try {
-    const j = JSON.parse(body);
-    const s = (j && j.key && j.key.scope) || (j && j.scope);
-    return typeof s === 'string' && /^[a-z_,:-]{1,40}$/.test(s) ? s : null;
-  } catch (_) { return null; }
-}
-
-/** {state: 'ok' | 'rejected' | 'unverified', scope, detail} */
+/**
+ * What the server says about a key, from GET /prod/usage:
+ *   'analyze'  403 {"error":"key_scope"}: a key that can only analyze text (the one connect accepts)
+ *   'full'     200: a full-access key (refused)
+ *   'rejected' 401: revoked, unknown or mistyped
+ *   'failed'   anything else, or no answer: nothing is stored
+ */
 async function verifyKey(h, key) {
   const r = await request(h, 'GET', VERIFY_PATH, key);
-  if (r.error) return { state: 'unverified', scope: null, detail: r.error };
-  if (r.status === 200) return { state: 'ok', scope: scopeOf(r.body), detail: null };
-  if (r.status === 401) return { state: 'rejected', scope: null, detail: null };
-  return { state: 'unverified', scope: null, detail: 'HTTP ' + r.status };
-}
-
-function scopeLine(scope) {
-  if (scope === 'analyze') return 'Key scope: analyze only. It cannot list, create or revoke keys.\n';
-  if (scope) return 'Warning: this key can do more than analyze text (scope: ' + scope + '). Prefer a key limited to analyzing, from usezn.com/connect.\n';
-  return 'Warning: this key is not limited to analyzing text (usezn.com does not report a limited scope yet). Treat it like a password.\n';
+  if (r.error) return { state: 'failed', detail: r.error };
+  if (r.status === 200) return { state: 'full', detail: null };
+  if (r.status === 401) return { state: 'rejected', detail: null };
+  if (r.status === 403) {
+    let code = null;
+    try { code = JSON.parse(r.body).error; } catch (_) { /* not JSON */ }
+    if (code === 'key_scope') return { state: 'analyze', detail: null };
+  }
+  return { state: 'failed', detail: 'HTTP ' + r.status };
 }
 
 function noStoreText() {
@@ -195,8 +191,13 @@ async function connect(args, io) {
     c.err('usezn.com did not accept this key (it may be revoked or mistyped). Nothing was saved.\n');
     return 1;
   }
-  if (v.state === 'unverified') {
-    c.out('Could not check the key right now (' + v.detail + '). Saving it anyway; if the cloud does not answer, zn-gate uses its local rules.\n');
+  if (v.state === 'full') {
+    c.err('This key can do more than analyze text, and zn-gate only accepts a key limited to analyzing. Create an analysis-only key on the connect page and paste that one: ' + CONNECT_URL + '\nNothing was saved.\n');
+    return 1;
+  }
+  if (v.state !== 'analyze') {
+    c.err('Could not verify the key with usezn.com (' + v.detail + '), so nothing was saved. Try again later.\n');
+    return 1;
   }
 
   let where;
@@ -205,7 +206,7 @@ async function connect(args, io) {
     c.err('Could not save the key: ' + scrub(e && e.message, key) + '. Nothing was kept.\n');
     return 1;
   }
-  c.out(scopeLine(v.scope));
+  c.out('Key scope: analyze only. It cannot list, create or revoke keys.\n');
   c.out('Saved in ' + STORE_WORDS[where] + '. Cloud check is ON for analyze_prompt. Key: ...' + cloudKey.last4(key) + '\n'
     + 'Turn it off any time: zn-gate disconnect\n'
     + 'Check what leaves your machine: zn-gate status\n');
@@ -224,26 +225,15 @@ async function disconnect(args, io) {
     c.out('Not connected. Nothing to remove.\n');
     return 0;
   }
-  const stored = await cloudKey.loadStoredKey(c.deps);
-  let revoked = null;
-  if (stored) {
-    const yes = await c.tty.confirm('Also revoke this key on usezn.com, so it stops working everywhere?', c.ttyIo);
-    if (yes) {
-      const r = await request(c.https, 'DELETE', REVOKE_PATH, stored.key);
-      revoked = !r.error && r.status >= 200 && r.status < 300;
-      if (!revoked) c.out('usezn.com could not revoke the key from here' + (r.error ? ' (' + r.error + ')' : ' (HTTP ' + r.status + ')') + '. Revoke it at usezn.com/api-keys.\n');
-    }
-  }
   const del = await cloudKey.deleteKey(c.deps);
   if (!del.removed) {
-    c.err('Could not remove the saved key from ' + STORE_WORDS[del.store] + ': ' + scrub(del.error && del.error.message, stored && stored.key)
+    c.err('Could not remove the saved key from ' + STORE_WORDS[del.store] + ': ' + scrub(del.error && del.error.message)
       + (del.store === 'vault' ? '. Run `zn unlock`, then `zn-gate disconnect` again.' : '.') + '\n');
     return 1;
   }
   c.out('Removed the saved key from ' + STORE_WORDS[del.store] + '. The cloud check is off; zn-gate runs only on your computer.\n');
-  if (revoked) c.out('The key was revoked on usezn.com.\n');
-  else if (revoked === null) c.out('The key itself still works until you revoke it at usezn.com/api-keys.\n');
+  c.out('The key itself still works until you revoke it. Revoke it at https://usezn.com/api-keys: the CLI key is the one created via cli with scope analyze.\n');
   return 0;
 }
 
-module.exports = { connect, disconnect, verifyKey, request, scrub, openBrowser, CONNECT_URL, API_HOST, VERIFY_PATH, REVOKE_PATH };
+module.exports = { connect, disconnect, verifyKey, request, scrub, openBrowser, CONNECT_URL, API_HOST, VERIFY_PATH };
