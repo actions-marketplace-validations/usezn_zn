@@ -225,6 +225,20 @@ function codexHooksFeature(data) {
   return v === true || v === 'true' ? true : v === false || v === 'false' ? false : undefined;
 }
 
+/* Whether the managed hooks ([[hooks.<Event>]] with [[hooks.<Event>.hooks]]) include one of zn's own commands. */
+function codexManagesZn(hooks) {
+  const { isOurs } = require('./config-file');
+  if (!hooks || typeof hooks !== 'object') return false;
+  for (const groups of Object.values(hooks)) {
+    for (const g of Array.isArray(groups) ? groups : []) {
+      for (const h of g && Array.isArray(g.hooks) ? g.hooks : []) {
+        if (h && (isOurs(h.command, 'codex') || isOurs(h.command_windows, 'codex') || isOurs(h.commandWindows, 'codex'))) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * codexPolicyWarnings(opts) -> [string]
  * opts: {platform, env, codexHome, requirementsFile, managedConfigFile, userConfig}
@@ -247,7 +261,7 @@ function codexPolicyWarnings(opts = {}) {
     return warnings;
   }
   if (req && req.data && (req.data.allow_managed_hooks_only === true || req.data.allow_managed_hooks_only === 'true')
-    && !/hook codex|runner\.js["']? codex/.test(JSON.stringify(req.data.hooks || ''))) {
+    && !codexManagesZn(req.data.hooks)) {
     warnings.push('Your organization\'s Codex requirements (' + reqFile + ') run only the hooks they manage (allow_managed_hooks_only), so the zn hooks you install do not run. ' + ask);
     return warnings;
   }
@@ -255,10 +269,12 @@ function codexPolicyWarnings(opts = {}) {
 
   const managed = readToml(managedFile);
   if (managed && managed.error) warnings.push('could not read the Codex managed configuration ' + managedFile + ' (' + managed.error + ').');
-  if (managed && managed.data && codexHooksFeature(managed.data) === false) {
+  const managedHooks = managed && managed.data ? codexHooksFeature(managed.data) : undefined;
+  if (managedHooks === false) {
     warnings.push('Your organization\'s Codex managed configuration (' + managedFile + ') turns hooks off ([features] hooks = false) at every start, so zn\'s hooks do not run. ' + ask);
     return warnings;
   }
+  if (managedHooks === true) return warnings; // set again at every start, over the user's own config.toml
   const user = readToml(userFile);
   if (user && user.data && codexHooksFeature(user.data) === false) {
     warnings.push(userFile + ' turns hooks off ([features] hooks = false), so no hooks you install run, zn\'s included. Remove that line, or set it to true, to turn them on.');

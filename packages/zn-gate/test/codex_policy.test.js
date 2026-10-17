@@ -37,9 +37,12 @@ test('requirements that turn hooks off, or run only managed hooks', (t) => {
   assert.match(off[0], /requirements .* turn hooks off \(\[features\] hooks = false\), so zn's hooks do not run/);
   const only = codexPolicyWarnings(setup(t, { requirements: 'allow_managed_hooks_only = true\n' }));
   assert.match(only[0], /run only the hooks they manage \(allow_managed_hooks_only\), so the zn hooks you install do not run/);
-  // zn deployed as one of the managed hooks: nothing to say.
-  const ours = codexPolicyWarnings(setup(t, { requirements: 'allow_managed_hooks_only = true\n[hooks]\nzn = "zn hook codex"\n' }));
-  assert.deepEqual(ours, []);
+  // zn deployed as one of the managed hooks, in the layout Codex documents: nothing to say.
+  const managedHook = (cmd) => 'allow_managed_hooks_only = true\n[[hooks.PreToolUse]]\nmatcher = "Bash"\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = ' + JSON.stringify(cmd) + '\n';
+  assert.deepEqual(codexPolicyWarnings(setup(t, { requirements: managedHook('zn hook codex') })), []);
+  assert.deepEqual(codexPolicyWarnings(setup(t, { requirements: managedHook('"/usr/bin/node" "/opt/zn-gate/lib/hooks/runner.js" codex') })), []);
+  // Another command that only mentions codex is not zn.
+  assert.match(codexPolicyWarnings(setup(t, { requirements: managedHook('audit-hook codex-log') }))[0], /allow_managed_hooks_only/);
 });
 
 test('the managed configuration and the user config.toml', (t) => {
@@ -47,6 +50,8 @@ test('the managed configuration and the user config.toml', (t) => {
   assert.match(codexPolicyWarnings(setup(t, { user: '[features]\nhooks = false\n' }))[0], /config\.toml turns hooks off .* Remove that line, or set it to true/);
   // The older name of the feature.
   assert.match(codexPolicyWarnings(setup(t, { user: '[features]\ncodex_hooks = false\n' }))[0], /turns hooks off/);
+  // A managed configuration that sets hooks on is applied again at every start, over the user's own setting.
+  assert.deepEqual(codexPolicyWarnings(setup(t, { managed: '[features]\nhooks = true\n', user: '[features]\nhooks = false\n' })), []);
   // Requirements that force hooks on win over the user's own setting.
   assert.deepEqual(codexPolicyWarnings(setup(t, { requirements: '[features]\nhooks = true\n', user: '[features]\nhooks = false\n' })), []);
 });
@@ -76,8 +81,19 @@ test('zn hooks install codex and zn-gate check say it when the user config.toml 
   });
   assert.ok(report.warnings.some((w) => /turns hooks off \(\[features\] hooks = false\)/.test(w)), JSON.stringify(report.warnings));
   const { check } = require('../lib/check');
-  const r = (await check({ home, env, cwd: home, live: false })).results.find((x) => x.id === 'codex');
+  const r = (await check({ home, env, cwd: home, live: false, codexPolicy: { requirementsFile: p.requirementsFile, managedConfigFile: p.managedConfigFile } })).results.find((x) => x.id === 'codex');
   assert.equal(r.state, 'not-protected');
   assert.match(r.problem, /turns hooks off/);
   assert.match(r.fix, /change that Codex setting/);
+});
+
+test('zn-gate check notes a requirements file it cannot read, without calling Codex unprotected', async (t) => {
+  const home = tempDir(t, 'zn-codex-home2-');
+  const env = { HOME: home, PATH: path.dirname(process.execPath) };
+  const p = setup(t, { requirements: '[features\nbroken = = 1\n' });
+  getAdapter('codex').install({ scope: 'user', home, env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false, codexRequirementsFile: p.requirementsFile, codexManagedConfigFile: p.managedConfigFile });
+  const { check } = require('../lib/check');
+  const r = (await check({ home, env, cwd: home, live: false, codexPolicy: { requirementsFile: p.requirementsFile, managedConfigFile: p.managedConfigFile } })).results.find((x) => x.id === 'codex');
+  assert.equal(r.state, 'protected');
+  assert.ok(r.notes.some((n) => /could not read the Codex requirements/.test(n)), JSON.stringify(r.notes));
 });
