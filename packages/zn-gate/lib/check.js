@@ -285,6 +285,20 @@ async function checkAgent(spec, ctx) {
       res.pluginFault = false;
     }
   }
+  if (spec.id === 'codex' && installed && !res.problem) {
+    // Codex requirements, its managed configuration or the user's config.toml can turn every hook off.
+    let p = [];
+    // The user's hooks.json sits in the Codex home folder, next to its config.toml.
+    const codexHome = path.dirname(adapter.hooksFile({ home: ctx.home, env: ctx.env }));
+    try { p = require('./agents/managed-policy').codexPolicyWarnings({ ...(ctx.codexPolicy || {}), env: ctx.env, codexHome }); } catch (_) { p = []; }
+    // A file zn could not read is a note: zn does not know that it turns the hooks off.
+    for (const w of p.filter((x) => /^could not read/.test(x))) res.notes.push(oneLine(w, 300));
+    p = p.filter((x) => !/^could not read/.test(x));
+    if (p.length) {
+      res.problem = bare(oneLine(p[0], 300));
+      res.fix = 'change that Codex setting as it says, then run `zn-gate check` again';
+    }
+  }
   if (spec.id === 'opencode' && installed) res.notes.push('zn\'s rules were checked; its plugin runs inside OpenCode, so it was not started here');
 
   if (!installed) {
@@ -363,7 +377,7 @@ async function check(opts = {}) {
   const env = opts.env || process.env;
   const cwd = opts.cwd || process.cwd();
   if (opts.live === false) {
-    const ctx = { home, env, cwd, live: false, dir: cwd };
+    const ctx = { home, env, cwd, live: false, dir: cwd, codexPolicy: opts.codexPolicy };
     const results = [];
     for (const spec of AGENTS) {
       try {
@@ -375,7 +389,7 @@ async function check(opts = {}) {
     return { results, removed: true };
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-check-'));
-  const ctx = { home, env, cwd, live: true, dir, envFile: path.join(dir, '.env'), readme: path.join(dir, 'README.txt') };
+  const ctx = { home, env, cwd, live: true, dir, envFile: path.join(dir, '.env'), readme: path.join(dir, 'README.txt'), codexPolicy: opts.codexPolicy };
   const results = [];
   try {
     fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n');

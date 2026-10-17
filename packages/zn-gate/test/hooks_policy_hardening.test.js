@@ -341,3 +341,152 @@ test('after a glob word, a command with many more words is still refused', (t) =
   // Within the first words the literal file is still the one named.
   assert.match(policy.bashDenial('cat .e* notes.txt .env', { cwd: dir, home: dir }), /\.env/);
 });
+
+test('a glob that names a .env file in a subfolder is refused, as the plain path is', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-globenv-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'app1', 'inner'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', 'notes.txt'), 'hello\n');
+  const o = { cwd: dir, home: dir };
+  assert.ok(policy.bashDenial('cat app1/inner/.env', o), 'plain path');
+  for (const cmd of ['cat app*/inner/.env', 'cat app1/*/.env', 'cat */inner/.env', 'cat a?p1/inner/.env', 'cat {app1,app2}/inner/.env', 'head -n 1 ./app1/*/.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  // An ordinary file reached the same way is still allowed.
+  assert.equal(policy.bashDenial('cat app*/inner/notes.txt', o), null);
+  assert.equal(policy.classifyWord('app*/inner/.env', o).kind, 'credential');
+});
+
+test('a .env file reached after a cd, through a path built at run time or from interpreter code is refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cdenv-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'app1', 'inner'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.mkdirSync(path.join(dir, 'svc'));
+  fs.writeFileSync(path.join(dir, 'svc', '.env'), 'EXAMPLE_API_KEY=__ZN_EXAMPLE_API_KEY__\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of [
+    'cd app1/inner && cat .env',
+    'cd app1 && cd inner && cat .env',
+    'cd app1; cat inner/.env',
+    'pushd app1/inner && cat .env',
+    '(cd app1/inner && cat .env)',
+    'cd "app1/inner" && head -n 1 .env',
+    'cd $PROJ && cat .env',
+    'cd - && cat .env',
+    'cat $(echo app1)/inner/.env',
+    'cat "$(echo app1)/inner/.env"',
+    'D=app1/inner; cat $D/.env',
+    'python3 -c "print(open(\'app1/inner/.env\').read())"',
+    'node -e "console.log(require(\'fs\').readFileSync(\'app1/inner/.env\', \'utf8\'))"',
+    'bash -c "cat app1/inner/.env"',
+  ]) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of [
+    'cd svc && cat .env',
+    'cd app1 && npm test',
+    'cd app1/inner && echo EXAMPLE_FLAG=1 >> .env',
+    'cd app1/inner && cat .env.example',
+    'cd /nonexistent && ls',
+    'python3 -c "print(1)"',
+    'cat .env',
+  ]) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('a .env file named with bash $-quoting, a numbered input redirection or as name=value is refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-quoting-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ["cat $'.env'", "cat $'\\x2eenv'", "cat $'\\56env'", "cat $'\\u002eenv'", "cat $'.e'nv", 'cat 0<.env', 'cat 3< .env', 'dd if=.env', 'ENV_FILE=.env docker compose up',
+    "cat $'.env\\x00junk'", "cat $'.env\\0'", "cat $'.env\\c@x'", "cat $'.env\\u0000'", "cat $'.e\\0zz'nv",
+    'cat $".env"', 'cat <>.env', 'cat 0<>.env', 'exec {fd}<.env; cat <&$fd']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ["echo $'hello\\n'", "printf $'%s\\t%s\\n' a b", 'dd if=/dev/zero of=out.bin count=1', 'make DEBUG=1']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  assert.equal(policy._decodeAnsiC("a $'\\x41\\102\\'c' z"), "a 'AB'\\''c' z");
+});
+
+test('after a cd, only the folders the command can reach are checked, also when the current .env is shadowed', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cdenv2-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'app1', 'inner'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'app', 'app'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=__ZN_EXAMPLE_API_KEY__\n');
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  // A folder the command never reaches (app/app) holds values.
+  fs.writeFileSync(path.join(dir, 'app', 'app', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: { PWD: dir } };
+  for (const cmd of [
+    'cd app1/inner && cat .env',
+    'cd app1/inner && cat $PWD/.env',
+    '{ cd app1/inner; cat .env; }',
+    'if cd app1/inner; then cat .env; fi',
+    'bash -c "cd app1/inner && cat .env"',
+    'cd $PROJ && cat .env',
+  ]) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  assert.match(policy.bashDenial('cd app1/inner && cat .env', o), /changes to app1\/inner first/);
+  for (const cmd of [
+    'cat .env',
+    'cd app && cat .env',
+    'cd a && cd b && cat d1/.env',
+    'echo $(date) && cat .env',
+    'cd app1 && npm test',
+  ]) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('a .env or credential file read from the git repository is refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-gitobj-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git show HEAD:.env', 'git show :.env', 'git show :0:.env', 'git cat-file -p HEAD:.env', 'git -C app1 show HEAD:.env',
+    'git show HEAD~1:app1/inner/.env', 'git show main:./.env.local', 'git show HEAD:.aws/credentials', 'git cat-file blob v1.0:config/.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['git show HEAD:README.md', 'git show HEAD:.env.example', 'git log --oneline', 'git show HEAD',
+    'git push origin main:main', 'git fetch https://example.com/repo.git', 'git diff HEAD:src/a.js HEAD~1:src/a.js']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('the history of a .env file is refused even when the file is gone from disk', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-githist-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git log -p -- .env', 'git show HEAD -- .env', 'git diff HEAD~1 -- .env', 'git grep -h KEY HEAD -- .env',
+    'git archive HEAD .env | tar x -O', 'git checkout HEAD -- .env', 'git restore --source=HEAD -- .env', 'git -C app -c core.pager=cat log -p app/.env',
+    'git.exe show HEAD:.env', 'git show "HEAD:' + './'.repeat(700) + '.env"', 'git show ' + 'HEAD~1'.repeat(100) + ':.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd.slice(0, 80));
+  }
+  for (const cmd of ['git rm --cached .env', 'git status', 'git check-ignore .env', 'git add .gitignore', 'git log --oneline',
+    'git commit -m "stop tracking .env"', 'git show HEAD:.env.example']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('git steps that only clean up a tracked .env stay allowed', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-gitclean-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git restore --staged .env', 'git checkout -- .env', 'git restore .env', 'git stash push -- .env',
+    'git diff --stat -- .env', 'git log --oneline -- .env', 'git log --name-only -- .env', 'git show --stat HEAD -- .env']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  for (const cmd of ['git restore --source=HEAD~1 .env', 'git restore -s HEAD .env', 'git checkout HEAD -- .env', 'git checkout main .env',
+    'git stash show -p -- .env', 'git log --oneline -p -- .env', 'git log --stat -p -- .env', 'git diff -- .env',
+    'git log --oneline --patch-with-stat -- .env', 'git log --stat --patch-with-raw -- .env', 'git log --stat -U3 -- .env',
+    'git log --stat --unified=1 -- .env', 'git diff --stat --binary HEAD~1 -- .env', 'git show --oneline HEAD -- .env', 'git restore -sHEAD .env', 'git log -L1,5:.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+});
