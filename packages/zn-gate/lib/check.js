@@ -285,6 +285,17 @@ async function checkAgent(spec, ctx) {
       res.pluginFault = false;
     }
   }
+  if (spec.id === 'codex' && installed && !res.problem) {
+    // Codex requirements, its managed configuration or the user's config.toml can turn every hook off.
+    let p = [];
+    // The user's hooks.json sits in the Codex home folder, next to its config.toml.
+    const codexHome = path.dirname(adapter.hooksFile({ home: ctx.home, env: ctx.env }));
+    try { p = require('./agents/managed-policy').codexPolicyWarnings({ env: ctx.env, codexHome }).filter((x) => /hooks/i.test(x)); } catch (_) { p = []; }
+    if (p.length) {
+      res.problem = bare(oneLine(p[0], 300));
+      res.fix = 'change that Codex setting as it says, then run `zn-gate check` again';
+    }
+  }
   if (spec.id === 'opencode' && installed) res.notes.push('zn\'s rules were checked; its plugin runs inside OpenCode, so it was not started here');
 
   if (!installed) {
