@@ -1,0 +1,2 @@
+### Security
+- Releases are built, attested and signed by a separate reusable workflow, `build-release.yml`, which the release workflow calls and cannot change while it runs. That makes the build provenance of the npm and Python packages SLSA Build Level 3. To verify a release from 1.12.0 on, the signer workflow is `usezn/zn/.github/workflows/build-release.yml` (earlier releases: `release.yml`); see `docs/verify-release.md`. The agent plugin's checks accept each release only with the signer workflow of its version.
