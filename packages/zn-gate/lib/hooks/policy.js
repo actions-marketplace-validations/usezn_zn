@@ -642,12 +642,13 @@ function allWords(cmd, posix = false) {
   while (rest.length && guard++ < 1000) {
     const scan = scanFirstCommand(rest, posix);
     const head = commandName(scan.words);
+    const sub = isGit(head) ? gitSubcommand(scan.words) : '';
     for (let k = 0; k < scan.words.length; k++) {
       const w = scan.words[k];
       const prev = k > 0 ? scan.words[k - 1].text : '';
       const isRedirTarget = /^[0-9]*>>?$/.test(prev) || /^[0-9]*>>?./.test(w.text);
       // Input redirections: <file, 0<file, <>file (read and write), {fd}<file.
-      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard });
+      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard, sub });
     }
     rest = rest.slice(scan.end + 1);
   }
@@ -954,9 +955,11 @@ function bashDenialOf(cmd, opts = {}) {
       classified.set(text, classifyWord(text, opts));
     }
     const c = classified.get(text);
-    // git show HEAD:.env, git cat-file -p :app/.env: a secret file read from the repository, not from disk.
-    if ((!c || c.kind === 'dotenv') && w.head === 'git') {
-      const deny = gitObjectDenial(text, opts);
+    if ((!c || c.kind === 'dotenv') && isGit(w.head)) {
+      // git show HEAD:.env, git cat-file -p :app/.env: a secret file read from the repository, not from disk.
+      const deny = gitObjectDenial(text, opts) ||
+        // git log -p -- .env, git checkout HEAD -- .env: its history, also once the file is gone from disk.
+        (c && GIT_READ_SUBCMDS.has(w.sub) ? gitHistoryDenial(text) : null);
       if (deny) return deny;
     }
     if (!c) {
@@ -1000,14 +1003,40 @@ function decodeAnsiC(cmd) {
 }
 
 // <rev>:<path> and :<path> name a file as git stores it (HEAD:.env, main~2:app/.env, :0:.env).
-const GIT_OBJECT_RE = /^[^\s:]{0,256}:(?:[0-3]:)?([^:\s][^\s]{0,1024})$/;
+const GIT_OBJECT_RE = /^[^\s:]*:(?:[0-3]:)?([^:\s]\S*)$/;
+// git subcommands that print or restore a file's stored content or history.
+const GIT_READ_SUBCMDS = new Set(['show', 'log', 'diff', 'grep', 'archive', 'checkout', 'restore', 'blame', 'annotate', 'cat-file',
+  'whatchanged', 'format-patch', 'difftool', 'stash', 'cherry-pick', 'apply', 'am']);
+const GIT_VALUE_OPTS = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
+
+function isGit(head) {
+  return String(head || '').replace(/\.exe$/, '') === 'git';
+}
+
+/* The subcommand of a git command: the first word after git that is not a global option (git -C app -c k=v log). */
+function gitSubcommand(words) {
+  let k = words.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
+  for (k++; k < words.length; k++) {
+    const t = words[k].text;
+    if (GIT_VALUE_OPTS.has(t)) { k++; continue; }
+    if (t.startsWith('-')) continue;
+    return t.toLowerCase();
+  }
+  return '';
+}
+
+function gitHistoryDenial(text) {
+  return 'zn: this git command reads the stored content or history of ' + path.basename(text) + ', which zn treats as holding secrets, ' +
+    'so it was not run. If the repository holds real values in it, tell the user: they should be rotated and removed from the history.';
+}
 
 /* A git object word whose path is a .env or credential file. The stored copy cannot be checked for values without
    running git, and a .env kept in the repository with values is the case to stop, so it is refused. */
 function gitObjectDenial(text, opts) {
   const m = GIT_OBJECT_RE.exec(text);
   if (!m || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
-  const file = m[1].replace(/^\.\//, '');
+  // git drops leading ./ from the path (HEAD:././.env is .env).
+  const file = m[1].replace(/^(?:\.\/)+/, '');
   const c = classifyPath(file, opts) || classifyPath(path.basename(file), opts);
   if (!c || c.kind === 'agent_config') return null;
   return 'zn: ' + text + ' reads ' + path.basename(file) + ' from the git repository, and zn treats that file as holding secrets, ' +

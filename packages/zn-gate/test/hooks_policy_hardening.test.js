@@ -459,3 +459,18 @@ test('a .env or credential file read from the git repository is refused', (t) =>
     assert.equal(policy.bashDenial(cmd, o), null, cmd);
   }
 });
+
+test('the history of a .env file is refused even when the file is gone from disk', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-githist-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git log -p -- .env', 'git show HEAD -- .env', 'git diff HEAD~1 -- .env', 'git grep -h KEY HEAD -- .env',
+    'git archive HEAD .env | tar x -O', 'git checkout HEAD -- .env', 'git restore --source=HEAD -- .env', 'git -C app -c core.pager=cat log -p app/.env',
+    'git.exe show HEAD:.env', 'git show "HEAD:' + './'.repeat(700) + '.env"', 'git show ' + 'HEAD~1'.repeat(100) + ':.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd.slice(0, 80));
+  }
+  for (const cmd of ['git rm --cached .env', 'git status', 'git check-ignore .env', 'git add .gitignore', 'git log --oneline',
+    'git commit -m "stop tracking .env"', 'git show HEAD:.env.example']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
