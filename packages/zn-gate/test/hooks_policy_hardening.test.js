@@ -397,6 +397,22 @@ test('a .env file reached after a cd, through a path built at run time or from i
   }
 });
 
+test('a .env file named with bash $-quoting, a numbered input redirection or as name=value is refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-quoting-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ["cat $'.env'", "cat $'\\x2eenv'", "cat $'\\56env'", "cat $'\\u002eenv'", "cat $'.e'nv", 'cat 0<.env', 'cat 3< .env', 'dd if=.env', 'ENV_FILE=.env docker compose up',
+    "cat $'.env\\x00junk'", "cat $'.env\\0'", "cat $'.env\\c@x'", "cat $'.env\\u0000'", "cat $'.e\\0zz'nv",
+    'cat $".env"', 'cat <>.env', 'cat 0<>.env', 'exec {fd}<.env; cat <&$fd']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ["echo $'hello\\n'", "printf $'%s\\t%s\\n' a b", 'dd if=/dev/zero of=out.bin count=1', 'make DEBUG=1']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  assert.equal(policy._decodeAnsiC("a $'\\x41\\102\\'c' z"), "a 'AB'\\''c' z");
+});
+
 test('after a cd, only the folders the command can reach are checked, also when the current .env is shadowed', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cdenv2-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
