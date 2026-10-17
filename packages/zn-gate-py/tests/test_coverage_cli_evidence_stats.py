@@ -328,7 +328,8 @@ def test_configure_output_streams_replaces_errors():
         cli._configure_output_streams()
         print("café", file=stream)
         stream.flush()
-    assert raw.getvalue() == b"caf?\n"
+    # TextIOWrapper writes os.linesep on Windows
+    assert raw.getvalue().replace(b"\r\n", b"\n") == b"caf?\n"
 
 
 def test_configure_output_streams_survives_odd_streams():
