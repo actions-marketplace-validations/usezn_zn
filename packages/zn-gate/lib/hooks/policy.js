@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.10';
+const POLICY_RULES_VERSION = '2026-10-17.12';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -998,6 +998,92 @@ function shellPatchMessage(cmd, deny, opts) {
     '(its *** lines look like file patterns that can match secret files). Next step: use the apply_patch tool, or write the file another way.';
 }
 
+// How deep sh -c "sh -c '...'" is followed; deeper is refused.
+const SHELL_CODE_DEPTH = 3;
+const TOO_NESTED_MESSAGE = 'zn: this command nests shell code (sh -c "sh -c ...") deeper than zn checks, so it was blocked. Next step: run the inner command directly, or tell the user.';
+const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'fish', 'csh', 'tcsh', 'rbash']);
+const SHELL_C_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
+
+function programName(text) {
+  return String(text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+}
+
+/* The code strings that programs which run code from a string would run: sh -c, bash -lc, su -c, flock -c, env -S,
+   pwsh -Command, cmd /c, eval, watch, and "git <args>" for PowerShell's Start-Process git -ArgumentList. Only these
+   launchers (found through sudo, env, xargs and the other wrappers) are read this way: the -c of psql or grep is not code. */
+function shellCodesOf(words, out = new Set()) {
+  let start = 0;
+  while (start < words.length) {
+    let end = start;
+    while (end < words.length && words[end].seq === words[start].seq) end++;
+    codesOfCommand(words.slice(start, end), out);
+    start = end;
+  }
+  return out;
+}
+
+function codesOfCommand(w, out) {
+  const join = (from) => w.slice(from).map((x) => x.text).join(' ');
+  for (let j = 1; j < w.length; j++) {
+    if (!/^-arg/i.test(w[j - 1].text) || !w[j].text) continue;
+    for (let i = j - 2; i >= 0; i--) if (wordIsGit(w[i].text)) { out.add('git ' + w[j].text.replace(/,/g, ' ')); break; }
+  }
+  let k = w.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
+  for (let guard = 0; k >= 0 && k < w.length && guard < 16; guard++) {
+    const name = programName(w[k].text);
+    if (name === 'eval') { out.add(join(k + 1)); return; }
+    if (name === 'watch') {
+      let j = k + 1;
+      while (j < w.length && w[j].text.startsWith('-')) j += w[j].text === '-n' || w[j].text === '--interval' ? 2 : 1;
+      if (j < w.length) out.add(join(j));
+      return;
+    }
+    if (SHELL_NAMES.has(name)) {
+      for (let j = k + 1; j < w.length; j++) {
+        const t = w[j].text;
+        if (t === '--' || !/^[-+]/.test(t)) break;
+        if (t === '-o' || t === '+o') { j++; continue; }
+        if (SHELL_C_FLAG_RE.test(t)) { if (w[j + 1]) out.add(w[j + 1].text); break; }
+      }
+      return;
+    }
+    if (name === 'su' || name === 'flock') {
+      for (let j = k + 1; j < w.length; j++) {
+        const t = w[j].text;
+        if (t.startsWith('--command=')) out.add(t.slice(10));
+        else if (t === '--command' || t === '-c' || (name === 'su' && SHELL_C_FLAG_RE.test(t))) { if (w[j + 1]) out.add(w[j + 1].text); }
+      }
+      return;
+    }
+    if (name === 'pwsh' || name === 'powershell') {
+      for (let j = k + 1; j < w.length; j++) {
+        const t = w[j].text;
+        if (/^-c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?$/i.test(t)) { out.add(join(j + 1)); return; }
+        if (/^-(?:e|ec|enc|encodedcommand)$/i.test(t) && w[j + 1]) {
+          // Base64 of UTF-16 text: decoded and read as code.
+          out.add(Buffer.from(w[j + 1].text, 'base64').toString('utf16le'));
+          return;
+        }
+      }
+      return;
+    }
+    if (name === 'cmd') {
+      for (let j = k + 1; j < w.length; j++) if (/^\/[ckr]$/i.test(w[j].text)) { out.add(join(j + 1)); return; }
+      return;
+    }
+    if (name === 'env') {
+      for (let j = k + 1; j < w.length && w[j].text.startsWith('-'); j++) {
+        const t = w[j].text;
+        if (t === '-S' || t === '--split-string') { if (w[j + 1]) out.add(w[j + 1].text); }
+        else if (t.startsWith('--split-string=')) out.add(t.slice(15));
+        else if (t.startsWith('-S')) out.add(t.slice(2));
+      }
+    }
+    if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) return;
+    k = skipWrapper(w, k, name);
+  }
+}
+
 function bashDenial(cmd, opts = {}) {
   return shellPatchMessage(cmd, bashDenialOf(cmd, opts), opts);
 }
@@ -1008,7 +1094,9 @@ function bashDenialOf(cmd, opts = {}) {
   if (admin) return adminDenial(admin, opts, cmd);
   // The context (home, project, agent directories) is built once per command.
   opts = { ...opts, ctx: contextOf(opts) };
-  opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
+  // The code of a shell inside the command (sh -c "...") is checked as a command of its own, with the same budget.
+  const depth = opts.depth || 0;
+  if (!depth || !opts.budget) opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
   // The command is read three times: a backslash before a letter is a Windows
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.
@@ -1019,6 +1107,16 @@ function bashDenialOf(cmd, opts = {}) {
   // A reading that could not be split to the end is refused, not checked in part.
   if (readings.some((r) => r.truncated)) return TOO_MANY_MESSAGE;
   const words = readings.flat();
+  const codes = new Set();
+  for (const r of readings) shellCodesOf(r, codes);
+  if (codes.size) {
+    if (depth >= SHELL_CODE_DEPTH) return TOO_NESTED_MESSAGE;
+    for (const code of codes) {
+      if (overBudget(opts.budget, 5)) return TOO_SLOW_MESSAGE;
+      const deny = bashDenialOf(code, { ...opts, depth: depth + 1 });
+      if (deny) return deny;
+    }
+  }
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   // The same for the code an interpreter runs (python -c "open('.env')"), where a path sits inside quotes and brackets.
@@ -1135,13 +1233,32 @@ function isGit(head) {
 // back to the first word that is git (a refused command is the safe side).
 const GIT_WRAPPERS = {
   sudo: 'ugphCDrtUTR', doas: 'uC', env: 'uCS', command: '', nohup: '', time: 'fo', builtin: '', exec: 'a', nice: 'n', timeout: 'sk',
-  xargs: 'IinLPdEsa', setsid: '', ionice: 'cnpPu', stdbuf: 'ioe',
+  xargs: 'IinLPdEsa', setsid: '', ionice: 'cnpPu', stdbuf: 'ioe', busybox: '',
 };
 const WRAPPER_LONG_VALUE = new Set(['--user', '--group', '--chdir', '--unset', '--max-args', '--max-procs', '--replace', '--delimiter',
   '--arg-file', '--eof', '--signal', '--kill-after', '--split-string', '--host', '--prompt', '--close-from', '--role', '--type']);
 
 function wordIsGit(text) {
   return isGit(String(text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase());
+}
+
+/* The index of the word after a wrapper and its options (and the values some take), env's assignments and timeout's duration. */
+function skipWrapper(words, k, name) {
+  const valueOpts = GIT_WRAPPERS[name];
+  k++;
+  while (k < words.length) {
+    const t = words[k].text;
+    if (t === '--') { k++; break; }
+    if (t.startsWith('--') && t.length > 2) { k += !t.includes('=') && WRAPPER_LONG_VALUE.has(t) ? 2 : 1; continue; }
+    if (t.startsWith('-') && t.length > 1) {
+      // -n, -E, -En: flags; a cluster ending in an option that takes a value (sudo -u root) takes the next word.
+      k += /^-[A-Za-z]+$/.test(t) && valueOpts.includes(t[t.length - 1]) ? 2 : 1;
+      continue;
+    }
+    if (ASSIGNMENT_RE.test(t) || (name === 'timeout' && /^[0-9.]+[smhd]?$/.test(t))) { k++; continue; }
+    break;
+  }
+  return k;
 }
 
 /* The index of the word that is git in a simple command, directly or behind wrappers; -1 when it is not git. */
@@ -1153,21 +1270,7 @@ function gitStart(words) {
     if (wordIsGit(words[k].text)) return k;
     const name = String(words[k].text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase();
     if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) break;
-    const valueOpts = GIT_WRAPPERS[name];
-    // Skip the wrapper's options (and the values some take), env's assignments and timeout's duration.
-    k++;
-    while (k < words.length) {
-      const t = words[k].text;
-      if (t === '--') { k++; break; }
-      if (t.startsWith('--') && t.length > 2) { k += !t.includes('=') && WRAPPER_LONG_VALUE.has(t) ? 2 : 1; continue; }
-      if (t.startsWith('-') && t.length > 1) {
-        // -n, -E, -En: flags; a cluster ending in an option that takes a value (sudo -u root) takes the next word.
-        k += /^-[A-Za-z]+$/.test(t) && valueOpts.includes(t[t.length - 1]) ? 2 : 1;
-        continue;
-      }
-      if (ASSIGNMENT_RE.test(t) || (name === 'timeout' && /^[0-9.]+[smhd]?$/.test(t))) { k++; continue; }
-      break;
-    }
+    k = skipWrapper(words, k, name);
     if (k >= words.length) break;
   }
   // The chain did not resolve to git: the first word that is git counts as the start, so nothing slips past.
