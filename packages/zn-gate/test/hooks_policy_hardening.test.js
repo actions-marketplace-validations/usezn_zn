@@ -396,3 +396,36 @@ test('a .env file reached after a cd, through a path built at run time or from i
     assert.equal(policy.bashDenial(cmd, o), null, cmd);
   }
 });
+
+test('after a cd, only the folders the command can reach are checked, also when the current .env is shadowed', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cdenv2-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'app1', 'inner'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'app', 'app'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=__ZN_EXAMPLE_API_KEY__\n');
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  // A folder the command never reaches (app/app) holds values.
+  fs.writeFileSync(path.join(dir, 'app', 'app', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: { PWD: dir } };
+  for (const cmd of [
+    'cd app1/inner && cat .env',
+    'cd app1/inner && cat $PWD/.env',
+    '{ cd app1/inner; cat .env; }',
+    'if cd app1/inner; then cat .env; fi',
+    'bash -c "cd app1/inner && cat .env"',
+    'cd $PROJ && cat .env',
+  ]) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  assert.match(policy.bashDenial('cd app1/inner && cat .env', o), /changes to app1\/inner first/);
+  for (const cmd of [
+    'cat .env',
+    'cd app && cat .env',
+    'cd a && cd b && cat d1/.env',
+    'echo $(date) && cat .env',
+    'cd app1 && npm test',
+  ]) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
