@@ -154,6 +154,24 @@ pypi-attestations verify pypi \
   pypi:zn_gate-1.5.0-py3-none-any.whl
 ```
 
+## 6. The release tag
+
+From 1.12.0 on, the tag `vX.Y.Z` is created and signed by the
+[`Tag release` workflow](../.github/workflows/tag-release.yml) with
+[gitsign](https://github.com/sigstore/gitsign) (Sigstore keyless signing): the
+signature names that workflow, not a person, and the Release workflow refuses
+to publish a tag of such a commit without that signature. With gitsign 0.17
+or later, in a clone of this repository:
+
+```sh
+git fetch origin tag v1.12.0
+gitsign verify-tag v1.12.0 \
+  --certificate-identity https://github.com/usezn/zn/.github/workflows/tag-release.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Tags up to 1.11.x are not signed.
+
 ## If something does not match
 
 Do not install the files. Report it privately as described in
