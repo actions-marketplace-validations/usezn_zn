@@ -234,7 +234,10 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
   // An escaped quote or backslash inside an escaped JSON value never ends it early.
   for (const line of ['{\\"password\\":\\"ab\\\\\\"zn-test-fake-e1\\"}', '{\\"token\\":\\"\\\\\\"zn-test-fake-e2\\"}','PASSWORD: \\"\\\\\\"zn-test-fake-e3\\"',
     '{\\"password\\":\\"ab\\\\\\"zn-test-fake-e4\\",\\"x\\":\\"y\\"}', '{\\"password\\":\\"ab\\\\\\\\zn-test-fake-e5\\"}',
-    'curl -u deploy:http://zn-test-fake-e6 x', 'curl --user=deploy:git+ssh://zn-test-fake-e7 x']) {
+    'curl -u deploy:http://zn-test-fake-e6 x', 'curl --user=deploy:git+ssh://zn-test-fake-e7 x',
+    '"args": ["-y", "example-mcp", "--api-key", "zn-test-fake-e8"]', String.raw`{\"args\":[\"--token\",\"zn-test-fake-e9\"]}`,
+    '"args": ["--github-token", "zn-test-fake-e10"]', '"args": ["--openai-api-key", "zn-test-fake-e11", "--client-secret", "zn-test-fake-e12"]',
+    String.raw`{\"args\":[\"--github-token\",\"zn-test-fake-e13\"]}`]) {
     assert.doesNotMatch(redact(line), /zn-test-fake/, line + ' -> ' + redact(line));
   }
   // A value that ends in an escaped backslash still ends at its own closing quote.
@@ -338,6 +341,14 @@ test('--remember keeps only counts, and only when asked; the next run shows them
   assert.equal(third.status, 0, third.stderr);
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8'))).length, 1);
   assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n.endsWith('.tmp')), []);
+  // Only counts and a date from the file reach the report: an edited entry cannot send terminal escapes.
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const k = Object.keys(data)[0];
+  data[k] = { high: '1e309', medium: -3, low: 2, at: '\u001b[2J\u001b]0;x\u0007' };
+  fs.writeFileSync(file, JSON.stringify(data));
+  const fourth = run('--remember');
+  assert.doesNotMatch(fourth.stdout, /[\u001b\u0007]/);
+  assert.match(fourth.stdout, /\(last time, an earlier run: 0 high, 0 medium, 2 low\)/);
 });
 
 test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) => {
