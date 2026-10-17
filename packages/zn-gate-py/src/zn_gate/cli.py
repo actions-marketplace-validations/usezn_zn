@@ -20,7 +20,7 @@ from . import __version__
 from .rules import RULES_VERSION, evaluate, mask_token_runs
 from .rules import SECRET_PATTERNS as _DLP_PATTERNS, redact_secrets as _dlp_redact, redact_scan_secrets as _scan_redact
 from .client import analyze, is_cloud_enabled, resolve_endpoint
-from .evidence import log_evidence, verify_evidence_ledger, get_evidence_stats, export_evidence_ledger, EVIDENCE_FILE
+from .evidence import log_evidence, verify_evidence_ledger, get_evidence_stats, export_evidence_ledger, recovery_hint, EVIDENCE_FILE
 
 # Secrets that span several lines (a PEM private key block). The line-by-line
 # scan never sees BEGIN and END together, so these run on the whole file.
@@ -416,7 +416,8 @@ def cmd_evidence(args: argparse.Namespace) -> int:
             print(f"\n{_icon(LOCK)} Cryptographic Evidence Ledger: ALL {res.get('total', 0)} RECORDS VERIFIED (IMMUTABLE)\n")
             return 0
         else:
-            print(f"\n{_icon(ALERT, sys.stderr)} Tamper detected: {res.get('error')}\n", file=sys.stderr)
+            print(f"\n{_icon(ALERT, sys.stderr)} Tamper detected: {res.get('error')}", file=sys.stderr)
+            print(f"{recovery_hint()}\n", file=sys.stderr)
             return 1
 
     if getattr(args, "export", False):
@@ -425,6 +426,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         out_content = res.get("content", "")
         if not res.get("valid"):
             print(f"{_icon(ALERT, sys.stderr)} Tamper detected: {res.get('error')}", file=sys.stderr)
+            print(recovery_hint(), file=sys.stderr)
         if getattr(args, "output", None):
             Path(args.output).write_text(out_content, encoding="utf-8")
             print(f"Exported {res.get('total')} records to {args.output} (Integrity: {'VALID' if res.get('valid') else 'TAMPERED'}).")
@@ -440,6 +442,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     print(f"  Integrity      : {'VALID' if stats.get('valid') else 'CORRUPTED'}")
     if not stats.get("valid") and stats.get("error"):
         print(f"  Details        : {stats.get('error')}")
+        print(f"  Recovery       : {recovery_hint()}")
     print()
     return 0
 

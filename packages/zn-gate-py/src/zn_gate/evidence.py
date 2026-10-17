@@ -45,7 +45,23 @@ class EvidenceLedgerError(Exception):
     """The ledger exists but cannot be trusted or read (invalid bytes, a broken last line, an I/O error)."""
 
 
-_warned_corrupt = False
+# A damaged log makes log_evidence skip its writes. The warning is shown on the first skipped
+# write and again at most every WARN_INTERVAL seconds, so a long-running process (an MCP proxy
+# that runs for a whole session) does not go quiet after one line.
+WARN_INTERVAL = 300.0
+_last_warn: Optional[float] = None
+_WS = b" \t\r"  # the only whitespace trimmed around a line (the Node package does the same)
+
+
+def recovery_hint(file_path: str = EVIDENCE_FILE) -> str:
+    """Tells the user how to get logging going again after damage."""
+    damaged = os.path.join(os.path.dirname(file_path), "evidence.damaged.jsonl")
+    if os.name == "nt":
+        cmd = f'move "{file_path}" "{damaged}"'
+    else:
+        cmd = f'mv "{file_path}" "{damaged}"'
+    return (f"To start a new log and keep the old file for review, move it aside ({cmd}); "
+            "the next event starts a new chain.")
 
 
 def _read_ledger(file_path: str) -> Tuple[List[str], Dict[int, str]]:
@@ -61,7 +77,7 @@ def _read_ledger(file_path: str) -> Tuple[List[str], Dict[int, str]]:
     lines: List[str] = []
     bad: Dict[int, str] = {}
     for chunk in raw.split(b"\n"):
-        chunk = chunk.strip()
+        chunk = chunk.strip(_WS)
         if not chunk:
             continue
         try:
@@ -72,29 +88,51 @@ def _read_ledger(file_path: str) -> Tuple[List[str], Dict[int, str]]:
     return lines, bad
 
 
+def _read_last_line(file_path: str) -> Optional[bytes]:
+    """Returns the last non-empty line as bytes (None for an empty or whitespace-only file),
+    reading only the end of the file."""
+    try:
+        with open(file_path, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            window = 65536
+            while True:
+                start = max(0, size - window)
+                f.seek(start)
+                buf = f.read(size - start).rstrip(b" \t\r\n")
+                if buf:
+                    nl = buf.rfind(b"\n")
+                    if nl >= 0 or start == 0:
+                        return buf[nl + 1:].strip(_WS)
+                elif start == 0:
+                    return None
+                window *= 2
+    except OSError as e:
+        raise EvidenceLedgerError(f"Cannot read the evidence log: {e.strerror or e}") from e
+
+
 def _corrupt_result(total: int, index: int, error: str) -> Dict[str, Any]:
     return {"valid": False, "total": total, "verified": index, "broken_index": index, "error": error}
 
 
 def get_last_hash(file_path: str = EVIDENCE_FILE) -> str:
-    """Reads the record_hash of the last line in the ledger.
-    A missing or empty file is the start of a new chain (genesis). A log that exists but cannot be
-    read or trusted raises EvidenceLedgerError: it never falls back to genesis, which would
-    silently restart the chain."""
+    """Reads the record_hash of the last line in the ledger (only the end of the file is read).
+    A missing or empty file is the start of a new chain (genesis). If the last line cannot be
+    read or trusted this raises EvidenceLedgerError: it never falls back to genesis, which would
+    silently restart the chain. Damage earlier in the file is for verify_evidence_ledger to find."""
     if not os.path.exists(file_path):
         return GENESIS_HASH
-    lines, bad = _read_ledger(file_path)
-    if bad:
-        raise EvidenceLedgerError(next(iter(bad.values())))
-    if not lines:
+    last = _read_last_line(file_path)
+    if last is None:
         return GENESIS_HASH
     try:
-        last_rec = json.loads(lines[-1])
+        last_rec = json.loads(last.decode("utf-8"))
+    except UnicodeDecodeError as e:
+        raise EvidenceLedgerError(f"Invalid UTF-8 bytes in the last line (byte {e.start}): the log was corrupted or modified.") from e
     except ValueError as e:
-        raise EvidenceLedgerError(f"Malformed JSON at line {len(lines)}: {e}") from e
+        raise EvidenceLedgerError(f"Malformed JSON in the last line: {e}") from e
     last_hash = last_rec.get("record_hash") if isinstance(last_rec, dict) else None
     if not isinstance(last_hash, str) or len(last_hash) != 64:
-        raise EvidenceLedgerError(f"Last record (line {len(lines)}) has no valid record_hash.")
+        raise EvidenceLedgerError("The last record has no valid record_hash.")
     return last_hash
 
 
@@ -104,20 +142,24 @@ def log_evidence(event: Dict[str, Any], file_path: str = EVIDENCE_FILE) -> Optio
     Formula: record_hash = sha256(prev_hash + ":" + json(base_record))
 
     If the existing ledger is corrupt or unreadable, nothing is appended (the chain is never
-    restarted), one warning is printed to stderr per process and None is returned. This never
+    restarted), a warning is printed to stderr (first time, then at most every 5 minutes) and
+    None is returned. This never
     raises for a damaged log, so it does not block the user's command; run
-    `zn-gate evidence --verify` for details.
+    `zn-gate evidence --verify` for details. To recover, move the damaged file aside (see
+    recovery_hint): the next event starts a new chain.
     """
-    global _warned_corrupt
+    global _last_warn
     _ensure_dir(file_path)
     try:
         prev_hash = get_last_hash(file_path)
     except EvidenceLedgerError as e:
-        if not _warned_corrupt:
-            _warned_corrupt = True
+        now = time.monotonic()
+        if _last_warn is None or now - _last_warn >= WARN_INTERVAL:
+            _last_warn = now
             sys.stderr.write(
                 f"zn-gate: the evidence log {file_path} is damaged ({e}) "
-                "This event was not recorded. Run 'zn-gate evidence --verify' for details.\n"
+                "Events are not being recorded. Run 'zn-gate evidence --verify' for details. "
+                f"{recovery_hint(file_path)}\n"
             )
         return None
     timestamp = datetime.now(timezone.utc).isoformat()
