@@ -490,3 +490,106 @@ test('git steps that only clean up a tracked .env stay allowed', (t) => {
     assert.ok(policy.bashDenial(cmd, o), cmd);
   }
 });
+
+test('a private key kept in the project is refused; a certificate or public key is not', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-keys-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'deploy'));
+  // Fake, obviously invalid key material: only the markers matter.
+  const fakeKey = '-----BEGIN PRIVATE KEY-----\nZN-TEST-FAKE-KEY-NOT-REAL\n-----END PRIVATE KEY-----\n';
+  fs.writeFileSync(path.join(dir, 'deploy', 'server.key'), fakeKey);
+  fs.writeFileSync(path.join(dir, 'deploy', 'tls.pem'), fakeKey.replace(/PRIVATE KEY/g, 'RSA PRIVATE KEY'));
+  fs.writeFileSync(path.join(dir, 'deploy', 'cert.pem'), '-----BEGIN CERTIFICATE-----\nZN-TEST-FAKE-CERT\n-----END CERTIFICATE-----\n');
+  fs.writeFileSync(path.join(dir, 'deploy', 'id_ed25519'), 'ZN-TEST-FAKE\n');
+  fs.writeFileSync(path.join(dir, 'deploy', 'id_ed25519.pub'), 'ssh-ed25519 ZN-TEST-FAKE\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['cat deploy/server.key', 'cat deploy/tls.pem', 'cat deploy/id_ed25519', 'base64 deploy/server.key', 'cat deploy/store.p12']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['cat deploy/cert.pem', 'openssl x509 -in deploy/cert.pem -noout -text', 'cat deploy/id_ed25519.pub', 'cat deploy/missing.key']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  assert.ok(policy.readDenial(path.join(dir, 'deploy', 'server.key'), o));
+  assert.equal(policy.readDenial(path.join(dir, 'deploy', 'cert.pem'), o), null);
+});
+
+test('reading a key or .env file never blocks and a repeated word is read once', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-keys-perf-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'cert.pem'), '-----BEGIN CERTIFICATE-----\n' + 'A'.repeat(1024 * 1024) + '\n-----END CERTIFICATE-----\n');
+  fs.writeFileSync(path.join(dir, 'pgp.key'), '-----BEGIN PGP PRIVATE KEY BLOCK-----\nZN-TEST-FAKE\n-----END PGP PRIVATE KEY BLOCK-----\n');
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  const t0 = process.hrtime.bigint();
+  assert.ok(policy.bashDenial('cat cert.pem '.repeat(7000) + '; cat .env', o), 'still reaches the .env');
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 5000, 'too slow');
+  assert.ok(policy.bashDenial('cat pgp.key', o));
+  if (process.platform !== 'win32') {
+    const { execFileSync } = require('child_process');
+    execFileSync('mkfifo', [path.join(dir, 'pipe.pem'), path.join(dir, 'pipe.env')]);
+    fs.renameSync(path.join(dir, 'pipe.env'), path.join(dir, '.env.pipe'));
+    const t1 = process.hrtime.bigint();
+    assert.ok(policy.bashDenial('cat pipe.pem', o), 'a FIFO named .pem is refused without being read');
+    assert.ok(policy.bashDenial('cat .env.pipe', o), 'a FIFO named .env.* is refused without being read');
+    assert.ok(Number(process.hrtime.bigint() - t1) / 1e6 < 2000, 'a FIFO must not block');
+  }
+});
+
+test('a command with many paths after several cd is refused within the time budget, never let through', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-budget-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const d of ['a', 'b', 'c', 'd']) fs.mkdirSync(path.join(dir, d));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  // A few simple commands, so the 1000-command limit is not what stops it: one cat with thousands of paths.
+  let cmd = 'cd a; cd b; cd c; cd d; cat';
+  for (let i = 0; cmd.length < 98000; i++) cmd += ' x' + i + '/.env';
+  cmd += '; cat .env';
+  const t0 = process.hrtime.bigint();
+  const deny = policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(deny, 'refused');
+  assert.match(deny, /too many paths|holds plain-text secrets/);
+  assert.ok(ms < 8000, 'checked in ' + ms + ' ms');
+});
+
+test('a Python virtualenv named .env is a folder, not a secret file', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-venv-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, '.env', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.env', 'bin', 'activate'), '# fake activate\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['ls .env', 'rm -rf .env', 'python3 -m venv .env', 'source .env/bin/activate']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  assert.equal(policy.readDenial(path.join(dir, '.env'), o), null);
+});
+
+test('a read placed after thousands of chained commands is still found, and a long heredoc is fine', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-chain-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, '.aws'));
+  fs.writeFileSync(path.join(dir, '.aws', 'credentials'), '[default]\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const n of [999, 1001, 5000, 16000]) {
+    assert.ok(policy.bashDenial('true; '.repeat(n) + 'cat ~/.aws/credentials', o), String(n));
+  }
+  assert.equal(policy.bashDenial('true; '.repeat(1500) + 'ls', o), null);
+  const heredoc = "cat > out.py <<'EOF'\n" + Array.from({ length: 1200 }, (_, i) => 'x' + i + ' = ' + i).join('\n') + '\nEOF';
+  assert.equal(policy.bashDenial(heredoc, o), null, 'a 1200-line heredoc writing a file');
+});
+
+test('thousands of cd in one command are followed within the time budget', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-manycd-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=__ZN_EXAMPLE_API_KEY__\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const unit of ['cd x; ', 'cd x/y/z; ', "(cd a;$'b'); ", 'cd a;cd b; ']) {
+    const cmd = unit.repeat(Math.floor(98000 / unit.length)) + 'cat .env';
+    const t0 = process.hrtime.bigint();
+    const deny = policy.bashDenial(cmd, o);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(deny, unit + ': a .env read after cd it cannot follow is refused');
+    assert.ok(ms < 5000, unit + ' took ' + ms + ' ms');
+  }
+});
