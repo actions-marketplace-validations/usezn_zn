@@ -31,6 +31,23 @@ const STORES = ['keychain', 'vault'];
 const TLS_REFUSAL = 'NODE_TLS_REJECT_UNAUTHORIZED=0 is set, so zn-gate will not send the saved key over a connection whose certificate is not checked';
 
 /**
+ * Why a saved key must not be sent now, or null. The key goes only over a connection checked against the
+ * system's certificate authorities: not while the environment turns checking off or adds authorities or code
+ * (NODE_TLS_REJECT_UNAUTHORIZED=0, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, or NODE_OPTIONS with --require, --import,
+ * -r or --use-openssl-ca). A key given with --key or ZN_API_KEY is the person's own choice and is not held back.
+ */
+function tlsRefusal(env = process.env) {
+  if (env.NODE_TLS_REJECT_UNAUTHORIZED === '0') return TLS_REFUSAL;
+  for (const name of ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']) {
+    if (env[name]) return name + ' is set, so zn-gate will not send the saved key: the connection could trust other certificate authorities';
+  }
+  if (/(?:^|\s)(?:--require|--import|--use-openssl-ca|-r)(?:[=\s]|$)/.test(env.NODE_OPTIONS || '')) {
+    return 'NODE_OPTIONS loads code or changes the certificate authorities, so zn-gate will not send the saved key';
+  }
+  return null;
+}
+
+/**
  * A usable API key, or null. zn keys and tokens are letters, digits, `_`,
  * `-` and `.` only; anything else counts as unset: blank, too short, or a
  * placeholder a launcher did not expand (for example a plugin option left
@@ -239,6 +256,7 @@ module.exports = {
   resolveApiKey,
   NoSecureStore,
   TLS_REFUSAL,
+  tlsRefusal,
   VAULT_SECRET,
   _use,
 };

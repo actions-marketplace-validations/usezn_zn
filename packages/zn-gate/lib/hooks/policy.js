@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.18';
+const POLICY_RULES_VERSION = '2026-10-17.19';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1130,34 +1130,14 @@ function codesOfCommand(w, out) {
  * `cmdkey /list:` and PowerShell `Get-StoredCredential` / CredRead.
  */
 const KEYCHAIN_MESSAGE = 'zn: this command would read a zn secret (the API key or the vault key) from the system keychain, which is protected. Ask the user to do it.';
-const KEYCHAIN_VERBS_RE = /(?:find-(?:generic|internet)-password|dump-keychain|\blookup\b|\bsearch\b|\/list\b|vaultcmd)/i;
-
-// Code that reads zn's key without a keychain tool: zn's own modules, or a keyring library with zn's names.
-const KEYCHAIN_CODE_RE = /(?:keyring|keytar|get_?password|getPassword|CredRead|PasswordVault|\b_native\b|loadStoredKey|resolveApiKey)/;
-const KEYCHAIN_LIB_RE = /(?:require\s*\(|import\s*\(|\bimport\s)\s*['"]?[^;\n]*(?:cloud-key|vault\/keychain)/;
-const KEYCHAIN_CRED_RE = /(?:Get-StoredCredential|CredRead|CredEnumerate|PasswordVault)/i;
-// Programs that can query a keychain, and interpreters that can run code that does.
-const KEYCHAIN_PROGRAMS = new Set(['security', 'secret-tool', 'cmdkey', 'vaultcmd']);
-const CODE_INTERPRETERS = new Set(['node', 'nodejs', 'python', 'python3', 'ruby', 'perl', 'deno', 'bun', 'php', 'powershell', 'pwsh']);
-const COMMAND_WRAPPERS = new Set(['sudo', 'doas', 'env', 'command', 'exec', 'nohup', 'time', 'nice', 'builtin', 'stdbuf', 'timeout', 'xargs']);
-
-function programBase(word) {
-  return String(word || '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
-}
-
-/* The programs a command runs, each with the text from where it starts to the end (its arguments and anything after). */
-function programsOf(text) {
-  const out = [];
-  const re = /[^;|&\n`(){}]+/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const toks = m[0].trim().split(/\s+/);
-    let i = 0;
-    while (i < toks.length && (COMMAND_WRAPPERS.has(programBase(toks[i])) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]) || /^-/.test(toks[i]) || /^\d+$/.test(toks[i]))) i++;
-    if (i < toks.length) out.push({ prog: programBase(toks[i]), rest: text.slice(m.index) });
-  }
-  return out;
-}
+// A command is refused when it holds BOTH a word that reads a keychain AND one of zn's own entry names (or loads
+// zn's key code). No wrapper, quoting, interpreter or heredoc has to be understood: the words are enough, and
+// searching for the names with rg, grep or git grep (no keychain word) stays allowed.
+const KEYCHAIN_WORD_RE = /(?:(?<![A-Za-z0-9_.-])(?:security(?:\.exe)?(?=\s)|secret-tool|cmdkey|vaultcmd|Get-StoredCredential|CredRead|CredEnumerate|keyring|keytar|PasswordVault)(?![A-Za-z0-9_-])|(?<![A-Za-z0-9_-])(?:getPassword|get_password)(?![A-Za-z0-9_-])|find-(?:generic|internet)-password)/i;
+const KEYCHAIN_DUMP_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s[^\n]*\bdump-keychain\b/i;
+// zn's own modules, loaded to read the key.
+const KEYCHAIN_LIB_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)\s*['"]?[^;\n]*(?:cloud-key|vault\/keychain)/;
+const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity)/;
 
 function keychainQuery(cmd, env) {
   const text = String(cmd || '');
@@ -1168,20 +1148,11 @@ function keychainQuery(cmd, env) {
   if (typeof custom === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(custom) && !names.includes(custom)) names.push(custom);
   const named = (t) => names.some((n) => new RegExp('(?<![A-Za-z0-9._-])' + n.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '(?![A-Za-z0-9._-])', 'i').test(t));
   // Quotes, backslashes and backticks inside a name do not change what the tool sees.
-  const forms = [text, text.replace(/['"`\\^]/g, '')];
-  for (const t of forms) {
-    for (const { prog, rest } of programsOf(t)) {
-      if (KEYCHAIN_PROGRAMS.has(prog)) {
-        // Dumping the keychain would include zn's entries whatever name is given.
-        if (prog === 'security' && /\bdump-keychain\b/i.test(rest)) return true;
-        if (KEYCHAIN_VERBS_RE.test(rest) && named(rest)) return true;
-      }
-      if (CODE_INTERPRETERS.has(prog)) {
-        if (KEYCHAIN_CRED_RE.test(rest) && named(rest)) return true;
-        // Code that loads the key through zn's own modules or a keyring library.
-        if (KEYCHAIN_CODE_RE.test(rest) && (KEYCHAIN_LIB_RE.test(rest) || named(rest))) return true;
-      }
-    }
+  for (const t of [text, text.replace(/['"`\\^]/g, '')]) {
+    // Dumping the keychain would include zn's entries whatever name is given.
+    if (KEYCHAIN_DUMP_RE.test(t)) return true;
+    if (KEYCHAIN_WORD_RE.test(t) && named(t)) return true;
+    if (KEYCHAIN_LIB_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
   }
   return false;
 }

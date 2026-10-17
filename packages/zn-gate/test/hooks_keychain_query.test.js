@@ -62,7 +62,29 @@ ZN_QUERIES.push(
   'node -e "const k=require(\'/usr/lib/node_modules/zn-gate/lib/vault/keychain\');console.log(k._native.macos.load(k.CLOUD_SLOT))"',
 );
 
-// Also refused when the program is wrapped or the query sits in a pipeline.
+// Wrapped, quoted, nested or run by an interpreter: the words are what counts.
+ZN_QUERIES.push(
+  'python3.12 -c "import keyring; print(keyring.get_password(\'zn-cloud\',\'cloud-api-key\'))"',
+  'python3 <<\'EOF\'\nimport keyring\nprint(keyring.get_password("zn-cloud","cloud-api-key"))\nEOF',
+  'osascript -e \'do shell script "security find-generic-password -s zn-cloud -w"\'',
+  'watch -n1 security find-generic-password -s zn-cloud -w',
+  'find . -maxdepth 0 -exec security find-generic-password -s zn-cloud -w \\;',
+  'echo zn-cloud | xargs security find-generic-password -w -s',
+  '"security" find-generic-password -s zn-cloud -w',
+  '\\security find-generic-password -s zn-cloud -w',
+  'FOO=1 /usr/bin/env -i security find-generic-password -s zn-cloud -w',
+  'sudo -u $USER security find-generic-password -s zn-cloud -w',
+  'tsx -e "require(\'zn-gate/lib/cloud-key\').loadStoredKey().then(console.log)"',
+  'npx -y tsx -e "require(\'zn-gate/lib/cloud-key\').loadStoredKey().then(console.log)"',
+  'node --eval "require(\'zn-gate/lib/cloud-key\').loadStoredKey().then(console.log)"',
+  'node -p "require(\'zn-gate/lib/vault/keychain\')._native"',
+  'nohup security find-generic-password -s zn-cloud -w > out.txt',
+  'if true; then security find-generic-password -s zn-cloud -w; fi',
+  'x=$(security find-generic-password -s zn-cloud -w); echo $x',
+  'ssh localhost security find-generic-password -s zn-cloud -w',
+  'ts-node -e "require(\'keytar\').getPassword(\'zn-cloud\',\'x\')"',
+  'deno eval "import keyring from \'x\'; keyring.get(\'zn-vault\')"',
+);
 ZN_QUERIES.push(
   'sudo security find-generic-password -s zn-cloud -w',
   'env FOO=1 secret-tool lookup service zn-cloud account x',
@@ -77,7 +99,11 @@ const OTHER_KEYCHAIN_USE = [
   'git grep -n zn-gate-cloud-api-key',
   'git grep -n "loadStoredKey"',
   'rg security docs/ | head',
-  'grep -rn "secret-tool lookup service zn-cloud" docs/',
+  'git log --grep age-identity',
+  'git log --oneline --grep=zn-cloud -- docs/',
+  'echo "age-identity" | grep -c age',
+  'node -e "require(\'./lib/vault/keychain\')"',
+  'npm test',
   'python3 -c "import keyring; print(keyring.get_password(\'my-app\',\'me\'))"',
   'security find-generic-password -a me -s my-app -w',
   'security find-generic-password -l my-label -w',

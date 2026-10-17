@@ -178,9 +178,10 @@ async function analyze(input, options = {}) {
   const apiKey = found.key;
   const { sanitized, detections } = redactSecrets(typeof input === 'string' ? input : String(input ?? ''));
   const storedKey = found.source === 'keychain' || found.source === 'vault';
-  if (storedKey && process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
-    // The saved key is never sent over a connection whose certificate is not checked.
-    return { ...local, mode: 'oss-local', fallback: true, cloud_error: cloudKey.TLS_REFUSAL };
+  const tlsWhy = storedKey ? cloudKey.tlsRefusal() : null;
+  if (tlsWhy) {
+    // The saved key is never sent over a connection that is not checked against the system's authorities.
+    return { ...local, mode: 'oss-local', fallback: true, cloud_error: tlsWhy };
   }
   const endpoint = resolveEndpoint(options, { stored: storedKey });
   const urlIgnored = storedKey && Boolean(options.apiUrl || process.env.ZN_API_URL);
