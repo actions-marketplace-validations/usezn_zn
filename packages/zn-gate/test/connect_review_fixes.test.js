@@ -196,3 +196,24 @@ test('with NODE_DEBUG set nothing is sent or saved by analyze, connect or discon
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('a command that loads zn-gate client code to use the key is refused, other uses stay free', () => {
+  for (const cmd of [
+    "node -e \"require('zn-gate/lib/client').analyze('x')\"",
+    "node -e \"require('./lib/client.js').isCloudEnabled()\"",
+    "node -e \"import('zn-gate/lib/client').then((m) => m.analyze('x'))\"",
+    "node -e \"const c = require('./packages/zn-gate/lib/client'); c.analyze('hi')\"",
+  ]) {
+    assert.ok(policy.bashDenial(cmd, OPTS), cmd);
+  }
+  for (const cmd of [
+    'npx -y zn-gate check',
+    'zn-gate analyze "hello"',
+    'npx zn-gate status',
+    "node -e \"require('./lib/client-pool').analyze('x')\"",
+    "node -e \"require('./src/client').connect()\"",
+    "node -e \"require('./lib/client')\"",
+  ]) {
+    assert.equal(policy.bashDenial(cmd, OPTS), null, cmd);
+  }
+});

@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.24';
+const POLICY_RULES_VERSION = '2026-10-17.25';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1532,8 +1532,8 @@ const KEYCHAIN_DUMP_RE = /\bdump-keychain\b/i;
 const KEYCHAIN_SECURITY_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s/i;
 // zn's own modules, loaded to read the key.
 const KEYCHAIN_LIB_LOAD_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)/;
-const KEYCHAIN_LIB_NAME_RE = /(?:cloud-key|vault\/keychain)/;
-const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity)/;
+const KEYCHAIN_LIB_NAME_RE = /(?:cloud-key|vault\/keychain|lib\/client(?![A-Za-z0-9_-]))/;
+const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity|\banalyze\b|\bisCloudEnabled\b)/;
 
 /*
  * A single simple command that only writes or searches text: `git commit|grep|log|show`, `echo`, `printf`. Such a
