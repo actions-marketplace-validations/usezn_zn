@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.16';
+const POLICY_RULES_VERSION = '2026-10-17.17';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1133,15 +1133,24 @@ const KEYCHAIN_MESSAGE = 'zn: this command would read a zn secret (the API key o
 const KEYCHAIN_TOOLS_RE = /(?:^|[^A-Za-z0-9_-])(?:security|secret-tool|cmdkey|Get-StoredCredential|CredRead|CredEnumerate|vaultcmd)(?![A-Za-z0-9_-])/i;
 const KEYCHAIN_VERBS_RE = /(?:find-(?:generic|internet)-password|dump-keychain|\blookup\b|\bsearch\b|\/list\b|Get-StoredCredential|CredRead|CredEnumerate|vaultcmd)/i;
 
+// Code that reads zn's key without a keychain tool: zn's own modules, or a keyring library with zn's names.
+const KEYCHAIN_CODE_RE = /(?:keyring|keytar|get_?password|getPassword|CredRead|PasswordVault|\b_native\b|loadStoredKey|resolveApiKey)/;
+const KEYCHAIN_LIB_RE = /(?:require\s*\(|import\s*\(|\bimport\s)\s*['"]?[^;\n]*(?:cloud-key|vault\/keychain)/;
+
 function keychainQuery(cmd, env) {
   const text = String(cmd || '');
   if (text.length > SHELL_SCAN_CAP) return false;
-  const names = ['zn-vault', 'zn-cloud'];
+  // zn's entries can be picked by service, account or label.
+  const names = ['zn-vault', 'zn-cloud', 'cloud-api-key', 'age-identity', 'zn-gate-cloud-api-key', 'zn-vault-identity', 'zn vault identity', 'zn-gate cloud API key'];
   const custom = env && env.ZN_KEYCHAIN_SERVICE;
   if (typeof custom === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(custom) && !names.includes(custom)) names.push(custom);
   // Quotes, backslashes and backticks inside a name do not change what the tool sees.
   const forms = [text, text.replace(/['"`\\^]/g, '')];
   for (const t of forms) {
+    // Dumping the keychain would include zn's entries whatever name is given.
+    if (/(?:^|[^A-Za-z0-9_-])security(?:\.exe)?\s[^\n;|&]*\bdump-keychain\b/i.test(t)) return true;
+    // Interpreter code that loads the key through zn's own modules or a keyring library.
+    if (KEYCHAIN_CODE_RE.test(t) && (KEYCHAIN_LIB_RE.test(t) || names.some((n) => t.includes(n)))) return true;
     if (!KEYCHAIN_TOOLS_RE.test(t) || !KEYCHAIN_VERBS_RE.test(t)) continue;
     for (const n of names) {
       const esc = n.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');

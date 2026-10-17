@@ -195,7 +195,10 @@ async function deleteKey(deps) {
   try {
     if (m.store === 'keychain') {
       const n = nativeKeychain(deps);
-      if (n) n.impl.remove(n.slot);
+      if (!n) return { removed: false, store: m.store, error: new Error('the system keychain is not available here, so the key could not be removed') };
+      n.impl.remove(n.slot);
+      // remove() can fail without throwing: only a keychain that no longer returns the key counts.
+      if (n.impl.load(n.slot)) return { removed: false, store: m.store, error: new Error('the key is still in the system keychain') };
     } else {
       await vaultClient(deps).removeSecret(VAULT_SECRET);
     }

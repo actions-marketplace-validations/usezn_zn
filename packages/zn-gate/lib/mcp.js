@@ -1,7 +1,7 @@
 'use strict';
 
 const readline = require('readline');
-const { analyze, analyzeLocal, checkToolResult, isCloudEnabled, RULES_VERSION, resolveEndpoint } = require('./client');
+const { analyze, analyzeLocal, checkToolResult, isCloudEnabled, RULES_VERSION, resolveEndpoint, usesStoredKey } = require('./client');
 const { sanitizeToolResult } = require('./rules');
 
 const SERVER_NAME = 'zn-gate';
@@ -251,7 +251,7 @@ async function handleRequest(message, options) {
         const status = {
           package: `${SERVER_NAME}@${SERVER_VERSION}`,
           engine: cloud ? 'local-rules + cloud (analyze_prompt only)' : 'local-rules',
-          endpoint: cloud ? resolveEndpoint(options) : 'none (local only)',
+          endpoint: cloud ? resolveEndpoint(options, { stored: usesStoredKey(options) }) : 'none (local only)',
           rules_version: RULES_VERSION,
           cloud_enabled: cloud,
           leaves_machine: cloud

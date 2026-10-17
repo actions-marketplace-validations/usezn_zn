@@ -3,4 +3,4 @@
 - A zn API key (`zn_` followed by 48 characters) is now recognised by the scrubber and hidden like other provider keys.
 
 ### Security
-- The hooks refuse commands that ask the system keychain for zn's own entries (`security find-generic-password`, `secret-tool lookup`, `cmdkey /list`, `Get-StoredCredential` with zn's service or target name), so an agent cannot read the API key saved by `zn-gate connect` or the vault key. The same tools stay free for other entries.
+- The hooks refuse commands that ask the system keychain for zn's own entries (`security find-generic-password`, `secret-tool lookup`, `cmdkey /list`, `Get-StoredCredential` with zn's service or target name), and also `security dump-keychain` and code that loads the key through zn's own modules or a keyring library, so the direct ways for an agent to read the key saved by `zn-gate connect` or the vault key are closed. A program running as you can still ask the keychain, as for any entry. The same tools stay free for other entries. A saved key is only ever sent to `https://api.usezn.com`: `--url` and `ZN_API_URL` are ignored for it.

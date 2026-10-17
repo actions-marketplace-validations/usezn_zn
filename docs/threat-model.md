@@ -157,8 +157,8 @@ stop malware running as the same user (see above).
 
 `zn-gate connect` is the only way zn-gate keeps a cloud API key. It stores the key in the system keychain, or in the zn vault when there is no keychain, never in a file, after a person pastes it at a hidden prompt in their own terminal (the command refuses to run under an agent or without a terminal).
 
-- **What an agent cannot do:** read the key through zn's hooks (they refuse keychain queries for zn's own entries and keep `~/.zn` out of reach), see it in tool output (the scrubber hides its format), or switch the cloud check on by writing `~/.zn/config.json`: the marker there holds no key, and without the key nothing is sent.
-- **What it does not stop:** malware running as your user can ask the keychain itself, as it can for any keychain entry (see above). The key can be limited to analyzing text when the server offers that, and `zn-gate disconnect` revokes it.
+- **What zn does:** the hooks refuse the direct ways for an agent to read the key: keychain queries for zn's own entries (by service, account or label) and `security dump-keychain`, interpreter code that names zn's entries with a keyring library or loads zn's own modules, and anything under `~/.zn`. The scrubber hides the key's format in what the agent sees. The marker in `~/.zn/config.json` holds no key, so writing it cannot switch the cloud check on by itself. The saved key is only ever sent to `https://api.usezn.com`, whatever `--url` or `ZN_API_URL` say.
+- **What it does not stop:** like the vault key, the entry sits in the keychain under your user. A program the agent runs as you can still load it, through zn's own code or an OS keyring library written in a way the hook does not recognise (for example a command built from pieces at run time), as it can for any keychain entry (see above). The key can be limited to analyzing text when the server offers that, and `zn-gate disconnect` revokes it.
 
 ## Failure behaviour
 

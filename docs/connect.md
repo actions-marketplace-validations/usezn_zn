@@ -28,7 +28,11 @@ If neither is available (for example Linux without a desktop session), nothing i
 
 `~/.zn/config.json` records only that you connected, where the key is kept and its last four characters. It never holds the key.
 
-Your agent cannot read the key. zn's hooks refuse commands that ask the system keychain for zn's own entries (`security find-generic-password`, `secret-tool lookup`, `cmdkey /list`, `Get-StoredCredential` with zn's name), they already keep `~/.zn` out of reach, and zn hides the key's format (`zn_` followed by 48 characters) in anything the agent would see. Other uses of those tools are not affected.
+The key is never written to a file in plain text, and zn's hooks refuse the direct ways for your agent to read it: commands that ask the system keychain for zn's own entries (`security find-generic-password` and `dump-keychain`, `secret-tool lookup`, `cmdkey /list`, `Get-StoredCredential`, picked by zn's service, account or label), code that loads it through zn's own modules or a keyring library, and anything under `~/.zn`. zn also hides the key's format (`zn_` followed by 48 characters) in what the agent sees. Other uses of those tools are not affected.
+
+This is a barrier, not a vault wall: a program running as you can still ask the keychain for the key, as it can for any keychain entry. That is why the key can be limited to analyzing text when the server offers it, and why `zn-gate disconnect` can revoke it. A key you give in `ZN_API_KEY` or `--key` can be read from your environment, as before.
+
+A saved key is only ever sent to https://api.usezn.com. `--url` and `ZN_API_URL` are ignored for it; use `--key` or `ZN_API_KEY` to send to another URL.
 
 ## See and change the state
 

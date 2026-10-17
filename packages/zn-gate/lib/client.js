@@ -25,8 +25,16 @@ try {
  *    here, only on the person's command, and only to https://api.usezn.com.
  */
 
-function resolveEndpoint(options = {}) {
-  if (options.apiUrl || process.env.ZN_API_URL) {
+const FIXED_API_ORIGIN = 'https://api.usezn.com';
+
+/**
+ * The gateway URL. A key that `zn-gate connect` stored (keychain or vault) is
+ * only ever sent to https://api.usezn.com: --url and ZN_API_URL are ignored
+ * for it (`stored: true`). A custom URL works only with a key the caller gave
+ * explicitly (--key or ZN_API_KEY).
+ */
+function resolveEndpoint(options = {}, { stored = false } = {}) {
+  if (!stored && (options.apiUrl || process.env.ZN_API_URL)) {
     return options.apiUrl || process.env.ZN_API_URL;
   }
   const stage = options.stage || process.env.ZN_STAGE || 'v30';
@@ -54,6 +62,11 @@ function isCloudEnabled(options = {}) {
   const envKey = Boolean(usableApiKey(options.apiKey || process.env.ZN_API_KEY));
   if (envKey && process.env.ZN_CLOUD === '1') return true;
   return cloudKey.isConnected();
+}
+
+/** True when the key analyze() would use is the stored one (no usable --key / ZN_API_KEY). */
+function usesStoredKey(options = {}) {
+  return !usableApiKey(options.apiKey || process.env.ZN_API_KEY) && cloudKey.isConnected();
 }
 
 /*
@@ -162,7 +175,9 @@ async function analyze(input, options = {}) {
   }
   const apiKey = found.key;
   const { sanitized, detections } = redactSecrets(typeof input === 'string' ? input : String(input ?? ''));
-  const endpoint = resolveEndpoint(options);
+  const storedKey = found.source === 'keychain' || found.source === 'vault';
+  const endpoint = resolveEndpoint(options, { stored: storedKey });
+  const urlIgnored = storedKey && Boolean(options.apiUrl || process.env.ZN_API_URL);
   const windows = longInputMode(options) === 'windows' && sanitized.length > LONG_INPUT_MIN_CHARS;
   try {
     const cloudRes = await analyzeCloud(sanitized, apiKey, endpoint,
@@ -172,6 +187,7 @@ async function analyze(input, options = {}) {
       mode: 'hybrid-cloud',
       secrets_redacted_before_upload: detections.length,
     };
+    if (urlIgnored) out.note = 'The saved key is only sent to api.usezn.com, so the custom URL was ignored. Use --key or ZN_API_KEY to send to another URL.';
     if (cloudRes.long_input && cloudRes.long_input.capped) {
       out.warning = 'The text is longer than the cloud gate checks (' + cloudRes.long_input.windows + ' windows of 512 tokens): the end was not analyzed.';
     } else if (windows && cloudRes.long_input && cloudRes.long_input.mode === 'truncate') {
@@ -227,6 +243,7 @@ module.exports = {
   longInputMode,
   LONG_INPUT_MIN_CHARS,
   resolveEndpoint,
+  usesStoredKey,
   evaluate,
   RULES_VERSION,
 };

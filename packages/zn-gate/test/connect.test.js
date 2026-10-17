@@ -575,7 +575,7 @@ test('no hook, shield or scrubber module reads the stored key or the cloud setti
   files.push(path.join(lib, 'shield.js'), path.join(lib, 'evidence.js'));
   for (const f of files) {
     const src = fs.readFileSync(f, 'utf8');
-    assert.doesNotMatch(src, /cloud-key|connect-cli|cloud_key|cloudKey/, path.relative(lib, f));
+    assert.doesNotMatch(src, /require\(\s*['"][^'"]*(?:cloud-key|connect-cli)|cloudKey/, path.relative(lib, f));
   }
 });
 

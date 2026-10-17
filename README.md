@@ -140,7 +140,7 @@ A short summary of the last 7 days on this computer: blocked actions, secrets hi
 npx -y zn-gate connect
 ```
 
-Optional, and you do it yourself in your own terminal (an agent cannot). It opens usezn.com so you can create an API key, then asks you to paste it at a hidden prompt. The key is kept in your system keychain (or the zn vault when there is no keychain), never in a file, and your agent cannot read it. After that, the text you or your agent send through `analyze_prompt`, with detected secrets removed first, is also checked by the Galvanize 2 classifier at usezn.com. Until you run it, nothing is sent. `zn-gate disconnect` removes the key from this computer. [How it works](docs/connect.md).
+Optional, and you do it yourself in your own terminal (an agent cannot). It opens usezn.com so you can create an API key, then asks you to paste it at a hidden prompt. The key is kept in your system keychain (or the zn vault when there is no keychain), never written to a file, and zn's hooks refuse the direct ways for your agent to read it. After that, the text you or your agent send through `analyze_prompt`, with detected secrets removed first, is also checked by the Galvanize 2 classifier at usezn.com. Until you run it, nothing is sent. `zn-gate disconnect` removes the key from this computer. [How it works](docs/connect.md).
 
 ## Check that it works
 

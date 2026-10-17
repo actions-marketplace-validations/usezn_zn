@@ -26,7 +26,7 @@ const { startMcpServer } = require('../lib/mcp');
 const { startMcpShield } = require('../lib/shield');
 const { scanEnvironments, configureEnvironments } = require('../lib/init');
 const { logEvidence, verifyEvidenceLedger, getEvidenceStats, exportEvidenceLedger, startEvidenceUi, EVIDENCE_FILE } = require('../lib/evidence');
-const { analyze, analyzeLocal, isCloudEnabled, resolveEndpoint, RULES_VERSION } = require('../lib/client');
+const { analyze, analyzeLocal, isCloudEnabled, resolveEndpoint, usesStoredKey, RULES_VERSION } = require('../lib/client');
 const { evaluate, redactSecrets, redactScanSecrets, redactScanRules, SECRET_PATTERNS } = require('../lib/rules');
 const { SCRUB_RULES_VERSION } = require('../lib/scrub/patterns');
 const { AUDIT_RULES_VERSION } = require('../lib/audit/rules');
@@ -1049,7 +1049,7 @@ Recent Events (last ${Math.min(options.tail, stats.total)}):
   Package Version : ${VERSION}
   Rules Version   : ${RULES_VERSION} (scrub ${SCRUB_RULES_VERSION}, audit ${AUDIT_RULES_VERSION})
   Active Engine   : ${cloud ? 'Local rules + cloud for analyze_prompt (ZN_CLOUD=1)' : 'Local rules only'}
-  Endpoint        : ${cloud ? resolveEndpoint(options) : 'None (nothing leaves this machine)'}
+  Endpoint        : ${cloud ? resolveEndpoint(options, { stored: usesStoredKey(options) }) : 'None (nothing leaves this machine)'}
   API key         : ${hasKey ? 'Set (' + keyWhere + ')' + (cloud ? '' : ' (unused: cloud requires ZN_CLOUD=1)') : 'Not set'}${marker ? `
   Connected       : yes, key ...${marker.last4 || '????'}${hasKey ? '' : ' (not found in ' + (marker.store === 'vault' ? 'the zn vault: run zn unlock' : 'your system keychain') + '; cloud check falls back to local rules)'}. Turn off: zn-gate disconnect` : ''}
   Leaves machine  : ${cloud ? 'analyze_prompt text only, secrets redacted locally first' : 'Nothing'}
