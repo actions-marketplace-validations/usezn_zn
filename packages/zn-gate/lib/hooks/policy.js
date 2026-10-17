@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.22';
+const POLICY_RULES_VERSION = '2026-10-17.23';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1392,9 +1392,10 @@ function stripHeredocs(cmd, budget) {
   }
   const out = parts.join('');
   if (!hasData) return out;
-  // A command that writes a file and then runs it, or that redefines how a name
-  // resolves, keeps the old check: the body is code that command runs.
-  if (HEREDOC_DEFINES_RE.test(out) || runsCodeAfter(out.slice(tailStart), writtenFiles(out))) return s;
+  const tail = out.slice(tailStart);
+  // A command that writes a file and then runs it, redefines how a name resolves,
+  // or pipes it on a later line, keeps the old check: the body is code that runs.
+  if (HEREDOC_RUN_AFTER_RE.test(tail) || HEREDOC_DEFINES_RE.test(out) || runsCodeAfter(tail, writtenFiles(out))) return s;
   return out;
 }
 
@@ -1416,6 +1417,18 @@ const HEREDOC_DATA_CMDS = new Set(['cat', 'tac', 'tee', 'dd', 'tr', 'uniq', 'wc'
 // how a name resolves (`PATH`, `alias`, `hash`, `enable`) can do the same to any
 // data program, so no body of it is data either.
 const HEREDOC_DEFINES_RE = /(?:^|[^A-Za-z0-9_])(?:function\s+[A-Za-z_]|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{|PATH\s*=|alias\s|hash\s|enable\s)/;
+
+// A pipe or a process substitution that appears after the first data body can
+// run that body when a group or a substitution was opened on an earlier line
+// (`( case x in a) ... ) | awk '{system($0)}'`), where the walk cannot tell a
+// `case` pattern from a group close. A `||` is not a pipe.
+const HEREDOC_RUN_AFTER_RE = /(?<!\|)\|&?(?!\|)|>\(|<\(/;
+
+// A redirect operator and its target (`> f`, `2>> f`, `<< EOF`) and the glued
+// forms (`>f`, `2>f`, `<<EOF`). Read by runsCodeAfter so a target is not read as
+// the command.
+const REDIRECT_OP_RE = /^[0-9]*(?:>>?\|?|<<?-?|<>|<&|>&|&>>?|<|>)$/;
+const REDIRECT_GLUED_RE = /^[0-9]*(?:>>?|<<?-?|<>|<&|>&|&>>?|<|>)[^<>&\s]+$/;
 
 // Wrappers that turn their input into arguments or commands: their body is code,
 // not data, so they are not read through like `sudo` or `env`.
@@ -1481,12 +1494,17 @@ function runsCodeAfter(text, targets) {
   if (!targets || !targets.size) return false;
   // A file the command writes and then runs is named in command position, also
   // behind a wrapper (`nohup x.sh`, `timeout 5 x.sh`, `exec x.sh`, `sudo x.sh`).
-  for (const segment of text.split(/[\n;|&(){}<>`"']+/)) {
+  // A redirect and its target are skipped (`cat <<EOF > f`), so the target is not
+  // read as the command.
+  for (const segment of text.split(/[\n;|&(){}`"']+/)) {
     const words = segment.split(/\s+/).filter(Boolean).map((text) => ({ text }));
     let k = 0;
     for (let guard = 0; k < words.length && guard < 32; guard++) {
-      if (ASSIGNMENT_RE.test(words[k].text)) { k++; continue; }
-      const name = programName(words[k].text);
+      const w = words[k].text;
+      if (ASSIGNMENT_RE.test(w)) { k++; continue; }
+      if (REDIRECT_OP_RE.test(w)) { k += 2; continue; }
+      if (REDIRECT_GLUED_RE.test(w)) { k++; continue; }
+      const name = programName(w);
       if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) break;
       k = skipWrapper(words, k, name);
     }
@@ -1552,7 +1570,8 @@ function keychainQuery(cmd, env) {
     // Dumping the keychain would include zn's entries whatever name is given.
     if (KEYCHAIN_DUMP_RE.test(t)) return true;
     if (KEYCHAIN_WORD_RE.test(t) && named(t)) return true;
-    if (KEYCHAIN_LIB_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;  }
+    if (KEYCHAIN_LIB_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
+  }
   return false;
 }
 

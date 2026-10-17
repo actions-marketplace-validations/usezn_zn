@@ -606,6 +606,10 @@ test('the body of a here-document a program reads as data is not refused for a g
   // not a reason to keep the check.
   assert.equal(policy.bashDenial("python3 build.py && cat > generated.js <<'EOF'\n* .env ~/.aws/credentials\nEOF", o), null, 'a program before the here-document');
   assert.equal(policy.bashDenial("mkdir -p ./out && tee ./out/generated.js <<'EOF'\n* .env\nEOF", o), null, 'a relative path before the here-document');
+  // A redirect after the operator names the file the body is written to: its
+  // target is not a command, so the body stays data.
+  assert.equal(policy.bashDenial("cat <<'EOF' > generated.js\n* .env ~/.aws/credentials\nEOF", o), null, 'a relative redirect target after the operator');
+  assert.equal(policy.bashDenial("cat <<'EOF' > " + path.join(dir, 'generated.js') + "\n* .env\nEOF", o), null, 'an absolute redirect target after the operator');
 });
 
 test('a here-document that runs its body as code, or a read on the command line, is still refused', (t) => {
@@ -654,6 +658,12 @@ test('a here-document that runs its body as code, or a read on the command line,
   // The `)` of a `case` pattern does not close an open group: the body stays
   // code when the group is piped to a program that runs its input.
   assert.ok(policy.bashDenial("{ case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n} | awk '{system($0)}'", o), 'a case-pattern paren inside a group piped to awk');
+  // A pipe after the first data body keeps the check: a group or a substitution
+  // opened on an earlier line can run it and the walk cannot tell a `case`
+  // pattern from a group close.
+  assert.ok(policy.bashDenial("( case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n) | awk '{system($0)}'", o), 'a case-pattern paren in a subshell piped to awk');
+  assert.ok(policy.bashDenial("( case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n) | sed e", o), 'a case-pattern paren in a subshell piped to sed');
+  assert.ok(policy.bashDenial("y=$( case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n| awk '{system($0)}')", o), 'a case-pattern paren in a command substitution piped to awk');
   // A data program with an option that runs a program is not a plain data program.
   assert.ok(policy.bashDenial("split -n 1 --filter=sh <<'EOF'\ncat .env\nEOF", o), 'split with a filter program');
   assert.ok(policy.bashDenial("sort -S 1 --compress-program=sh <<'EOF'\ncat .env\nEOF", o), 'sort with a compress program');
