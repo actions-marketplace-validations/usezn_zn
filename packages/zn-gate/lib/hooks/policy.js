@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.21';
+const POLICY_RULES_VERSION = '2026-10-17.22';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1495,6 +1495,67 @@ function runsCodeAfter(text, targets) {
   return false;
 }
 
+/*
+ * zn keeps the API key of `zn-gate connect` and the vault identity in the
+ * system keychain, under zn's own service name. A command that asks the
+ * keychain for that entry is refused; the same tools stay free for any other
+ * entry. The tools: macOS `security find-generic-password` /
+ * `find-internet-password`, Linux `secret-tool lookup` / `search`, Windows
+ * `cmdkey /list:` and PowerShell `Get-StoredCredential` / CredRead.
+ */
+const KEYCHAIN_MESSAGE = 'zn: this command would read a zn secret (the API key or the vault key) from the system keychain, which is protected. Ask the user to do it.';
+// A command is refused when it holds BOTH a word that reads a keychain AND one of zn's own entry names (or loads
+// zn's key code). No wrapper, quoting, interpreter or heredoc has to be understood: the words are enough, and
+// searching for the names with rg, grep or git grep (no keychain word) stays allowed.
+const KEYCHAIN_WORD_RE = /(?:(?<![A-Za-z0-9_.-])(?:security(?:\.exe)?(?=\s)|secret-tool|cmdkey|vaultcmd|Get-StoredCredential|CredRead|CredEnumerate|keyring|keytar|PasswordVault)(?![A-Za-z0-9_-])|(?<![A-Za-z0-9_-])(?:getPassword|get_password)(?![A-Za-z0-9_-])|find-(?:generic|internet)-password)/i;
+const KEYCHAIN_DUMP_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s[^\n]*\bdump-keychain\b/i;
+// zn's own modules, loaded to read the key.
+const KEYCHAIN_LIB_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)\s*['"]?[^;\n]*(?:cloud-key|vault\/keychain)/;
+const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity)/;
+
+/*
+ * A single simple command that only writes or searches text: `git commit|grep|log|show`, `echo`, `printf`. Such a
+ * command never reads the keychain, so a commit message or a search pattern may name zn's entries. Anything with a
+ * second command, a pipe, a substitution or a newline is not exempt (the words are then checked as usual), and
+ * neither is a git command that can run another program (-c, aliases, --open-files-in-pager, --exec).
+ */
+const TEXT_ONLY_GIT = new Set(['commit', 'grep', 'log', 'show']);
+function textOnlyCommand(text) {
+  if (/[;&|\n\r`]|\$\(|<\(|>\(/.test(text)) return false;
+  const toks = text.trim().split(/\s+/).map((x) => x.replace(/^['"]+|['"]+$/g, ''));
+  let i = 0;
+  while (i < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]) || ['env', 'command', 'nohup', 'time'].includes(programBase(toks[i])))) i++;
+  const prog = programBase(toks[i]);
+  if (prog === 'echo' || prog === 'printf') return true;
+  if (prog !== 'git') return false;
+  i++;
+  while (i < toks.length && (toks[i] === '--no-pager' || (toks[i] === '-C' && toks[i + 1] !== undefined))) i += toks[i] === '-C' ? 2 : 1;
+  if (!TEXT_ONLY_GIT.has(toks[i])) return false;
+  return !toks.slice(i + 1).some((x) => /^(?:-O|--open-files-in-pager|--exec|--ext-diff|--textconv|-c)(?:=|$)/.test(x) || /^-O./.test(x));
+}
+
+function programBase(word) {
+  return String(word || '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+}
+
+function keychainQuery(cmd, env) {
+  const text = String(cmd || '');
+  if (text.length > SHELL_SCAN_CAP) return false;
+  if (textOnlyCommand(text)) return false;
+  // zn's entries can be picked by service, account or label.
+  const names = ['zn-vault', 'zn-cloud', 'cloud-api-key', 'age-identity', 'zn-gate-cloud-api-key', 'zn-vault-identity', 'zn vault identity', 'zn-gate cloud API key'];
+  const custom = env && env.ZN_KEYCHAIN_SERVICE;
+  if (typeof custom === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(custom) && !names.includes(custom)) names.push(custom);
+  const named = (t) => names.some((n) => new RegExp('(?<![A-Za-z0-9._-])' + n.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '(?![A-Za-z0-9._-])', 'i').test(t));
+  // Quotes, backslashes and backticks inside a name do not change what the tool sees.
+  for (const t of [text, text.replace(/['"`\\^]/g, '')]) {
+    // Dumping the keychain would include zn's entries whatever name is given.
+    if (KEYCHAIN_DUMP_RE.test(t)) return true;
+    if (KEYCHAIN_WORD_RE.test(t) && named(t)) return true;
+    if (KEYCHAIN_LIB_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;  }
+  return false;
+}
+
 function bashDenial(cmd, opts = {}) {
   return shellPatchMessage(cmd, bashDenialOf(cmd, opts), opts);
 }
@@ -1503,6 +1564,7 @@ function bashDenialOf(cmd, opts = {}) {
   if (String(cmd || '').length > SHELL_SCAN_CAP) return TOO_LONG_MESSAGE;
   const admin = adminCommand(cmd);
   if (admin) return adminDenial(admin, opts, cmd);
+  if (keychainQuery(cmd, opts.env || process.env)) return KEYCHAIN_MESSAGE;
   // The context (home, project, agent directories) is built once per command.
   opts = { ...opts, ctx: contextOf(opts) };
   // The code of a shell inside the command (sh -c "...") is checked as a command of its own, with the same budget.

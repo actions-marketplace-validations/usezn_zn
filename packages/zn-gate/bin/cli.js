@@ -26,7 +26,7 @@ const { startMcpServer } = require('../lib/mcp');
 const { startMcpShield } = require('../lib/shield');
 const { scanEnvironments, configureEnvironments } = require('../lib/init');
 const { logEvidence, verifyEvidenceLedger, getEvidenceStats, exportEvidenceLedger, startEvidenceUi, EVIDENCE_FILE } = require('../lib/evidence');
-const { analyze, analyzeLocal, isCloudEnabled, resolveEndpoint, RULES_VERSION } = require('../lib/client');
+const { analyze, analyzeLocal, isCloudEnabled, resolveEndpoint, usesStoredKey, RULES_VERSION } = require('../lib/client');
 const { evaluate, redactSecrets, redactScanSecrets, redactScanRules, SECRET_PATTERNS } = require('../lib/rules');
 const { SCRUB_RULES_VERSION } = require('../lib/scrub/patterns');
 const { AUDIT_RULES_VERSION } = require('../lib/audit/rules');
@@ -61,7 +61,7 @@ const SCRUB_SCAN_RULES = new Map([
   'GOOGLE_API_KEY', 'GOOGLE_OAUTH_SECRET', 'HF_TOKEN', 'NPM_TOKEN', 'PYPI_TOKEN', 'SENDGRID_KEY', 'TWILIO_KEY',
   'MAILGUN_KEY', 'SHOPIFY_TOKEN', 'DIGITALOCEAN_TOKEN', 'LINEAR_KEY', 'TELEGRAM_BOT_TOKEN', 'AZURE_STORAGE_KEY',
   'DATABRICKS_TOKEN', 'VAULT_TOKEN', 'DOPPLER_TOKEN', 'NEWRELIC_KEY', 'GROQ_KEY', 'XAI_KEY', 'DOCKERHUB_PAT',
-  'TAVILY_KEY', 'FIRECRAWL_KEY', 'POLAR_TOKEN', 'REPLICATE_TOKEN', 'SUPABASE_PAT', 'AZURE_AD_CLIENT_SECRET',
+  'ZN_API_KEY', 'TAVILY_KEY', 'FIRECRAWL_KEY', 'POLAR_TOKEN', 'REPLICATE_TOKEN', 'SUPABASE_PAT', 'AZURE_AD_CLIENT_SECRET',
   'SQUARE_TOKEN', 'DISCORD_BOT_TOKEN',
   'ONEPASSWORD_SA_TOKEN', 'AGE_SECRET_KEY', 'ALIBABA_KEY_ID', 'ARTIFACTORY_KEY', 'CLOUDFLARE_ORIGIN_CA_KEY', 'DYNATRACE_TOKEN', 'EASYPOST_KEY', 'FLYIO_TOKEN', 'GRAFANA_TOKEN', 'TERRAFORM_CLOUD_TOKEN', 'HEROKU_KEY_V2', 'NOTION_TOKEN', 'PERPLEXITY_KEY', 'PLANETSCALE_TOKEN', 'POSTMAN_KEY', 'PREFECT_KEY', 'PULUMI_TOKEN', 'README_KEY', 'RUBYGEMS_KEY', 'BREVO_KEY', 'SENTRY_USER_TOKEN', 'SHIPPO_KEY', 'OPENSHIFT_TOKEN', 'TEAMS_WEBHOOK',
   'BEARER_TOKEN',
@@ -235,6 +235,7 @@ COMMANDS:
   analyze <text>      Inspect a prompt from the CLI (local; cloud only with ZN_CLOUD=1 + key)
   test                Run the local self-test (51 curated vectors: 26 attacks, 25 benign)
   stats               What zn-gate did on this machine (local counts; --days N, --json; "stats share" to opt in)
+  report              Weekly report of what zn-gate did on this machine (--since Nd, --json, --no-team-line; nothing is sent)
   pins                Tool pins of the MCP servers that shield wraps ("pins approve <server>|--all" accepts changes)
   status              Show engine configuration and gateway connectivity
   version, -V         Show package version
@@ -257,6 +258,10 @@ SECRETS (values stay on this machine; agents only see __ZN_<NAME>__ markers):
                       (zn-gate init picks the right setup for each agent)
   check               Show that zn blocks your agent from reading a fake secret
                       (also: doctor). Safe: a temporary folder, nothing is sent
+  connect             Optional: turn on the cloud check for analyze_prompt. Opens usezn.com,
+                      you paste an API key at a hidden prompt; it is kept in your system
+                      keychain or the zn vault, never in a file. Your own terminal only
+  disconnect          Remove that key from this computer (revoke it at usezn.com/api-keys)
   reach [path]        Show what your coding agents can reach: secrets (names only),
                       credential files, MCP servers [--json | --sarif]
                       [--fail-on high|medium|low|none] [--remember]. Read only, nothing is sent
@@ -265,7 +270,8 @@ SECRETS (values stay on this machine; agents only see __ZN_<NAME>__ markers):
 
 OPTIONS:
   --key <api_key>     API key for the optional cloud gate (or ZN_API_KEY). Used only
-                      by 'analyze' / analyze_prompt, and only if ZN_CLOUD=1 is set.
+                      by 'analyze' / analyze_prompt, and only if ZN_CLOUD=1 is set
+                      (or you ran zn-gate connect).
   --stage <v30|prod>  Cloud gateway stage (default: v30, the current production API)
   --url <custom_url>  Override gateway endpoint URL
   --local-only        Never use the cloud, even if ZN_CLOUD=1 is set
@@ -997,8 +1003,18 @@ Recent Events (last ${Math.min(options.tail, stats.total)}):
     return;
   }
 
+  if (command === 'report') {
+    process.exitCode = require('../lib/report').run(args.slice(1));
+    return;
+  }
+
   if (command === 'stats') {
     process.exitCode = await require('../lib/stats-cli').run(args.slice(1));
+    return;
+  }
+
+  if (command === 'connect' || command === 'disconnect') {
+    process.exitCode = await require('../lib/connect-cli')[command](args.slice(1));
     return;
   }
 
@@ -1022,15 +1038,20 @@ Recent Events (last ${Math.min(options.tail, stats.total)}):
   }
 
   if (command === 'status') {
-    const hasKey = Boolean(require('../lib/client').usableApiKey(options.apiKey));
+    const cloudKey = require('../lib/cloud-key');
+    const found = await cloudKey.resolveApiKey(options);
+    const marker = cloudKey.readMarker();
+    const hasKey = Boolean(found);
     const cloud = isCloudEnabled(options);
+    const keyWhere = found ? ({ environment: 'ZN_API_KEY', flag: '--key', keychain: 'saved by zn-gate connect, in your system keychain', vault: 'saved by zn-gate connect, in the zn vault' })[found.source] : null;
     process.stdout.write(`
 🛡️  zn-gate Status:
   Package Version : ${VERSION}
   Rules Version   : ${RULES_VERSION} (scrub ${SCRUB_RULES_VERSION}, audit ${AUDIT_RULES_VERSION})
   Active Engine   : ${cloud ? 'Local rules + cloud for analyze_prompt (ZN_CLOUD=1)' : 'Local rules only'}
-  Endpoint        : ${cloud ? resolveEndpoint(options) : 'None (nothing leaves this machine)'}
-  API key         : ${hasKey ? 'Set' + (cloud ? '' : ' (unused: cloud requires ZN_CLOUD=1)') : 'Not set'}
+  Endpoint        : ${cloud ? resolveEndpoint(options, { stored: usesStoredKey(options) }) : 'None (nothing leaves this machine)'}
+  API key         : ${hasKey ? 'Set (' + keyWhere + ')' + (cloud ? '' : ' (unused: cloud requires ZN_CLOUD=1)') : 'Not set'}${marker ? `
+  Connected       : yes, key ...${marker.last4 || '????'}${hasKey ? '' : ' (not found in ' + (marker.store === 'vault' ? 'the zn vault: run zn unlock' : 'your system keychain') + '; cloud check falls back to local rules)'}. Turn off: zn-gate disconnect` : ''}
   Leaves machine  : ${cloud ? 'analyze_prompt text only, secrets redacted locally first' : 'Nothing'}
 
 `);

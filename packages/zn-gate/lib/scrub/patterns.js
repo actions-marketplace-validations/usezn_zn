@@ -27,7 +27,7 @@
 
 // Version of the type catalogue (secret and PII patterns, validators). Bump it
 // when a pattern, validator or type name changes; see CONTRIBUTING.md.
-const SCRUB_RULES_VERSION = '2026-10-17.2';
+const SCRUB_RULES_VERSION = '2026-10-17.3';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -435,6 +435,9 @@ const PATTERNS = [
    * length (checked 2026-10-14); the body minimum of 20 is assumed. */
   { type: 'DOCKERHUB_PAT', hints: ['dckr_pat_', 'dckr_oat_'], re: re(NB + 'dckr_(?:pat|oat)_[A-Za-z0-9_-]{20,}' + NA),
     check: (v) => looksRandom(v.replace(/^dckr_(?:pat|oat)_/, ''), 2, 3.3) },
+  /* zn API key (the one `zn-gate connect` stores): `zn_` + 48 lowercase hex
+   * characters, as the zn API issues them. */
+  { type: 'ZN_API_KEY', hints: ['zn_'], re: re(NB + 'zn_[0-9a-f]{48}' + NA) },
   /* Tavily API key: `tvly-` + alphanumeric body. No length or charset in the
    * official docs (checked 2026-10-14); the body minimum of 20 and the digit
    * requirement are assumed. */

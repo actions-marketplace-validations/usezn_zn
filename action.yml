@@ -1,5 +1,5 @@
-name: 'zn-gate AI Agent Security Linter'
-description: 'Security linter for AI coding agents: finds prompt injection and leaked secrets in prompts, agent configs and MCP files.'
+name: 'zn-gate AI Agent Security Audit'
+description: 'Audit AI coding agent configs, hooks, MCP servers and plugins, and scan prompts for injection and leaked secrets.'
 author: 'zn <admin@usezn.com>'
 branding:
   icon: 'shield'
@@ -16,7 +16,7 @@ inputs:
     required: false
     default: '1.10.0'
   mode:
-    description: 'scan (prompt-injection and secret scan of files, the behaviour of earlier releases), audit (audit of agent configs, hooks, MCP servers, plugins and skills), or both'
+    description: 'scan (prompt-injection and secret scan of files, the behaviour of earlier releases), audit (audit of agent configs, hooks, MCP servers, plugins and skills), or both. Default scan.'
     required: false
     default: 'scan'
   package-sha256:
@@ -28,7 +28,7 @@ inputs:
     required: false
     default: ''
   path:
-    description: 'Path or directory to scan and audit'
+    description: 'Path to scan and audit, relative to the workspace. `audit` needs a directory; `scan` also accepts a single file.'
     required: false
     default: '.'
   fail-on-threat:
@@ -48,7 +48,7 @@ inputs:
     required: false
     default: ''
   format:
-    description: 'Output format: github (default, with inline annotations), text, json, or sarif (writes a SARIF file, see the sarif-file output)'
+    description: 'Output format: github (default, with inline annotations), text, json, or sarif (writes a SARIF file for code scanning, see the sarif-file output)'
     required: false
     default: 'github'
   sarif-file:
