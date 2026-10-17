@@ -185,7 +185,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"c
 | Counts of what zn-gate did (`zn-gate stats`: checks, blocks, secrets replaced, per secret type) | Written locally to `~/.zn/stats.json` | **Never**, unless you turn on `zn-gate stats share on`: then one report a day with a random installation id, the day, the zn-gate, OS and Node.js versions, the agent and part of zn-gate used most, and the number of secrets found per built-in type (never values, prompts, variable or secret names, paths, hosts or emails). `zn-gate stats share show` shows it first. |
 | Prompts (`analyze_prompt`, `zn-gate analyze`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. Secrets are redacted locally before sending. |
 
-`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1`. `npx -y zn-gate status` prints what your configuration sends. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
+`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1`. `npx -y zn-gate status` shows the active detection engine and whether the optional cloud check is on. Sharing of usage statistics is off by default and has its own status: `npx -y zn-gate stats share status`. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
 
 > **1.4.0 and earlier:** with `ZN_API_KEY` set, tool output and tool-call arguments not blocked locally were sent to `api.usezn.com` without redaction. 1.4.1 removes that path. See the [CHANGELOG](https://github.com/usezn/zn/blob/main/CHANGELOG.md).
 
