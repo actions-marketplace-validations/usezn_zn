@@ -268,3 +268,96 @@ test('redaction stays linear on adversarial input', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/* ---- block comments, long comments, deeper escapes, wide gaps and literal \n ---- */
+
+const mcpJson = (items) => `{
+  "mcpServers": { "x": { "command": "npx", "args": [
+${items}
+  ] } }
+}
+`;
+const GAP3 = {
+  'JSON, multi-line block comment with star prefix': mcpJson(`    "--api-key",\n    /* first\n     * second\n     */\n    "${V1}" "x"`),
+  'JSON, multi-line block comment with plain text': mcpJson(`    "--api-key",\n    /* first\n    plain text\n    */\n    "${V2}" "x"`),
+  'JSON, block comment closing after code': mcpJson(`    "--token", /* first\n    plain text */\n    "${V1}" "x"`),
+  'JSON, block comment at the end of the flag line': mcpJson(`    "--token", /* note */\n    "${V2}" "x"`),
+  'JSON, trailing comment over 1024 characters': mcpJson(`    "--token", // ${'x'.repeat(1500)}\n    "${V1}" "x"`),
+  'JSON, line comment inside a block comment gap': mcpJson(`    "--token",\n    /* a */\n    // b\n    /* c\n     * d */\n    "${V2}" "x"`),
+};
+
+test('audit reports hide the value after a block comment or a long comment', () => {
+  for (const [name, content] of Object.entries(GAP3)) {
+    const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'zn-audit-gap3-'));
+    try {
+      fs.writeFileSync(path.join(dir, '.mcp.json'), content);
+      const json = cli([dir, '--format', 'json', '--fail-on', 'none']);
+      const outs = [cli([dir, '--fail-on', 'none']).stdout, json.stdout, cli([dir, '--format', 'sarif', '--fail-on', 'none']).stdout];
+      assert.ok(JSON.parse(json.stdout).findings.length > 0, name + ': the fixture must produce findings');
+      for (const out of outs) {
+        assert.ok(!out.includes(V1) && !out.includes(V2), name + ': value printed');
+        assert.ok(!out.includes('ZnTestValue') && !out.includes('fake-value-0000'), name + ': part of the value printed');
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('redact: deeper escapes, wide gaps and a literal backslash-n between the flag and its value', () => {
+  const bs = (n) => String.raw`\ `.trim().repeat(n);
+  const lines = [
+    `"x": "[${bs(5)}"--token${bs(5)}", ${bs(5)}"${V1}${bs(5)}"]"`,
+    `"x": "[${bs(7)}"--api-key${bs(7)}",${bs(7)}"${V2}${bs(7)}"]"`,
+    `"x": "[${bs(3)}"--token${bs(3)}", ${bs(3)}"Qx${bs(2)}ab${V1}${bs(3)}"]"`,
+    `["--token",${' '.repeat(65)}"${V1}"]`,
+    `["--token",${' '.repeat(120)}"${V2}"]`,
+    `["--token",\n${' '.repeat(100)}\t"${V1}"]`,
+    String.raw`"c": "[\n \"--api-key\",\n \"` + V1 + String.raw`\"\n"`,
+    String.raw`"c": "[\n \\\"--api-key\\\",\n \\\"` + V2 + String.raw`\\\"\n"`,
+    String.raw`"c": "[\"--token\",\r\n\t\"` + V1 + String.raw`\"]"`,
+  ];
+  for (const l of lines) {
+    const out = redact(l);
+    assert.ok(!out.includes(V1) && !out.includes('ZnTestValue') && !out.includes('fake-value'), 'leaked: ' + out);
+    assert.match(out, /\[REDACTED\]/);
+  }
+  assert.ok(!redact(`"x": "[${bs(3)}"--token${bs(3)}", ${bs(3)}"Qx${bs(2)}ab${V1}${bs(3)}"]"`).includes('ab'), 'value with a backslash cut short');
+});
+
+test('audit keeps visible the next item when a comment mentions a flag', (t) => {
+  const dir = tempDir(t, 'zn-audit-gap3-fp-');
+  const cases = [
+    ['shown-1', `{"mcpServers": {"x": {"command": "npx", "args": [\n  "-y", // "--token",\n  "shown-1" "x"\n]}}}\n`],
+    ['shown-2', `{"mcpServers": {"x": {"command": "npx", "args": [\n  "--port", /* a\n   * b */\n  "shown-2" "x"\n]}}}\n`],
+    ['shown-3', `{"mcpServers": {"x": {"command": "npx", "args": [\n  "--verbose", /* note */\n  "shown-3" "x"\n]}}}\n`],
+    ['ZN_TEST_REF', `{"mcpServers": {"x": {"command": "npx", "args": [\n  "--token",\n  /* a\n   b */\n  "\${ZN_TEST_REF}" "x"\n]}}}\n`],
+  ];
+  for (const [shown, content] of cases) {
+    fs.writeFileSync(path.join(dir, '.mcp.json'), content);
+    const json = cli([dir, '--format', 'json', '--fail-on', 'none']);
+    assert.ok(JSON.parse(json.stdout).findings.length > 0, 'the fixture must produce findings');
+    assert.ok((json.stdout + cli([dir, '--fail-on', 'none']).stdout).includes(shown), shown + ' must stay visible');
+  }
+});
+
+test('redaction stays linear: block comments, long comments, backslashes and spaces', () => {
+  const BIG = 100 * 1024;
+  const B = String.raw`\ `.trim();
+  const cases = {
+    'flag and block comment repeated': '"--token", /* c '.repeat(BIG / 17) + '\n"x"',
+    'open block comment lines': '"--token",\n' + '/* a\n'.repeat(BIG / 5) + '"x"',
+    'block comment end lines': '"--token",\n' + ' */\n'.repeat(BIG / 4) + '"x"',
+    'backslashes before quotes': (B.repeat(9) + '"--token' + B.repeat(9) + '", ').repeat(BIG / 30) + '"x"',
+    'double-escaped value of backslashes': '"--token", ' + B.repeat(3) + '"' + ('a' + B).repeat(BIG / 2),
+    'literal backslash-n gaps': '"--token",' + (B + 'n').repeat(BIG / 2) + '"x"',
+    'wide gap': '"--token",' + ' '.repeat(BIG) + '"x"',
+    'quote storm before a comment': '"'.repeat(BIG) + ' // c',
+  };
+  for (const [name, text] of Object.entries(cases)) {
+    const t0 = process.hrtime.bigint();
+    redact(text);
+    const ms1 = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms1 < 2000, `${name}: ${ms1} ms`);
+  }
+});
