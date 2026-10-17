@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.1';
+const POLICY_RULES_VERSION = '2026-10-17.2';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -914,6 +914,7 @@ function bashDenialOf(cmd, opts = {}) {
   const classified = new Map();
   // A word with * ? or [ can match a secret file; the message names a literal file when the command has one too.
   // The command is refused either way, so after a glob only a few more words are resolved on disk to find that file.
+  const GLOB_NAME_LOOKAHEAD = 32;
   let globDeny = null;
   let afterGlob = 0;
   for (const w of words) {
@@ -927,7 +928,7 @@ function bashDenialOf(cmd, opts = {}) {
     if (!text) continue;
     const writing = !READ_ONLY_CMDS.has(w.head);
     if (!classified.has(text)) {
-      if (globDeny && ++afterGlob > SHELL_PATCH_FILES_NAMED) return globDeny;
+      if (globDeny && ++afterGlob > GLOB_NAME_LOOKAHEAD) return globDeny;
       classified.set(text, classifyWord(text, opts));
     }
     const c = classified.get(text);

@@ -329,3 +329,15 @@ test('a long patch sent as a shell command is refused quickly, naming a secret f
   const named = policy.bashDenial("apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: .env\n@@\n+X=1\n" + body + "*** End Patch\nPATCH", { cwd: dir, home: dir });
   assert.match(named, /writes to \.env/);
 });
+
+test('after a glob word, a command with many more words is still refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-gl-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const filler = Array.from({ length: 40 }, (_, i) => 'notes' + i + '.txt').join(' ');
+  // The literal file comes after more words than zn resolves once a glob has refused the command.
+  assert.ok(policy.bashDenial('cat .e* ' + filler + ' .env', { cwd: dir, home: dir }));
+  assert.ok(policy.bashDenial('cat .e* ' + filler + ' ~/.zn/vault', { cwd: dir, home: dir }));
+  // Within the first words the literal file is still the one named.
+  assert.match(policy.bashDenial('cat .e* notes.txt .env', { cwd: dir, home: dir }), /\.env/);
+});
