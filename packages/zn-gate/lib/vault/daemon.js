@@ -323,8 +323,8 @@ function makeOps(state, ctl) {
         await writeAudit({ secret: inner, mode: 'resolve', agent: o.agent, tool: o.tool, decision: 'deny', reason: 'policy:' + o.destination });
         throw znError(CODES.POLICY_DENIED, 'destination ' + o.destination + ' does not receive real values. Next step: send the request to a host this secret is allowed for, or use a placeholder instead.');
       }
-      // The key `zn-gate connect` keeps here is read only by zn-gate's own cloud code, which says so. Writing its marker
-      // in a file or a command (hooks, secrets broker, zn run) never gets the real key back.
+      // The key `zn-gate connect` keeps here is not handed to hooks, the secrets broker or zn run, so writing its marker
+      // in a file or a command never gets the real key back. A program running as the user can still ask for it.
       if (inner === CLOUD_KEY_SECRET && o.purpose !== CLOUD_KEY_PURPOSE) {
         await writeAudit({ secret: inner, mode: 'resolve', agent: o.agent, tool: o.tool, decision: 'deny', reason: 'policy:zn_cloud_key' });
         if (o.withPolicy === true) return { value: null, policy: RESOLVE_POLICY_VERSION };

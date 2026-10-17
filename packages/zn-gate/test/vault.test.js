@@ -185,7 +185,7 @@ test('daemon: resolve refuses withheld destinations and audits it', async () => 
   c.close();
 });
 
-test('daemon: the key of zn-gate connect is resolved only for zn-gate own cloud code', async () => {
+test('daemon: the zn cloud key is refused to hooks, the broker and zn run', async () => {
   const c = clientMod.createClient({});
   const value = 'zn_' + crypto.randomBytes(24).toString('hex');
   await c.setSecret('ZN_CLOUD_API_KEY', value, { mode: 'proxy', allowHosts: ['api.usezn.com'] });
