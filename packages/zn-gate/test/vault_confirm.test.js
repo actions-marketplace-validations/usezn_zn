@@ -25,6 +25,8 @@ function keepAlive(t) {
   t.after(() => clearInterval(h));
 }
 
+const INITIAL_ENV = { ZN_HOME: process.env.ZN_HOME, ZN_KEYCHAIN_PATH: process.env.ZN_KEYCHAIN_PATH };
+
 const tick = () => new Promise((r) => setImmediate(r));
 
 test('field: invisible characters are shown, long values keep both ends', () => {
@@ -192,4 +194,9 @@ test('guiChannel: the text travels in the environment on Windows, never on the c
   await ch.confirm({ title: 'T', message: 'fake text' });
   assert.equal(spawn.calls[0].options.env.ZN_CONFIRM_TEXT, 'fake text');
   assert.ok(!spawn.calls[0].args.join(' ').includes('fake text'));
+});
+
+test('environment variables are untouched by this file', () => {
+  assert.equal(process.env.ZN_HOME, INITIAL_ENV.ZN_HOME);
+  assert.equal(process.env.ZN_KEYCHAIN_PATH, INITIAL_ENV.ZN_KEYCHAIN_PATH);
 });

@@ -11,13 +11,21 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// No test may reach a real keychain helper: keychain.js keeps its own reference to
+// spawnSync from load time, so the recorder is put in place before it is required.
+const childProcess = require('child_process');
+const helperCalls = [];
+const realSpawnSync = childProcess.spawnSync;
+childProcess.spawnSync = (cmd) => { helperCalls.push(cmd); return { error: Object.assign(new Error('blocked in tests'), { code: 'EBLOCKED' }) }; };
 const store = require('../lib/vault/store');
 const keychain = require('../lib/vault/keychain');
+childProcess.spawnSync = realSpawnSync;
 const audit = require('../lib/vault/audit');
 
 const POSIX = process.platform !== 'win32';
 const PASS = 'fake-passphrase-for-tests';
 const WF = 10;
+const INITIAL_ENV = { ZN_HOME: process.env.ZN_HOME, ZN_KEYCHAIN_PATH: process.env.ZN_KEYCHAIN_PATH, ZN_KEYCHAIN_SERVICE: process.env.ZN_KEYCHAIN_SERVICE, ZN_KEYCHAIN_BACKEND: process.env.ZN_KEYCHAIN_BACKEND };
 
 function tmpHome(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'znvx-'));
@@ -68,7 +76,7 @@ test('znHome: explicit option wins, then ZN_HOME, then the user home', (t) => {
   withEnv(t, { ZN_HOME: path.join(os.tmpdir(), 'znvx-env') });
   assert.equal(store.znHome({ home: path.join(os.tmpdir(), 'znvx-opt') }), path.resolve(os.tmpdir(), 'znvx-opt'));
   assert.equal(store.znHome(), path.resolve(os.tmpdir(), 'znvx-env'));
-  withEnv(t, { ZN_HOME: undefined });
+  delete process.env.ZN_HOME;
   assert.equal(store.znHome(), path.join(os.homedir(), '.zn'));
 });
 
@@ -276,11 +284,18 @@ test('detectBackend without an override picks a known backend', (t) => {
 });
 
 test('an invalid service name or keychain path is refused before any helper runs', (t) => {
-  withEnv(t, { ZN_KEYCHAIN_SERVICE: 'bad name; rm' });
+  withEnv(t, { ZN_KEYCHAIN_SERVICE: 'bad name; rm', ZN_KEYCHAIN_PATH: undefined });
+  const before = helperCalls.length;
   assert.throws(() => keychain._native.macos.store('AGE-SECRET-KEY-1FAKE'), (e) => e.code === 'ZN_POLICY_DENIED' && /ZN_KEYCHAIN_SERVICE/.test(e.message));
   process.env.ZN_KEYCHAIN_SERVICE = 'zn-vault-test';
   process.env.ZN_KEYCHAIN_PATH = path.join(os.tmpdir(), 'a folder with spaces', 'fake.keychain');
   assert.throws(() => keychain._native.macos.store('AGE-SECRET-KEY-1FAKE'), (e) => e.code === 'ZN_POLICY_DENIED' && /must not contain spaces/.test(e.message));
+  assert.equal(helperCalls.length, before);
+});
+
+test('a native helper that cannot start is reported as locked, and the blocked launcher saw it', (t) => {
+  withEnv(t, { ZN_KEYCHAIN_SERVICE: 'zn-vault-test', ZN_KEYCHAIN_PATH: undefined });
+  assert.throws(() => keychain._native.libsecret.load(), (e) => e.code === 'ZN_LOCKED');
 });
 
 /* ---------------- keychain: metadata ---------------- */
@@ -556,4 +571,8 @@ test('audit.read defaults to the audit file of ZN_HOME', (t) => {
   assert.deepEqual(audit.read({}), []);
   audit.append({ mode: 'unlock' }, { file: store.paths().auditFile, key: KEY });
   assert.equal(audit.read({}).length, 1);
+});
+
+test('environment variables are back to their initial values', () => {
+  for (const k of Object.keys(INITIAL_ENV)) assert.equal(process.env[k], INITIAL_ENV[k], k);
 });
