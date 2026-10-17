@@ -53,4 +53,4 @@ The file keeps markers such as `__ZN_API_KEY__` instead of the values, and zn pu
 ## Related
 
 - `zn-gate test` runs zn's built-in rule self-test (51 examples). It checks the rules, not your agent setup.
-- `zn-gate status` shows what your configuration sends over the network (nothing, unless you turned on the optional cloud check).
+- `zn-gate status` shows the active detection engine and whether the optional cloud check is on. Sharing of usage statistics is off by default and has its own status: `zn-gate stats share status`.
