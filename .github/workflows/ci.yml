@@ -125,15 +125,15 @@ jobs:
     name: Python ${{ matrix.python-version }} tests & benchmarks (${{ matrix.os }})
     needs: python-scope
     # Draft pull requests skip this job; marking the pull request ready for review runs it.
-    # always(): on pushes python-scope is skipped, and this job must still run.
-    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && needs.python-scope.result != 'cancelled' }}
+    # !cancelled(): on pushes python-scope is skipped, and this job must still run.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && needs.python-scope.result != 'cancelled' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         # "Python 3.12 tests & benchmarks (ubuntu-latest)" is a required check: it always runs.
-        include: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || needs.python-scope.outputs.full == 'true') && '[{"os":"ubuntu-latest","python-version":"3.10"},{"os":"ubuntu-latest","python-version":"3.11"},{"os":"ubuntu-latest","python-version":"3.12"},{"os":"ubuntu-latest","python-version":"3.13"},{"os":"windows-latest","python-version":"3.12"},{"os":"macos-latest","python-version":"3.12"}]' || '[{"os":"ubuntu-latest","python-version":"3.12"}]') }}
+        include: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || needs.python-scope.outputs.full == 'true' || needs.python-scope.result == 'failure') && '[{"os":"ubuntu-latest","python-version":"3.10"},{"os":"ubuntu-latest","python-version":"3.11"},{"os":"ubuntu-latest","python-version":"3.12"},{"os":"ubuntu-latest","python-version":"3.13"},{"os":"windows-latest","python-version":"3.12"},{"os":"macos-latest","python-version":"3.12"}]' || '[{"os":"ubuntu-latest","python-version":"3.12"}]') }}
     defaults:
       run:
         shell: bash
