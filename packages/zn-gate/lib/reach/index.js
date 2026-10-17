@@ -259,6 +259,36 @@ function memoryFile(home, env) {
   return path.join(env.ZN_HOME ? path.resolve(env.ZN_HOME) : path.join(home, '.zn'), 'reach-last.json');
 }
 
+/**
+ * The text of a regular file of at most `max` bytes, or null (absent, a folder, a pipe or a device, a link,
+ * too big, unreadable). The file is opened without following a link and without waiting for a writer, and
+ * the size is checked on the open file, so a named pipe or /dev/zero cannot make the run hang or grow.
+ */
+function readSmallFile(file, max) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+  } catch (_) {
+    return null;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > max) return null;
+    const buf = Buffer.allocUnsafe(max + 1);
+    let got = 0;
+    while (got <= max) {
+      const r = fs.readSync(fd, buf, got, max + 1 - got, null);
+      if (r <= 0) break;
+      got += r;
+    }
+    return got > max ? null : buf.toString('utf8', 0, got);
+  } catch (_) {
+    return null;
+  } finally {
+    try { fs.closeSync(fd); } catch (_) { /* closed */ }
+  }
+}
+
 function remember(root, counts, home, env) {
   const file = memoryFile(home, env);
   const crypto = require('crypto');
@@ -266,9 +296,8 @@ function remember(root, counts, home, env) {
   // Only well-formed entries are kept: anything else in the file is dropped, never a reason to fail.
   const data = {};
   try {
-    // A memory file is a few hundred bytes: anything over 1 MiB is not ours and is ignored.
-    if (fs.statSync(file).size > MAX_MEMORY_BYTES) throw new Error('too big');
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const text = readSmallFile(file, MAX_MEMORY_BYTES);
+    const parsed = text === null ? null : JSON.parse(text);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       for (const [k, e] of Object.entries(parsed)) {
         if (/^[0-9a-f]{32}$/.test(k) && e && typeof e === 'object' && !Array.isArray(e)) data[k] = e;

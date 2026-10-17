@@ -249,7 +249,8 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
 test('zn audit never shows part of a value cut at the end of a long line', async (t) => {
   const { audit } = require('../lib/audit');
   const root = tempDir(t, 'zn-reach-cut-');
-  const token = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0'.slice(0, 36);
+  // A key format that is hidden wherever it appears, split by a zero-width space.
+  const token = 'sk-ant-api03-' + 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3';
   // A value that a cut at 8192 characters would split, after a run of whitespace.
   for (const pad of [8150, 8170, 8185, 8190]) {
     fs.writeFileSync(path.join(root, 'AGENTS.md'), ' '.repeat(pad) + token + '\n');
@@ -418,15 +419,18 @@ test('a name with a newline or invisible characters cannot start a fake line in 
   assert.doesNotMatch(out, INVISIBLE);
 });
 
-test('a secret split by invisible characters is still hidden', async (t) => {
+test('a key format split by a zero-width character is still hidden (regression guard: the redaction engine already ignores them)', async (t) => {
   const m = machine(t, { secrets: false });
-  const split = FAKES[1].slice(0, 12) + '\u200b' + FAKES[1].slice(12);
+  // A key format that is hidden wherever it appears, split by a zero-width space.
+  const token = 'sk-ant-api03-' + 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3';
+  const split = token.slice(0, 20) + '​' + token.slice(20);
   fs.writeFileSync(path.join(m.root, '.mcp.json'), JSON.stringify({ mcpServers: {
-    'example-server': { command: 'npx', args: ['-y', 'example-mcp-server', '--api-key', split] },
+    ['example-server ' + split]: { command: 'npx', args: ['-y', 'example-mcp-server'] },
   } }));
   const r = await reach({ root: m.root, home: m.home, env: m.env });
-  const flat = (JSON.stringify(r) + textOf(r).s).replace(/[\u200b]/g, '');
-  assert.ok(!flat.includes(FAKES[1].slice(12)), 'part of the value is shown');
+  const flat = (JSON.stringify(r) + textOf(r).s).replace(/\u200b/g, '');
+  assert.ok(r.findings.some((f) => f.section === 'mcp'), 'the MCP server is reported');
+  assert.ok(!flat.includes(token.slice(20)), 'part of the value is shown: ' + flat.slice(0, 300));
 });
 
 test('--remember ignores a memory file bigger than 1 MiB, without failing', async (t) => {
@@ -442,4 +446,24 @@ test('--remember ignores a memory file bigger than 1 MiB, without failing', asyn
   assert.equal(res.status, 0, res.stderr);
   assert.equal(JSON.parse(res.stdout).previous, null, 'a file this big is treated as absent');
   assert.ok(fs.statSync(file).size < 1024 * 1024, 'the file is replaced by a small one');
+});
+
+test('--remember never waits on a pipe or a device standing in for the memory file', { skip: process.platform === 'win32' }, async (t) => {
+  for (const kind of ['fifo', 'zero']) {
+    const m = machine(t, { found: ['.cursor'] });
+    const env = { ...m.env, ZN_STATS: 'off' };
+    const file = _internal.memoryFile(m.home, env);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (kind === 'fifo') {
+      const mk = spawnSync('mkfifo', [file]);
+      if (mk.status !== 0) continue;
+    } else {
+      fs.symlinkSync('/dev/zero', file);
+    }
+    const t0 = Date.now();
+    const res = spawnSync(process.execPath, [CLI, 'reach', m.root, '--remember', '--json'], { encoding: 'utf8', env, cwd: m.root, timeout: 15000 });
+    assert.equal(res.status, 0, kind + ': ' + (res.error || res.stderr));
+    assert.ok(Date.now() - t0 < 5000, kind + ' took too long');
+    assert.equal(JSON.parse(res.stdout).previous, null, kind + ' is treated as absent');
+  }
 });
