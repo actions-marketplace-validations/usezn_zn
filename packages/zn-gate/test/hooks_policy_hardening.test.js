@@ -725,3 +725,52 @@ test('many nested shell code strings are decided within the time budget', (t) =>
   assert.ok(ms < 3500, 'took ' + ms + ' ms');
   assert.ok(deny === null || /too many|nests/.test(deny), String(deny));
 });
+
+test('code run behind more wrappers, shell options and PowerShell forms is read, for a .env with values and for history', (t) => {
+  const { dir, o } = keyDir(t, 'zn-launcher-');
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const enc = Buffer.from('cat .env', 'utf16le').toString('base64');
+  // A .env with values on disk is read.
+  for (const cmd of ['chrt 1 sh -c "cat .env"', 'strace -f sh -c "cat .env"', 'strace -o /x/log -f bash -c "cat .env"', 'iex "Get-Content .env"', 'Invoke-Expression "Get-Content .env"',
+    'taskset 0x1 sh -c "cat .env"', 'taskset -c 0 sh -c "cat .env"', 'runuser -u app -- sh -c "cat .env"', 'runuser -l app -c "cat .env"', 'chroot / sh -c "cat .env"',
+    'unbuffer sh -c "cat .env"', 'script -qc "cat .env" /dev/null', 'ltrace -f sh -c "cat .env"', 'nsenter -t 1 -m sh -c "cat .env"',
+    'bash -O extglob -c "cat .env"', 'bash --rcfile /x/rc -c "cat .env"', 'bash --init-file /x/rc -c "cat .env"', 'bash +O extglob -o pipefail -c "cat .env"',
+    'fish -C "cat .env"', 'fish -c "cat .env"', 'pwsh -en ' + enc, 'pwsh -encodedc ' + enc, 'pwsh -EncodedCom ' + enc, 'pwsh /Command "cat .env"', 'pwsh /c "cat .env"',
+    'pwsh -com "cat .env"', 'powershell "cat .env"', 'powershell -NoProfile "cat .env"', 'powershell -ExecutionPolicy Bypass "cat .env"', 'pwsh -File x.ps1 "cat .env"',
+    'weirdwrap --flag sh -c "cat .env"', 'weirdwrap -x pwsh -c "cat .env"']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  // The same for history, with the file absent.
+  const { o: o2 } = keyDir(t, 'zn-launcher2-');
+  for (const cmd of ['chrt 1 sh -c "git log -p -- .env"', 'taskset -c 0 bash -c "git log -p -- .env"', 'runuser -u app -- git log -p -- .env', 'chroot / git log -p -- .env',
+    'unbuffer git log -p -- .env', 'script -qc "git log -p -- .env" /dev/null', 'strace -f git log -p -- .env', 'bash -O extglob -c "git log -p -- .env"',
+    'iex "git log -p -- .env"', 'powershell "git log -p -- .env"', 'nsenter -t 1 git log -p -- .env', 'flock x.lock git log -p -- .env', 'chrt -f 1 git log -p -- .env']) {
+    assert.ok(policy.bashDenial(cmd, o2), cmd);
+  }
+  for (const cmd of ['chrt -p 1234', 'strace -c ls', 'taskset -c 0 npm test', 'script -q out.log', 'powershell Get-Date', 'iex (Get-Date)', 'strace -f -o log ls',
+    'taskset 0x1 true', 'runuser -u app -- ls', 'chroot / ls', 'bash -O extglob -c "ls"', 'fish -c "ls"', 'pwsh -File x.ps1', 'pwsh -NoProfile -c "Get-Date"', 'unbuffer ls',
+    'flock x.lock ls', 'chrt 1 sh -c "echo hi"', 'psql -c "select * from t"']) {
+    assert.equal(policy.bashDenial(cmd, o2), null, cmd);
+  }
+});
+
+test('shell names that run nothing do not hide a real launcher, a string piped into iex is code, and sg is read like su', (t) => {
+  const { dir, o } = keyDir(t, 'zn-launcher3-');
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const decoys = (n, name) => Array.from({ length: n }, () => '--setenv A ' + name).join(' ');
+  for (const cmd of ['bwrap ' + decoys(30, 'sh') + ' sh -c "cat .env"', 'bwrap ' + decoys(300, 'zsh') + ' bash -c "cat .env"',
+    'weird ' + 'powershell '.repeat(40) + ' -c "cat .env"', 'weird ' + 'su '.repeat(40) + ' -c "cat .env"',
+    '"Get-Content .env" | iex', 'echo "cat .env" | iex', 'echo "Get-Content .env" | Invoke-Expression', '"git log -p -- .env" | iex',
+    'sg grp -c "cat .env"', 'sg grp -c "git log -p -- .env"']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd.slice(0, 60));
+  }
+  for (const cmd of ['iex (Get-Date)', 'iwr https://example.com/x.ps1 | iex', 'Get-Content run.ps1 | Invoke-Expression', 'bwrap ' + decoys(30, 'sh') + ' sh -c "ls"', 'sg grp -c "ls"']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd.slice(0, 60));
+  }
+  let big = 'weird ';
+  for (let i = 0; big.length < 98000; i++) big += 'su ';
+  const t0 = process.hrtime.bigint();
+  const deny = policy.bashDenial(big, o);
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 3500);
+  assert.ok(deny === null || typeof deny === 'string');
+});

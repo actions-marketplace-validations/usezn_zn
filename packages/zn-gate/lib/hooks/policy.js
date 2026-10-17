@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.12';
+const POLICY_RULES_VERSION = '2026-10-17.15';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1022,65 +1022,102 @@ function shellCodesOf(words, out = new Set()) {
   return out;
 }
 
-function codesOfCommand(w, out) {
+// Shells, PowerShell and cmd: when a wrapper chain does not resolve, the first of these words followed by code still counts.
+const FALLBACK_LAUNCHERS = new Set([...SHELL_NAMES, 'busybox', 'pwsh', 'powershell', 'cmd', 'su', 'sg', 'runuser', 'script', 'flock']);
+// Options of bash and zsh that take a value, which may sit between the shell and -c.
+const SHELL_VALUE_OPTS = new Set(['-O', '+O', '-o', '+o', '--rcfile', '--init-file', '--init-command']);
+const FALLBACK_HEAVY_MAX = 16;
+const POWERSHELL_PARAM_RE = /^[-\/]([A-Za-z]+)$/;
+
+/* The code strings a launcher at w[k] runs from a string; true when `name` is a launcher that was read (the rest of the
+   command is then what it runs). env only reports its -S string and lets the wrapper chain go on. */
+function launcherCodes(w, k, name, out) {
   const join = (from) => w.slice(from).map((x) => x.text).join(' ');
+  if (name === 'eval' || name === 'iex' || name === 'invoke-expression') { out.add(join(k + 1)); return true; }
+  if (name === 'watch') {
+    let j = k + 1;
+    while (j < w.length && w[j].text.startsWith('-')) j += w[j].text === '-n' || w[j].text === '--interval' ? 2 : 1;
+    if (j < w.length) out.add(join(j));
+    return true;
+  }
+  if (SHELL_NAMES.has(name)) {
+    for (let j = k + 1; j < w.length; j++) {
+      const t = w[j].text;
+      if (t === '--' || !/^[-+]/.test(t)) break;
+      if (SHELL_VALUE_OPTS.has(t)) { j++; continue; }
+      if (name === 'fish' && (t === '-C' || t === '--init-command') && w[j + 1]) { out.add(w[j + 1].text); j++; continue; }
+      if (SHELL_C_FLAG_RE.test(t)) { if (w[j + 1]) out.add(w[j + 1].text); break; }
+    }
+    return true;
+  }
+  if (name === 'su' || name === 'sg' || name === 'runuser' || name === 'script' || name === 'flock') {
+    for (let j = k + 1; j < w.length; j++) {
+      const t = w[j].text;
+      if (t.startsWith('--command=')) out.add(t.slice(10));
+      else if (t === '--command' || t === '-c' || (name !== 'flock' && SHELL_C_FLAG_RE.test(t))) { if (w[j + 1]) out.add(w[j + 1].text); }
+    }
+    // runuser -u user -- command goes on through the wrapper chain; the others are done.
+    return name !== 'runuser';
+  }
+  if (name === 'pwsh' || name === 'powershell') {
+    let first = -1;
+    for (let j = k + 1; j < w.length; j++) {
+      const t = w[j].text;
+      const m = POWERSHELL_PARAM_RE.exec(t);
+      if (!m) { if (first < 0) first = j; continue; }
+      // Any unambiguous prefix of the parameter name works in PowerShell (-c, -com, /Command, -en, -EncodedCom).
+      const n = m[1].toLowerCase();
+      if ('command'.startsWith(n)) { out.add(join(j + 1)); return true; }
+      if (n === 'e' || n === 'ec' || 'encodedcommand'.startsWith(n)) {
+        // Base64 of UTF-16 text: decoded and read as code.
+        if (w[j + 1]) out.add(Buffer.from(w[j + 1].text, 'base64').toString('utf16le'));
+        return true;
+      }
+    }
+    // Windows PowerShell reads the first argument that is not a parameter as the command.
+    if (first >= 0) out.add(join(first));
+    return true;
+  }
+  if (name === 'cmd') {
+    for (let j = k + 1; j < w.length; j++) if (/^\/[ckr]$/i.test(w[j].text)) { out.add(join(j + 1)); return true; }
+    return true;
+  }
+  if (name === 'env') {
+    for (let j = k + 1; j < w.length && w[j].text.startsWith('-'); j++) {
+      const t = w[j].text;
+      if (t === '-S' || t === '--split-string') { if (w[j + 1]) out.add(w[j + 1].text); }
+      else if (t.startsWith('--split-string=')) out.add(t.slice(15));
+      else if (t.startsWith('-S')) out.add(t.slice(2));
+    }
+  }
+  return false;
+}
+
+function codesOfCommand(w, out) {
   for (let j = 1; j < w.length; j++) {
     if (!/^-arg/i.test(w[j - 1].text) || !w[j].text) continue;
     for (let i = j - 2; i >= 0; i--) if (wordIsGit(w[i].text)) { out.add('git ' + w[j].text.replace(/,/g, ' ')); break; }
   }
-  let k = w.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
+  const first = w.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
+  let k = first;
+  let resolved = false;
   for (let guard = 0; k >= 0 && k < w.length && guard < 16; guard++) {
     const name = programName(w[k].text);
-    if (name === 'eval') { out.add(join(k + 1)); return; }
-    if (name === 'watch') {
-      let j = k + 1;
-      while (j < w.length && w[j].text.startsWith('-')) j += w[j].text === '-n' || w[j].text === '--interval' ? 2 : 1;
-      if (j < w.length) out.add(join(j));
-      return;
-    }
-    if (SHELL_NAMES.has(name)) {
-      for (let j = k + 1; j < w.length; j++) {
-        const t = w[j].text;
-        if (t === '--' || !/^[-+]/.test(t)) break;
-        if (t === '-o' || t === '+o') { j++; continue; }
-        if (SHELL_C_FLAG_RE.test(t)) { if (w[j + 1]) out.add(w[j + 1].text); break; }
-      }
-      return;
-    }
-    if (name === 'su' || name === 'flock') {
-      for (let j = k + 1; j < w.length; j++) {
-        const t = w[j].text;
-        if (t.startsWith('--command=')) out.add(t.slice(10));
-        else if (t === '--command' || t === '-c' || (name === 'su' && SHELL_C_FLAG_RE.test(t))) { if (w[j + 1]) out.add(w[j + 1].text); }
-      }
-      return;
-    }
-    if (name === 'pwsh' || name === 'powershell') {
-      for (let j = k + 1; j < w.length; j++) {
-        const t = w[j].text;
-        if (/^-c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?$/i.test(t)) { out.add(join(j + 1)); return; }
-        if (/^-(?:e|ec|enc|encodedcommand)$/i.test(t) && w[j + 1]) {
-          // Base64 of UTF-16 text: decoded and read as code.
-          out.add(Buffer.from(w[j + 1].text, 'base64').toString('utf16le'));
-          return;
-        }
-      }
-      return;
-    }
-    if (name === 'cmd') {
-      for (let j = k + 1; j < w.length; j++) if (/^\/[ckr]$/i.test(w[j].text)) { out.add(join(j + 1)); return; }
-      return;
-    }
-    if (name === 'env') {
-      for (let j = k + 1; j < w.length && w[j].text.startsWith('-'); j++) {
-        const t = w[j].text;
-        if (t === '-S' || t === '--split-string') { if (w[j + 1]) out.add(w[j + 1].text); }
-        else if (t.startsWith('--split-string=')) out.add(t.slice(15));
-        else if (t.startsWith('-S')) out.add(t.slice(2));
-      }
-    }
-    if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) return;
+    if (launcherCodes(w, k, name, out)) { resolved = true; break; }
+    if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) break;
     k = skipWrapper(w, k, name);
+  }
+  // The chain did not reach a launcher (an unknown wrapper, odd options): the first shell word counts as the launcher.
+  if (!resolved && first >= 0) {
+    // A shell word costs a look at the next few words; the launchers that read the whole rest are limited, and past
+    // the limit the rest of the command is read as code (never skipped).
+    let heavy = 0;
+    for (let j = first; j < w.length; j++) {
+      const name = programName(w[j].text);
+      if (!FALLBACK_LAUNCHERS.has(name)) continue;
+      if (!SHELL_NAMES.has(name) && ++heavy > FALLBACK_HEAVY_MAX) { out.add(w.slice(j).map((x) => x.text).join(' ')); break; }
+      launcherCodes(w, j, name, out);
+    }
   }
 }
 
@@ -1234,9 +1271,12 @@ function isGit(head) {
 const GIT_WRAPPERS = {
   sudo: 'ugphCDrtUTR', doas: 'uC', env: 'uCS', command: '', nohup: '', time: 'fo', builtin: '', exec: 'a', nice: 'n', timeout: 'sk',
   xargs: 'IinLPdEsa', setsid: '', ionice: 'cnpPu', stdbuf: 'ioe', busybox: '',
+  chrt: '', taskset: 'c', chroot: 'ug', runuser: 'ugGsT', unbuffer: '', strace: 'eopsuEaOSbPIX', ltrace: 'eopsunal', nsenter: 'tSG', flock: 'wE',
 };
+// Wrappers that take positional arguments before the command: chrt <priority>, taskset <mask> (not with -c), chroot <newroot>, flock <lock>.
+const WRAPPER_POSITIONAL = { chrt: 1, taskset: 1, chroot: 1, flock: 1 };
 const WRAPPER_LONG_VALUE = new Set(['--user', '--group', '--chdir', '--unset', '--max-args', '--max-procs', '--replace', '--delimiter',
-  '--arg-file', '--eof', '--signal', '--kill-after', '--split-string', '--host', '--prompt', '--close-from', '--role', '--type']);
+  '--arg-file', '--eof', '--signal', '--kill-after', '--split-string', '--cpu-list', '--host', '--prompt', '--close-from', '--role', '--type']);
 
 function wordIsGit(text) {
   return isGit(String(text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase());
@@ -1245,12 +1285,14 @@ function wordIsGit(text) {
 /* The index of the word after a wrapper and its options (and the values some take), env's assignments and timeout's duration. */
 function skipWrapper(words, k, name) {
   const valueOpts = GIT_WRAPPERS[name];
+  let sawC = false;
   k++;
   while (k < words.length) {
     const t = words[k].text;
     if (t === '--') { k++; break; }
     if (t.startsWith('--') && t.length > 2) { k += !t.includes('=') && WRAPPER_LONG_VALUE.has(t) ? 2 : 1; continue; }
     if (t.startsWith('-') && t.length > 1) {
+      if (t === '-c') sawC = true;
       // -n, -E, -En: flags; a cluster ending in an option that takes a value (sudo -u root) takes the next word.
       k += /^-[A-Za-z]+$/.test(t) && valueOpts.includes(t[t.length - 1]) ? 2 : 1;
       continue;
@@ -1258,6 +1300,7 @@ function skipWrapper(words, k, name) {
     if (ASSIGNMENT_RE.test(t) || (name === 'timeout' && /^[0-9.]+[smhd]?$/.test(t))) { k++; continue; }
     break;
   }
+  if (WRAPPER_POSITIONAL[name] && k < words.length && !(name === 'taskset' && sawC)) k += WRAPPER_POSITIONAL[name];
   return k;
 }
 
@@ -1344,7 +1387,7 @@ function gitObjectDenial(text, opts) {
 // Commands that change the directory the rest of the command runs in.
 const CD_CMDS = new Set(['cd', 'chdir', 'pushd', 'sl', 'set-location', 'push-location']);
 // Interpreters and shells whose code argument can name a file inside quotes or brackets.
-const CODE_CMDS_RE = /^(?:python[0-9.]*|py|node|nodejs|deno|bun|ruby|perl|php|lua|osascript|pwsh|powershell|bash|sh|zsh|dash|ksh|fish|cmd)(?:\.exe)?$/;
+const CODE_CMDS_RE = /^(?:python[0-9.]*|py|node|nodejs|deno|bun|ruby|perl|php|lua|osascript|pwsh|powershell|bash|sh|zsh|dash|ksh|fish|cmd|iex|invoke-expression)(?:\.exe)?$/;
 const CD_BASES_MAX = 16;
 
 function bareHead(h) {
