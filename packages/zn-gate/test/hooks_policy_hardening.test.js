@@ -445,3 +445,48 @@ test('after a cd, only the folders the command can reach are checked, also when 
     assert.equal(policy.bashDenial(cmd, o), null, cmd);
   }
 });
+
+test('a .env or credential file read from the git repository is refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-gitobj-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git show HEAD:.env', 'git show :.env', 'git show :0:.env', 'git cat-file -p HEAD:.env', 'git -C app1 show HEAD:.env',
+    'git show HEAD~1:app1/inner/.env', 'git show main:./.env.local', 'git show HEAD:.aws/credentials', 'git cat-file blob v1.0:config/.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['git show HEAD:README.md', 'git show HEAD:.env.example', 'git log --oneline', 'git show HEAD',
+    'git push origin main:main', 'git fetch https://example.com/repo.git', 'git diff HEAD:src/a.js HEAD~1:src/a.js']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('the history of a .env file is refused even when the file is gone from disk', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-githist-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git log -p -- .env', 'git show HEAD -- .env', 'git diff HEAD~1 -- .env', 'git grep -h KEY HEAD -- .env',
+    'git archive HEAD .env | tar x -O', 'git checkout HEAD -- .env', 'git restore --source=HEAD -- .env', 'git -C app -c core.pager=cat log -p app/.env',
+    'git.exe show HEAD:.env', 'git show "HEAD:' + './'.repeat(700) + '.env"', 'git show ' + 'HEAD~1'.repeat(100) + ':.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd.slice(0, 80));
+  }
+  for (const cmd of ['git rm --cached .env', 'git status', 'git check-ignore .env', 'git add .gitignore', 'git log --oneline',
+    'git commit -m "stop tracking .env"', 'git show HEAD:.env.example']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('git steps that only clean up a tracked .env stay allowed', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-gitclean-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git restore --staged .env', 'git checkout -- .env', 'git restore .env', 'git stash push -- .env',
+    'git diff --stat -- .env', 'git log --oneline -- .env', 'git log --name-only -- .env', 'git show --stat HEAD -- .env']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  for (const cmd of ['git restore --source=HEAD~1 .env', 'git restore -s HEAD .env', 'git checkout HEAD -- .env', 'git checkout main .env',
+    'git stash show -p -- .env', 'git log --oneline -p -- .env', 'git log --stat -p -- .env', 'git diff -- .env',
+    'git log --oneline --patch-with-stat -- .env', 'git log --stat --patch-with-raw -- .env', 'git log --stat -U3 -- .env',
+    'git log --stat --unified=1 -- .env', 'git diff --stat --binary HEAD~1 -- .env', 'git show --oneline HEAD -- .env', 'git restore -sHEAD .env', 'git log -L1,5:.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+});

@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.6';
+const POLICY_RULES_VERSION = '2026-10-17.7';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -642,12 +642,14 @@ function allWords(cmd, posix = false) {
   while (rest.length && guard++ < 1000) {
     const scan = scanFirstCommand(rest, posix);
     const head = commandName(scan.words);
+    const sub = isGit(head) ? gitSubcommand(scan.words) : '';
+    const gitArgs = sub ? scan.words.map((x) => x.text) : null;
     for (let k = 0; k < scan.words.length; k++) {
       const w = scan.words[k];
       const prev = k > 0 ? scan.words[k - 1].text : '';
       const isRedirTarget = /^[0-9]*>>?$/.test(prev) || /^[0-9]*>>?./.test(w.text);
       // Input redirections: <file, 0<file, <>file (read and write), {fd}<file.
-      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard });
+      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard, sub, gitArgs });
     }
     rest = rest.slice(scan.end + 1);
   }
@@ -941,8 +943,11 @@ function bashDenialOf(cmd, opts = {}) {
     let text = w.text;
     if (text.startsWith('-')) {
       const eq = text.indexOf('=');
-      if (eq < 0) continue;
-      text = text.slice(eq + 1);
+      // git log -L<range>:<file> names a file after the colon.
+      const lineRange = isGit(w.head) ? /^-L[^:]*:(.+)$/.exec(text) : null;
+      if (lineRange) text = lineRange[1];
+      else if (eq < 0) continue;
+      else text = text.slice(eq + 1);
     } else if (NAME_VALUE_RE.test(text)) {
       // name=value carries a path too (dd if=.env, ENV_FILE=.env).
       text = text.slice(text.indexOf('=') + 1);
@@ -954,6 +959,13 @@ function bashDenialOf(cmd, opts = {}) {
       classified.set(text, classifyWord(text, opts));
     }
     const c = classified.get(text);
+    if ((!c || c.kind === 'dotenv') && isGit(w.head)) {
+      // git show HEAD:.env, git cat-file -p :app/.env: a secret file read from the repository, not from disk.
+      const deny = gitObjectDenial(text, opts) ||
+        // git log -p -- .env, git checkout HEAD -- .env: its history, also once the file is gone from disk.
+        (c && gitReadsContent(w.sub, w.gitArgs) ? gitHistoryDenial(text) : null);
+      if (deny) return deny;
+    }
     if (!c) {
       if (writing && AGENT_CONFIG_MENTION_RE.test(slash(text))) {
         return 'zn: this command would change agent hook or plugin settings, which is protected. Ask the user to make this change.';
@@ -992,6 +1004,77 @@ function decodeAnsiC(cmd) {
     // Bash ends the string at the first NUL character.
     return "'" + text.split('\0')[0].replace(/'/g, "'\\''") + "'";
   }).replace(/\$"/g, '"');
+}
+
+// <rev>:<path> and :<path> name a file as git stores it (HEAD:.env, main~2:app/.env, :0:.env).
+const GIT_OBJECT_RE = /^[^\s:]*:(?:[0-3]:)?([^:\s]\S*)$/;
+// git subcommands that print or restore a file's stored content or history.
+const GIT_READ_SUBCMDS = new Set(['show', 'log', 'diff', 'grep', 'archive', 'checkout', 'restore', 'blame', 'annotate', 'cat-file',
+  'whatchanged', 'format-patch', 'difftool', 'stash', 'cherry-pick', 'apply', 'am']);
+const GIT_VALUE_OPTS = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
+
+function isGit(head) {
+  return String(head || '').replace(/\.exe$/, '') === 'git';
+}
+
+/* The subcommand of a git command: the first word after git that is not a global option (git -C app -c k=v log). */
+function gitSubcommand(words) {
+  let k = words.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
+  for (k++; k < words.length; k++) {
+    const t = words[k].text;
+    if (GIT_VALUE_OPTS.has(t)) { k++; continue; }
+    if (t.startsWith('-')) continue;
+    return t.toLowerCase();
+  }
+  return '';
+}
+
+// log, diff and show print only names or counts with one of these options...
+const GIT_SUMMARY_OPTS = new Set(['--stat', '--shortstat', '--numstat', '--name-only', '--name-status', '--summary', '--dirstat', '--compact-summary']);
+// ...as long as every other option is one that cannot add file content (an allowlist: -U3, --binary or
+// --patch-with-stat bring the patch back, and git has many such options).
+const GIT_SAFE_OPTS_RE = /^(?:--(?:stat|shortstat|numstat|name-only|name-status|summary|dirstat|compact-summary)(?:=[\w,.%-]*)?|--oneline|--no-color|--color(?:=\w+)?|--decorate(?:=\w+)?|--no-decorate|--graph|--reverse|--all|--follow|--no-merges|--merges|--first-parent|--abbrev-commit|--no-abbrev-commit|--cached|--staged|--no-renames|--relative|--date=[\w:%.-]+|--(?:since|until|after|before|author|committer|grep)=[^\s]*|--max-count=\d+|-n|-\d+|--(?:format|pretty)=[^\s]*)$/;
+
+/* Whether a git command prints or brings back a file's stored content. Steps that only clean up stay allowed:
+   git restore --staged .env, git checkout -- .env (from the index to disk), git stash push -- .env, git log --stat -- .env. */
+function gitReadsContent(sub, args) {
+  if (!GIT_READ_SUBCMDS.has(sub)) return false;
+  const a = args || [];
+  const at = a.findIndex((x) => x.toLowerCase() === sub);
+  const rest = at >= 0 ? a.slice(at + 1) : a;
+  const dashdash = rest.indexOf('--');
+  const before = dashdash >= 0 ? rest.slice(0, dashdash) : rest;
+  const positional = before.filter((x) => !x.startsWith('-'));
+  if (sub === 'stash') return positional[0] === 'show';
+  if (sub === 'restore') return rest.some((x) => x.startsWith('-s') || x.startsWith('--source'));
+  // checkout <rev> -- <file> (or checkout <rev> <file>) brings back a stored copy; checkout -- <file> uses the index.
+  if (sub === 'checkout') return dashdash >= 0 ? positional.length > 0 : positional.length > 1;
+  if (['log', 'diff', 'show', 'whatchanged'].includes(sub)) {
+    const opts = before.filter((x) => x.startsWith('-'));
+    const summary = opts.some((x) => GIT_SUMMARY_OPTS.has(x.split('=')[0]));
+    // git log --oneline lists commits only; git show --oneline still prints the patch.
+    const listOnly = sub === 'log' && opts.includes('--oneline');
+    if ((summary || listOnly) && opts.every((x) => GIT_SAFE_OPTS_RE.test(x))) return false;
+  }
+  return true;
+}
+
+function gitHistoryDenial(text) {
+  return 'zn: this git command reads the stored content or history of ' + path.basename(text) + ', which zn treats as holding secrets, ' +
+    'so it was not run. If the repository holds real values in it, tell the user: they should be rotated and removed from the history.';
+}
+
+/* A git object word whose path is a .env or credential file. The stored copy cannot be checked for values without
+   running git, and a .env kept in the repository with values is the case to stop, so it is refused. */
+function gitObjectDenial(text, opts) {
+  const m = GIT_OBJECT_RE.exec(text);
+  if (!m || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
+  // git drops leading ./ from the path (HEAD:././.env is .env).
+  const file = m[1].replace(/^(?:\.\/)+/, '');
+  const c = classifyPath(file, opts) || classifyPath(path.basename(file), opts);
+  if (!c || c.kind === 'agent_config') return null;
+  return 'zn: ' + text + ' reads ' + path.basename(file) + ' from the git repository, and zn treats that file as holding secrets, ' +
+    'so it was not read. If the repository holds real values in it, tell the user: they should be rotated and removed from the history.';
 }
 
 // Commands that change the directory the rest of the command runs in.
