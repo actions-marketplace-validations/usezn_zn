@@ -72,6 +72,56 @@ mod jsonrpc_error {
     pub const POLICY_DENIED: i32 = -32000; // Server error range
 }
 
+/// Longest agent id kept from a message; longer ids are cut (the id is a label, not an identity).
+const MAX_AGENT_ID_CHARS: usize = 128;
+
+fn bounded_agent_id(agent_id: Option<&str>) -> String {
+    match agent_id {
+        // Control characters (the reputation key separator among them) become '?', so the key stays
+        // unambiguous: namespaces cannot contain them either.
+        Some(a) if !a.is_empty() => a
+            .chars()
+            .take(MAX_AGENT_ID_CHARS)
+            .map(|c| if c.is_control() { '?' } else { c })
+            .collect(),
+        _ => "anonymous".to_string(),
+    }
+}
+
+/// Reputation key: the namespace of the connection and the agent id from the message.
+fn reputation_key(namespace: &str, agent_id: &str) -> String {
+    format!("{}\u{1f}{}", namespace, agent_id)
+}
+
+/// Where validate_jsonrpc took the tool arguments from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ArgSource {
+    /// `params.<key>` of a tools/call (`arguments`, `args` or `input`).
+    Key(&'static str),
+    /// No arguments in the frame (checked as `{}`).
+    Missing,
+    /// The whole `params` (A2A methods).
+    WholeParams,
+}
+
+/// The JSON-RPC frame with its tool arguments replaced by `arguments` (a JSON text), in exactly the place
+/// validate_jsonrpc took them from. None if either side does not parse or that place is not there.
+/// serde_json does not keep key order, so the rebuilt frame may list keys in another order.
+fn with_arguments(frame: &str, arguments: &str, source: ArgSource) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(frame).ok()?;
+    let new_args: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let params = v.get_mut("params")?;
+    match source {
+        ArgSource::Key(k) => {
+            params.get(k)?;
+            params[k] = new_args;
+        }
+        ArgSource::WholeParams => *params = new_args,
+        ArgSource::Missing => return None,
+    }
+    serde_json::to_string(&v).ok()
+}
+
 /// Result of validating a JSON-RPC request
 #[derive(Debug)]
 enum JsonRpcValidation {
@@ -81,6 +131,7 @@ enum JsonRpcValidation {
         tool_name: String,
         arguments: String,
         agent_id: Option<String>,
+        source: ArgSource,
     },
     /// Valid JSON-RPC but not a tool call - pass through
     PassThrough,
@@ -168,18 +219,22 @@ fn validate_jsonrpc(json_str: &str) -> JsonRpcValidation {
         };
 
         // Extract arguments as JSON string
-        let arguments = params
-            .get("arguments")
-            .or_else(|| params.get("args"))
-            .or_else(|| params.get("input"))
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "{}".to_string());
+        let source = ["arguments", "args", "input"]
+            .into_iter()
+            .find(|k| params.get(*k).is_some())
+            .map(ArgSource::Key)
+            .unwrap_or(ArgSource::Missing);
+        let arguments = match source {
+            ArgSource::Key(k) => params[k].to_string(),
+            _ => "{}".to_string(),
+        };
 
         return JsonRpcValidation::ToolCall {
             id: request.id,
             tool_name,
             arguments,
             agent_id: request.agent_id,
+            source,
         };
     } else if zn::a2a::is_a2a_method(&request.method) {
         // A2A Protocol Handler - Full Parity
@@ -199,6 +254,7 @@ fn validate_jsonrpc(json_str: &str) -> JsonRpcValidation {
             tool_name: virt_tool_name,
             arguments,
             agent_id: request.agent_id,
+            source: ArgSource::WholeParams,
         };
     }
 
@@ -1024,9 +1080,13 @@ async fn process_mcp_message(
             tool_name,
             arguments,
             agent_id,
+            source,
         } => {
-            // Default to "anonymous" if no agent_id provided
-            let agent_id_str = agent_id.clone().unwrap_or("anonymous".to_string());
+            // Default to "anonymous" if no agent_id provided. The id comes from the message, so it is bounded
+            // and never an identity: the reputation (bans, violations) is kept per namespace, so one tenant can
+            // neither ban another tenant's agent ids nor share a ban with it.
+            let agent_id_str = bounded_agent_id(agent_id.as_deref());
+            let rep_key = reputation_key(&memory_namespace, &agent_id_str);
 
             // 🎯 OCR GUARD: detect malicious text embedded in images (prompt
             // injection, credentials, destructive commands) on the RAW input,
@@ -1072,6 +1132,7 @@ async fn process_mcp_message(
             }
 
             // MULTIMODAL VISION GUARD: EXIF STRIPPING & SANITIZATION
+            let raw_arguments = arguments.clone();
             let arguments = match zn::engine::vision::VisionEngine::sanitize_multimodal(
                 &arguments,
                 &state.config.managed_rules,
@@ -1099,7 +1160,7 @@ async fn process_mcp_message(
 
             // 1. ACTIVE DEFENSE CHECK
             // Before processing, check if this agent is BANNED
-            if let Err(ban_msg) = state.reputation.check_agent_status(&agent_id_str) {
+            if let Err(ban_msg) = state.reputation.check_agent_status(&rep_key) {
                 log::error(format!(
                     "⛔ BLOCKED BANNED AGENT {}: {}",
                     agent_id_str, ban_msg
@@ -1126,7 +1187,7 @@ async fn process_mcp_message(
                 log::warning(format!("🚫 MANAGED RULE BLOCKED: {}", msg)).ok();
                 state
                     .reputation
-                    .record_violation(&agent_id_str, "Managed Rules Violation", 10);
+                    .record_violation(&rep_key, "Managed Rules Violation", 10);
                 return Ok(Some(jsonrpc_error_response(id, -32001, &msg)));
             }
 
@@ -1139,7 +1200,7 @@ async fn process_mcp_message(
                 log::warning(format!("🚫 LOOP BREAKER: {}", msg)).ok();
                 state
                     .reputation
-                    .record_violation(&agent_id_str, "Recursive Loop Detected", 15);
+                    .record_violation(&rep_key, "Recursive Loop Detected", 15);
                 return Ok(Some(jsonrpc_error_response(id, -32002, &msg)));
             }
 
@@ -1260,11 +1321,9 @@ async fn process_mcp_message(
                 // If Neural vetoed, it's a hard DENIED.
                 // Otherwise, we fallback to the deterministic WASM/Static Engine.
                 if neural_veto {
-                    state.reputation.record_violation(
-                        &agent_id_str,
-                        "Neural Anomaly Detection",
-                        10,
-                    );
+                    state
+                        .reputation
+                        .record_violation(&rep_key, "Neural Anomaly Detection", 10);
                     ("DENIED".to_string(), Some("neural_engine".to_string()))
                 } else {
                     match state
@@ -1273,14 +1332,14 @@ async fn process_mcp_message(
                     {
                         Ok(true) => {
                             log::success(format!("✅ ALLOWED: {}", tool_name)).ok();
-                            state.reputation.record_success(&agent_id_str);
+                            state.reputation.record_success(&rep_key);
                             ("ALLOWED".to_string(), None)
                         }
                         Ok(false) => {
                             log::warning(format!("🚫 DENIED: {}", tool_name)).ok();
                             state
                                 .reputation
-                                .record_violation(&agent_id_str, "Policy Violation", 5);
+                                .record_violation(&rep_key, "Policy Violation", 5);
                             ("DENIED".to_string(), Some("wasm_policy".to_string()))
                         }
                         Err(e) => {
@@ -1356,7 +1415,19 @@ async fn process_mcp_message(
 
             if status == "ALLOWED" {
                 metrics::record_tool_call(&tool_name, "ALLOWED");
-                Ok(Some(scrubbed_line))
+                if arguments == raw_arguments {
+                    return Ok(Some(scrubbed_line));
+                }
+                // The vision guard changed the arguments: forward what it checked and what the audit vault
+                // stored, never the original images. A frame that cannot be rebuilt is refused.
+                match with_arguments(&scrubbed_line, &arguments, source) {
+                    Some(frame) => Ok(Some(frame)),
+                    None => Ok(Some(jsonrpc_error_response(
+                        id,
+                        -32001,
+                        "zn could not rebuild the sanitized tool call, so it was not forwarded",
+                    ))),
+                }
             } else {
                 metrics::record_tool_call(&tool_name, "DENIED");
                 if status == "DENIED" {
@@ -1395,6 +1466,9 @@ async fn process_mcp_message(
         }
     }
 }
+
+/// Largest MCP WebSocket message or frame the gateway reads.
+const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 
 async fn mcp_ws_handler(
     State(state): State<AppState>,
@@ -1435,7 +1509,10 @@ async fn mcp_ws_handler(
     }
 
     let namespace = tenant.namespace.clone();
-    ws.on_upgrade(move |socket| handle_ws_socket(socket, state, namespace))
+    // A frame or message over 1 MiB closes the connection (the default limit is 64 MiB).
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_ws_socket(socket, state, namespace))
 }
 
 async fn handle_ws_socket(
@@ -1766,8 +1843,17 @@ async fn tenants_list_handler(
 /// Reputation endpoint - returns scoring data
 async fn reputation_handler(
     State(state): State<AppState>,
+    tenant: Option<Extension<TenantContext>>,
 ) -> axum::response::Json<serde_json::Value> {
-    let scores = state.reputation.all_scores();
+    let mut scores = state.reputation.all_scores();
+    // Scores are keyed by namespace and agent id: a tenant sees its own namespace only (the super-admin, and a
+    // gateway without authentication, see all).
+    if let Some(Extension(t)) = tenant {
+        if !t.is_super_admin() {
+            let prefix = format!("{}\u{1f}", t.namespace);
+            scores.retain(|k, _| k.starts_with(&prefix));
+        }
+    }
     axum::response::Json(serde_json::json!({
         "status": "ok",
         "scores": scores
@@ -2119,5 +2205,66 @@ mod fusion_wiring_tests {
             .await;
         assert_eq!(benign["verdict"], "allow");
         assert!(benign.get("fusion").is_none());
+    }
+}
+
+#[cfg(test)]
+mod gateway_hardening_tests {
+    use super::{bounded_agent_id, reputation_key, with_arguments, ArgSource, MAX_AGENT_ID_CHARS};
+
+    fn parsed(s: Option<String>) -> serde_json::Value {
+        serde_json::from_str(&s.expect("rebuilt frame")).expect("valid JSON")
+    }
+
+    #[test]
+    fn agent_ids_are_bounded_and_reputation_is_per_namespace() {
+        assert_eq!(bounded_agent_id(None), "anonymous");
+        assert_eq!(bounded_agent_id(Some("")), "anonymous");
+        assert_eq!(
+            bounded_agent_id(Some(&"a".repeat(500))).chars().count(),
+            MAX_AGENT_ID_CHARS
+        );
+        assert_ne!(
+            reputation_key("tenant-a", "anonymous"),
+            reputation_key("tenant-b", "anonymous")
+        );
+        // An agent id cannot carry the key separator, so (namespace, agent id) gives one key only.
+        let key = reputation_key("a", &bounded_agent_id(Some("b\u{1f}c")));
+        assert_eq!(key.matches('\u{1f}').count(), 1);
+        assert_eq!(bounded_agent_id(Some("x\ny")), "x?y");
+    }
+
+    #[test]
+    fn sanitized_arguments_replace_the_originals_in_the_forwarded_frame() {
+        let frame = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"img":"RAW"}}}"#;
+        let v = parsed(with_arguments(
+            frame,
+            r#"{"img":"CLEAN"}"#,
+            ArgSource::Key("arguments"),
+        ));
+        assert_eq!(v["params"]["arguments"]["img"], "CLEAN");
+        assert_eq!(v["params"]["name"], "t");
+        assert_eq!(v["id"], 1);
+        let args_frame = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"t","args":{"x":"RAW"}}}"#;
+        let v = parsed(with_arguments(
+            args_frame,
+            r#"{"x":"CLEAN"}"#,
+            ArgSource::Key("args"),
+        ));
+        assert_eq!(v["params"]["args"]["x"], "CLEAN");
+        // A2A: the whole params were the arguments, also when they have an "input" key.
+        let a2a = r#"{"jsonrpc":"2.0","id":3,"method":"tasks/send","params":{"message":"RAW","input":"x"}}"#;
+        let v = parsed(with_arguments(
+            a2a,
+            r#"{"message":"CLEAN","input":"x"}"#,
+            ArgSource::WholeParams,
+        ));
+        assert_eq!(v["params"]["message"], "CLEAN");
+        assert_eq!(v["params"]["input"], "x");
+        assert!(with_arguments("not json", "{}", ArgSource::WholeParams).is_none());
+        assert!(with_arguments(frame, "not json", ArgSource::Key("arguments")).is_none());
+        // The place the arguments came from must still be there; no arguments: nothing to rebuild.
+        assert!(with_arguments(frame, "{}", ArgSource::Key("input")).is_none());
+        assert!(with_arguments(frame, "{}", ArgSource::Missing).is_none());
     }
 }

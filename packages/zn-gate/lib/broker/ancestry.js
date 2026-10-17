@@ -122,20 +122,8 @@ function psTable() {
   return null;
 }
 
-/*
- * The system PowerShell, from the kernel's \\SystemRoot link (as broker/run.js finds cmd.exe): never from
- * SystemRoot, PATH or the current directory, which the agent that runs zn controls. null when it cannot be found.
- */
-function systemPowerShell() {
-  let ps;
-  try { ps = fs.realpathSync.native('\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'); } catch (_) { return null; }
-  if (!/^[A-Za-z]:\\[^%!"]+\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i.test(ps)) return null;
-  try { if (fs.realpathSync.native(ps).toLowerCase() !== ps.toLowerCase()) return null; } catch (_) { return null; }
-  return ps;
-}
-
 function cimTable() {
-  const ps = systemPowerShell();
+  const ps = require('../exe').systemPowerShell();
   if (!ps) return null;
   const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,' +
     '@{n=\'Created\';e={[long](($_.CreationDate.ToUniversalTime() - [datetime]\'1970-01-01\').TotalMilliseconds)}} | ConvertTo-Json -Compress';

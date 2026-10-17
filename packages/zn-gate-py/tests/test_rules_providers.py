@@ -32,6 +32,16 @@ def _body(n, alphabet=ALNUM):
 
 
 # (rule id, Node type or None, positive, negative)
+# Shuffled so that no body starts with a placeholder run such as "0123456789".
+HX_ = "3a7f0c95e1b2d846"
+LA_ = "qa7zt3lm9pw2ny5rb8vx1cd4fg6hj0ks"
+UR_ = ALNUM + "-_"
+
+
+def _uuid():
+    return "-".join([_body(8, HX_), _body(4, HX_), _body(4, HX_), _body(4, HX_), _body(12, HX_)])
+
+
 CASES = [
     ("secret:aws_key_id", "AWS_KEY", "ASIA" + _body(16, UPPER_DIGIT), "ASIA" + _body(15, UPPER_DIGIT)),
     ("secret:gitlab_token", "GITLAB_TOKEN", "glpat-" + _body(20), "glpat-" + _body(19)),
@@ -70,6 +80,76 @@ CASES = [
     ("secret:polar_token", "POLAR_TOKEN", "polar_oat_" + _body(24), "polar_oat_" + _body(19)),
     ("secret:replicate_token", "REPLICATE_TOKEN", "r8_" + _body(37), "r8_" + _body(36)),
     ("secret:supabase_pat", "SUPABASE_PAT", "sbp_" + _body(32), "sbp_" + _body(29)),
+    ("secret:square_token", "SQUARE_TOKEN", "EAAA" + _body(60), "EAAA" + _body(59)),
+    ("secret:square_token", "SQUARE_TOKEN", "sq0csp-" + _body(43), "sq0csp-" + _body(42)),
+    ("secret:discord_bot_token", "DISCORD_BOT_TOKEN", "MTIzNDU2Nzg5MDEyMzQ1Njc4." + _body(6) + "." + _body(30),
+     "MQa7Zt3Lm9Pw2Ny5Rb8Vx1Cd4." + _body(6) + "." + _body(30)),
+    ("secret:discord_bot_token", "DISCORD_BOT_TOKEN", "MTIzNDU2Nzg5MDEyMzQ1Njc." + _body(6) + "." + _body(27),
+     "MTIzNDU2Nzg5MDEyMzQ1Njc." + _body(6) + "." + _body(26)),
+    ("secret:discord_bot_token", "DISCORD_BOT_TOKEN", "MTIzNDU2Nzg5MDEyMzQ1Njc4OTA." + _body(6) + "." + _body(38),
+     "MTIzNDU2Nzg5MDEyMzQ1Njc4OTA." + _body(5) + "." + _body(38)),
+    ("secret:onepassword_sa_token", "ONEPASSWORD_SA_TOKEN", 'ops_eyJ' + _body(250, B64),
+     'ops_eyJ' + _body(249, B64)),
+    ("secret:age_secret_key", "AGE_SECRET_KEY", 'AGE-SECRET-KEY-1' + _body(58, 'QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L'),
+     'AGE-SECRET-KEY-1' + _body(57, 'QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L')),
+    ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'LTAI' + _body(20),
+     'LTAI' + _body(19)),
+    ("secret:artifactory_key", "ARTIFACTORY_KEY", 'AKCp' + _body(69),
+     'AKCp' + _body(68)),
+    ("secret:cloudflare_origin_ca_key", "CLOUDFLARE_ORIGIN_CA_KEY", 'v1.0-' + _body(24, HX_) + '-' + _body(146, HX_),
+     'v1.0-' + _body(24, HX_) + '-' + _body(145, HX_)),
+    ("secret:dynatrace_token", "DYNATRACE_TOKEN", 'dt0c01.' + _body(24) + '.' + _body(64),
+     'dt0c01.' + _body(23) + '.' + _body(64)),
+    ("secret:easypost_key", "EASYPOST_KEY", 'EZAK' + _body(54),
+     'EZAK' + _body(53)),
+    ("secret:flyio_token", "FLYIO_TOKEN", 'fo1_' + _body(43, UR_),
+     'fo1_' + _body(42, UR_)),
+    ("secret:grafana_token", "GRAFANA_TOKEN", 'glsa_' + _body(32) + '_' + _body(8, HX_),
+     'glsa_' + _body(31) + '_' + _body(8, HX_)),
+    ("secret:terraform_cloud_token", "TERRAFORM_CLOUD_TOKEN", _body(14, LA_) + '.atlasv1.' + _body(64, UR_),
+     _body(14, LA_) + '.atlasv1.' + _body(59, UR_)),
+    ("secret:heroku_key_v2", "HEROKU_KEY_V2", 'HRKU-AA' + _body(58, UR_),
+     'HRKU-AA' + _body(57, UR_)),
+    ("secret:notion_token", "NOTION_TOKEN", 'ntn_' + _body(11, '0123456789') + _body(35),
+     'ntn_' + _body(11, '0123456789') + _body(34)),
+    ("secret:perplexity_key", "PERPLEXITY_KEY", 'pplx-' + _body(48),
+     'pplx-' + _body(47)),
+    ("secret:planetscale_token", "PLANETSCALE_TOKEN", 'pscale_tkn_' + _body(40, UR_),
+     'pscale_tkn_' + _body(31, UR_)),
+    ("secret:postman_key", "POSTMAN_KEY", 'PMAK-' + _body(24, HX_) + '-' + _body(34, HX_),
+     'PMAK-' + _body(24, HX_) + '-' + _body(33, HX_)),
+    ("secret:prefect_key", "PREFECT_KEY", 'pnu_' + _body(36),
+     'pnu_' + _body(35)),
+    ("secret:pulumi_token", "PULUMI_TOKEN", 'pul-' + _body(40, HX_),
+     'pul-' + _body(39, HX_)),
+    ("secret:readme_key", "README_KEY", 'rdme_' + _body(70, LA_),
+     'rdme_' + _body(69, LA_)),
+    ("secret:rubygems_key", "RUBYGEMS_KEY", 'rubygems_' + _body(48, HX_),
+     'rubygems_' + _body(47, HX_)),
+    ("secret:brevo_key", "BREVO_KEY", 'xkeysib-' + _body(64, HX_) + '-' + _body(16),
+     'xkeysib-' + _body(64, HX_) + '-' + _body(15)),
+    ("secret:sentry_user_token", "SENTRY_USER_TOKEN", 'sntryu_' + _body(64, HX_),
+     'sntryu_' + _body(63, HX_)),
+    ("secret:shippo_key", "SHIPPO_KEY", 'shippo_live_' + _body(40, HX_),
+     'shippo_live_' + _body(39, HX_)),
+    ("secret:openshift_token", "OPENSHIFT_TOKEN", 'sha256~' + _body(43, UR_),
+     'sha256~' + _body(42, UR_)),
+    ("secret:teams_webhook", "TEAMS_WEBHOOK", 'https://example.webhook.office.com/webhookb2/' + _uuid() + '@' + _uuid() + '/IncomingWebhook/' + _body(32, HX_) + '/' + _uuid(),
+     'https://example.webhook.office.com/webhookb2/' + _uuid() + '@' + _uuid() + '/IncomingWebhook/' + _body(31, HX_) + '/' + _uuid()),
+    ("secret:flyio_token", "FLYIO_TOKEN", 'fm1a_' + _body(100, B64), 'fm1a_' + _body(99, B64)),
+    ("secret:flyio_token", "FLYIO_TOKEN", 'fm1r_' + _body(120, B64) + '==', 'fm1r_' + _body(99, B64)),
+    ("secret:flyio_token", "FLYIO_TOKEN", 'fm2_' + _body(100, B64), 'fm2_' + _body(99, B64)),
+    ("secret:grafana_token", "GRAFANA_TOKEN", 'glc_' + _body(32, B64), 'glc_' + _body(31, B64)),
+    ("secret:easypost_key", "EASYPOST_KEY", 'EZTK' + _body(54), 'EZTK' + _body(53)),
+    ("secret:planetscale_token", "PLANETSCALE_TOKEN", 'pscale_oauth_' + _body(40, UR_), 'pscale_oauth_' + _body(31, UR_)),
+    ("secret:planetscale_token", "PLANETSCALE_TOKEN", 'pscale_pw_' + _body(40, UR_), 'pscale_pw_' + _body(31, UR_)),
+    ("secret:shippo_key", "SHIPPO_KEY", 'shippo_test_' + _body(40, HX_), 'shippo_test_' + _body(39, HX_)),
+    ("secret:postman_key", "POSTMAN_KEY", 'PMAK-' + _body(24, HX_).upper() + '-' + _body(34, HX_).upper(),
+     'PMAK-' + _body(24, HX_).upper() + '-' + _body(33, HX_).upper()),
+    # one character too many, and a prefix glued to a longer word
+    ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'key LTAI' + _body(20) + ' end', 'key LTAI' + _body(21) + ' end'),
+    ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'id=LTAI' + _body(20), 'id=xLTAI' + _body(20)),
+    ("secret:pulumi_token", "PULUMI_TOKEN", 'pul-' + _body(40, HX_), 'pul-' + _body(41, HX_)),
     ("secret:azure_ad_client_secret", "AZURE_AD_CLIENT_SECRET", "abc1Q~" + _body(33), "abc1Q~" + _body(29)),
     ("secret:url_password", "URL_PASSWORD", "https://svc-user:Zq8Lm2Xv9Pt4@files.test/path",
      "https://svc-user:Zq8@files.test/path"),
@@ -136,6 +216,23 @@ class TestProviderFormatsParity(unittest.TestCase):
                     self.assertEqual(self.node[2 * i + 1], [])
                 else:
                     self.assertNotIn(node_type, self.node[2 * i + 1])
+
+    def test_placeholder_bodies_are_not_tokens(self):
+        cases = [
+            ("secret:prefect_key", "PREFECT_KEY", 'pnu_' + '0' * 36),
+            ("secret:pulumi_token", "PULUMI_TOKEN", 'pul-' + 'a' * 40),
+            ("secret:pulumi_token", "PULUMI_TOKEN", 'pul-' + ('0123456789abcdef' * 3)[:40]),
+            ("secret:openshift_token", "OPENSHIFT_TOKEN", 'sha256~' + 'x' * 43),
+            ("secret:openshift_token", "OPENSHIFT_TOKEN", 'sha256~abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ'),
+            ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'LTAI' + 'X' * 20),
+            ("secret:alibaba_key_id", "ALIBABA_KEY_ID", 'LTAIabcdefghijKLMNOP1234'),
+        ]
+        node = _node_types([t for _, _, t in cases])
+        for (rule_id, node_type, text), types in zip(cases, node):
+            with self.subTest(text=text):
+                _, found = R.redact_secrets(text)
+                self.assertNotIn(rule_id, [d["rule"] for d in found])
+                self.assertNotIn(node_type, types)
 
     def test_every_provider_rule_has_a_case(self):
         covered = {rule_id for rule_id, _, _, _ in CASES}

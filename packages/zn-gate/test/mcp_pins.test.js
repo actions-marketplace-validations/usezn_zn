@@ -289,3 +289,18 @@ test('names shown to the user have no control characters', () => {
   const pins = require('../lib/mcp-pins');
   assert.strictEqual(pins.displayName('a\u001b[2K\rb'), 'a?[2K?b');
 });
+
+test('pins approve refuses an AI agent, by its variables or by its program among the parent processes', async () => {
+  const { run } = require('../lib/pins-cli');
+  const saved = process.stderr.write;
+  let err = '';
+  process.stderr.write = (x) => { err += x; return true; };
+  try {
+    assert.equal(await run(['approve', '--all'], { env: { PATH: '/usr/bin' }, ancestry: () => 'codex' }), 2);
+    assert.equal(await run(['approve', '--all'], { env: { CLAUDECODE: '1' }, ancestry: () => null }), 2);
+  } finally {
+    process.stderr.write = saved;
+  }
+  assert.match(err, /zn found it was started from codex\)\. If you are not using an AI agent, open a new terminal window/);
+  assert.match(err, /not by an AI agent \(detected CLAUDECODE\)/);
+});
