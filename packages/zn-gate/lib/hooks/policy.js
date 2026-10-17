@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.14';
+const POLICY_RULES_VERSION = '2026-10-17.15';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1023,7 +1023,7 @@ function shellCodesOf(words, out = new Set()) {
 }
 
 // Shells, PowerShell and cmd: when a wrapper chain does not resolve, the first of these words followed by code still counts.
-const FALLBACK_LAUNCHERS = new Set([...SHELL_NAMES, 'busybox', 'pwsh', 'powershell', 'cmd']);
+const FALLBACK_LAUNCHERS = new Set([...SHELL_NAMES, 'busybox', 'pwsh', 'powershell', 'cmd', 'su', 'sg', 'runuser', 'script', 'flock']);
 // Options of bash and zsh that take a value, which may sit between the shell and -c.
 const SHELL_VALUE_OPTS = new Set(['-O', '+O', '-o', '+o', '--rcfile', '--init-file', '--init-command']);
 const FALLBACK_HEAVY_MAX = 16;
