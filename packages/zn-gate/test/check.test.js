@@ -10,7 +10,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('../lib/agents');
-const { check, report } = require('../lib/check');
+const { check: realCheck, report } = require('../lib/check');
+// These tests are about what they say whatever Node.js runs them: the plugin needs 20.12 or later, so one that
+// supports it is injected (the check for older versions is in init_plugin_node.test.js).
+const check = (opts) => realCheck({ nodeVersion: '22.0.0', ...opts });
 const { tempDir } = require('./helpers/tmp');
 
 const RUNNER = path.join(__dirname, '..', 'lib', 'hooks', 'runner.js');
