@@ -217,26 +217,33 @@ test('real lockfiles and docs of the repository give no span', () => {
 
 /* ---------------- the fix keeps real fakes caught ---------------- */
 
-test('masks are placeholders, a long token with a few repeated characters is not', () => {
-  const mask = 'sk-ant-api03-' + 'x'.repeat(60);
-  assert.strictEqual(hits(mask).length, 0);
-  assert.strictEqual(hits('Authorization: Bearer xoxb-' + 'x'.repeat(11) + '-' + 'x'.repeat(12) + '-' + 'x'.repeat(24)).length, 0);
+test('masks are placeholders, real-looking values with filler or runs stay detected', () => {
+  const types = (t) => hits(t).map((h) => h.type);
+  const tok = (n) => pick(ALNUM, n);
+  // masks: allowed
+  assert.strictEqual(hits('sk-ant-api03-' + 'x'.repeat(40)).length, 0);
+  assert.strictEqual(hits('Authorization: Bearer xoxb-' + 'x'.repeat(11) + '-' + 'x'.repeat(12) + '-' + 'x'.repeat(8)).length, 0);
+  // reviewer cases (PR 283): they must stay detected
+  const real = tok(40);
+  const ant = 'sk-ant-api03-' + pick(B64URL, 93);
+  assert.ok(types('Authorization: Bearer ' + real + 'x'.repeat(40)).includes('BEARER_TOKEN'), 'bearer padded with x');
+  assert.ok(types('Authorization: Bearer ' + real.split('').join('x') + 'x').includes('BEARER_TOKEN'), 'bearer interleaved');
+  assert.ok(types(ant + 'x'.repeat(100)).includes('ANTHROPIC_KEY'), 'anthropic padded');
+  assert.ok(types('sk-ant-api03-' + pick(B64URL, 93).split('').join('-') + '-').includes('ANTHROPIC_KEY'), 'anthropic interleaved');
+  assert.ok(types('Authorization: Bearer ' + 'A'.repeat(22) + tok(18)).includes('BEARER_TOKEN'), 'bearer with A run');
+  assert.ok(types('Authorization: Bearer aaaaaaaa' + tok(12)).includes('BEARER_TOKEN'), 'bearer with a run');
+  assert.ok(types('postgres://app:' + tok(20) + '@db.example.com/x').length > 0, 'url password');
+  assert.ok(types('postgres://app:Zq9!' + '1'.repeat(14) + '@db.example.com/x').length > 0, 'url password with run');
+  // the fakes of the leak bench and random keys
   const { secrets } = generateAll(1337005, { perType: 25 });
-  let anthropic = 0;
-  let bearer = 0;
   for (const s of secrets) {
     const found = hits('value: ' + s.value + '\n');
     assert.ok(found.length > 0 || s.type === 'aws_secret_access_key', s.type + ' lost: ' + s.value.slice(0, 12));
-    if (/^sk-ant-/.test(s.value)) { anthropic++; assert.ok(found.some((h) => h.type === 'ANTHROPIC_KEY'), 'anthropic key not typed'); }
   }
   for (let i = 0; i < 300; i++) {
-    const v = 'sk-ant-api03-' + pick(B64URL, 93);
-    assert.ok(hits('k ' + v).some((h) => h.type === 'ANTHROPIC_KEY'), 'random anthropic key missed');
-    const b = pick(ALNUM, 40);
-    assert.ok(hits('Authorization: Bearer ' + b).some((h) => h.type === 'BEARER_TOKEN'), 'random bearer missed');
-    bearer++;
+    assert.ok(types('k sk-ant-api03-' + pick(B64URL, 93)).includes('ANTHROPIC_KEY'), 'random anthropic key missed');
+    assert.ok(types('Authorization: Bearer ' + tok(40)).includes('BEARER_TOKEN'), 'random bearer missed');
   }
-  assert.ok(anthropic > 0 && bearer > 0);
 });
 
 /* ---------------- known cases: deliberate choices ---------------- */

@@ -27,7 +27,7 @@
 
 // Version of the type catalogue (secret and PII patterns, validators). Bump it
 // when a pattern, validator or type name changes; see CONTRIBUTING.md.
-const SCRUB_RULES_VERSION = '2026-10-17.1';
+const SCRUB_RULES_VERSION = '2026-10-17.2';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -63,19 +63,16 @@ function looksRandom(s, classes = 2, bits = 3.0) {
 const PLACEHOLDER_RE = /^(?:x{3,}|\*{3,}|\.{3,}|-+|_+|<[^>]*>|\$\{?[^}]*\}?|\{\{?[^}]*\}?\}|%\(?[a-z_]*\)?s|:[a-z_]+|\[[^\]]*\])$/i;
 const PLACEHOLDER_WORDS = /(?:^|[^a-z])(?:password|passwd|passw0rd|secret|changeme|change_me|example|placeholder|your[_-]?|redacted|dummy|sample|foobar|hunter2|xxxx|todo|insert|replace|mypass|pass(?:word)?123)(?:[^a-z]|$)/i;
 
-/* A long value where one character makes up half or more of it: a mask such
- * as `xoxb-xxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxx` or `sk-ant-api03-xxxx...`. A
- * random token (base64, hex, base36) never gets near that share. */
-function maskFill(s) {
-  if (s.length < 16) return false;
-  const counts = new Map();
-  let max = 0;
-  for (const ch of s) {
-    const n = (counts.get(ch) || 0) + 1;
-    counts.set(ch, n);
-    if (n > max) max = n;
-  }
-  return max * 2 >= s.length;
+/* The body of a token (after its known prefix) that is a mask: 75 % or more
+ * filler characters (x X * . - _) and at most 8 other characters, as in
+ * `xoxb-xxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxx` or `sk-ant-api03-xxxx...`. Only
+ * the Anthropic key and bearer patterns use it. 0 and A are not filler:
+ * real keys contain runs of them. */
+function maskedBody(body) {
+  if (body.length < 16) return false;
+  let filler = 0;
+  for (const ch of body) if ('xX*.-_'.includes(ch)) filler++;
+  return filler * 4 >= body.length * 3 && body.length - filler <= 8;
 }
 
 function isPlaceholder(s) {
@@ -83,7 +80,6 @@ function isPlaceholder(s) {
   if (PLACEHOLDER_RE.test(s)) return true;
   if (PLACEHOLDER_WORDS.test(s)) return true;
   if (/^(.)\1+$/.test(s)) return true;
-  if (maskFill(s)) return true;
   if (/^(?:0123456789|1234567890|abcdef|qwerty)/i.test(s)) return true;
   return false;
 }
@@ -378,7 +374,7 @@ function findStructured(text, out) {
 
 const PATTERNS = [
   { type: 'ANTHROPIC_KEY', hints: ['sk-ant-'], re: re(NB + 'sk-ant-[a-z]{3,8}\\d{2}-[A-Za-z0-9_-]{32,200}' + NA),
-    check: (v) => !maskFill(v.replace(/^sk-ant-[a-z]+\d{2}-/, '')) },
+    check: (v) => !maskedBody(v.replace(/^sk-ant-[a-z]+\d{2}-/, '')) },
   { type: 'OPENAI_KEY', hints: ['sk-'], re: re(NB + 'sk-(?!ant-)(?:proj-|svcacct-|admin-|or-v1-)?[A-Za-z0-9_-]{40,200}' + NA),
     check: (v) => looksRandom(v.replace(/^sk-(?:proj-|svcacct-|admin-|or-v1-)?/, ''), 2, 3.5) },
   /* Legacy DeepSeek-style key: `sk-` + 32 hex digits. The length and charset
@@ -574,7 +570,8 @@ const PATTERNS = [
    * A JWT is also a JWT span. */
   { type: 'BEARER_TOKEN', hints: null, prefilter: /authorization/i,
     re: re('(Authorization[ \\t]*:[ \\t]*Bearer[ \\t]+)([A-Za-z0-9._~+/=-]{20,})', 'i'),
-    group: 2, check: (v) => !isPlaceholder(v) && !/^__ZN_[A-Z0-9_]+__$/.test(v) },
+    group: 2, check: (v) => !isPlaceholder(v) && !/^__ZN_[A-Z0-9_]+__$/.test(v) &&
+      !maskedBody(v.replace(/^(?:sk-ant-[a-z]+\d{2}-|xox[a-z]-|gh[a-z]_|sk-)/, '')) && !/^(.)\1+$/.test(v.replace(/-/g, '')) },
   /* Generic assignment: sensitive key = quoted high-entropy value. */
   { type: 'SECRET', hints: null, prefilter: /(?:pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|auth)/i,
     re: re('(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|credentials?)[A-Za-z0-9_]{0,64}["\']?\\s*(?:=|:|=>|:=)\\s*["\'`]([^"\'`\\s\\\\]{12,200})["\'`]', 'i'),
