@@ -680,8 +680,11 @@ def _corrupt_ledger(tmp_path):
 
 
 XFAIL_UTF8 = pytest.mark.xfail(
-    strict=True, raises=(UnicodeDecodeError, AssertionError),
+    strict=True, raises=UnicodeDecodeError,
     reason="known issue: the evidence ledger with invalid UTF-8 raises UnicodeDecodeError; fix in progress")
+XFAIL_LAST_HASH = pytest.mark.xfail(
+    strict=True, raises=AssertionError,
+    reason="known issue: a damaged ledger makes the next record restart the chain from the genesis hash; fix in progress")
 
 
 @XFAIL_UTF8
@@ -699,7 +702,7 @@ def test_export_reports_a_ledger_with_invalid_utf8(tmp_path):
     assert export_evidence_ledger(_corrupt_ledger(tmp_path))["valid"] is False
 
 
-@XFAIL_UTF8
+@XFAIL_LAST_HASH
 def test_last_hash_does_not_fall_back_to_genesis_on_a_corrupted_ledger(tmp_path):
     assert get_last_hash(_corrupt_ledger(tmp_path)) != GENESIS_HASH
 
