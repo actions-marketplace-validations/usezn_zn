@@ -646,7 +646,8 @@ function allWords(cmd, posix = false) {
       const w = scan.words[k];
       const prev = k > 0 ? scan.words[k - 1].text : '';
       const isRedirTarget = /^[0-9]*>>?$/.test(prev) || /^[0-9]*>>?./.test(w.text);
-      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^[0-9]*</, ''), redirectTarget: isRedirTarget, head });
+      // Input redirections: <file, 0<file, <>file (read and write), {fd}<file.
+      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard });
     }
     rest = rest.slice(scan.end + 1);
   }
@@ -908,19 +909,25 @@ function bashDenialOf(cmd, opts = {}) {
   // The command is read three times: a backslash before a letter is a Windows
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.
-  const words = [...allWords(cmd, false), ...allWords(cmd, true), ...allWords(String(cmd).replace(/`(.)/gs, '$1'), false)];
-  // Bash $'...' quoting spells characters as escapes ($'\x2eenv' is .env): a fourth reading with them decoded.
-  if (String(cmd).includes("$'")) words.push(...allWords(decodeAnsiC(String(cmd)), true));
+  const readings = [allWords(cmd, false), allWords(cmd, true), allWords(String(cmd).replace(/`(.)/gs, '$1'), false)];
+  // Bash $'...' quoting spells characters as escapes ($'\x2eenv' is .env), and $"..." is a plain "...":
+  // a fourth reading with them decoded.
+  if (/\$['"]/.test(String(cmd))) readings.push(allWords(decodeAnsiC(String(cmd)), true));
+  const words = readings.flat();
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   // The same for the code an interpreter runs (python -c "open('.env')"), where a path sits inside quotes and brackets.
   if (/\$\(|`/.test(String(cmd)) || words.some((w) => CODE_CMDS_RE.test(bareHead(w.head)))) {
-    for (const t of String(cmd).split(/[\s'"`$(){};|&<>=,]+/)) if (t) words.push({ text: t, redirectTarget: false, head: '' });
+    const split = [];
+    for (const t of String(cmd).split(/[\s'"`$(){};|&<>=,]+/)) if (t) split.push({ text: t, redirectTarget: false, head: '', seq: 0 });
+    words.push(...split);
+    readings.push(split);
   }
   // Where a relative .env path may be read from once the command has changed directory (cd app && cat .env).
-  opts.cdBases = cdBasesOf(words, opts);
-  // With $( ) or backticks, part of a path may be the output of another command.
-  opts.substitution = /\$\(|`/.test(String(cmd));
+  // Each reading is followed on its own, so a cd counts once.
+  opts.cdBases = cdBasesOf(readings, opts);
+  opts.elsewhere = new Map();
+  opts.cmdText = String(cmd);
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
   const classified = new Map();
@@ -970,7 +977,7 @@ function bashDenialOf(cmd, opts = {}) {
 const NAME_VALUE_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}=/;
 const ANSI_C_SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' };
 
-/* The command with each bash $'...' word decoded and quoted again as a plain '...' word. */
+/* The command with each bash $'...' word decoded and quoted again as a plain '...' word, and $"..." read as "...". */
 function decodeAnsiC(cmd) {
   return cmd.replace(/\$'((?:[^'\\]|\\[\s\S])*)'/g, (m, body) => {
     const text = body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c[\s\S]|[\s\S])/g, (e, x) => {
@@ -982,8 +989,9 @@ function decodeAnsiC(cmd) {
       if (x[0] === 'c' && x.length === 2) return String.fromCharCode(x.charCodeAt(1) & 0x1f);
       return Object.prototype.hasOwnProperty.call(ANSI_C_SIMPLE, x) ? ANSI_C_SIMPLE[x] : '\\' + x;
     });
-    return "'" + text.replace(/'/g, "'\\''") + "'";
-  });
+    // Bash ends the string at the first NUL character.
+    return "'" + text.split('\0')[0].replace(/'/g, "'\\''") + "'";
+  }).replace(/\$"/g, '"');
 }
 
 // Commands that change the directory the rest of the command runs in.
@@ -997,40 +1005,74 @@ function bareHead(h) {
 }
 
 /* The directories a relative path in the command may be read from: the working directory and every place a cd in it
-   leads to. `unknown` is set when a cd goes somewhere zn cannot follow (cd -, cd $DIR, cd $(...)). */
-function cdBasesOf(words, opts) {
+   may lead to (a cd that fails leaves the command where it was, so earlier places stay). `unknown` is set when a cd goes
+   somewhere zn cannot follow (cd -, cd $DIR, cd $(...)); `moved` when the command has any cd at all. */
+function cdBasesOf(readings, opts) {
   const home = opts.home || os.homedir();
-  const bases = new Set([path.resolve(opts.cwd || process.cwd())]);
+  const env = opts.env || process.env;
+  const cwd = path.resolve(opts.cwd || process.cwd());
+  const all = new Set([cwd]);
   let unknown = false;
-  for (const w of words) {
-    const head = bareHead(w.head);
-    if (!CD_CMDS.has(head)) continue;
-    const t = w.text.replace(/^\(+/, '').replace(/^["']|["']$/g, '');
-    if (!t || t.toLowerCase() === head || (t.startsWith('-') && t !== '-')) continue;
-    if (t === '-' || /[$`*?[{]/.test(t)) { unknown = true; continue; }
-    for (const b of [...bases]) {
-      if (bases.size >= CD_BASES_MAX) { unknown = true; break; }
-      bases.add(path.resolve(b, expandHome(t, home)));
+  let moved = false;
+  for (const words of readings) {
+    let bases = [cwd];
+    for (let k = 0; k < words.length; k++) {
+      // Found by its text, not by the command's head, so { cd x; ... } and if cd x; then ... count too.
+      if (!CD_CMDS.has(words[k].text.replace(/^[({]+/, '').toLowerCase())) continue;
+      moved = true;
+      // The target: the next word of the same simple command that is not an option (cd -P dir, Set-Location -Path dir).
+      let t = '~';
+      for (let j = k + 1; j < words.length && words[j].seq === words[k].seq; j++) {
+        const x = words[j].text.replace(/^["']|["']$/g, '').replace(/[;)}]+$/, '');
+        if (!x || (x.startsWith('-') && x !== '-')) continue;
+        t = x;
+        break;
+      }
+      const target = t === '-' ? '-' : expandEnv(expandHome(t, home), env).text;
+      if (target === '-' || /[$`*?[{]/.test(target)) { unknown = true; continue; }
+      const next = new Set(bases);
+      for (const b of bases) next.add(path.resolve(b, target));
+      if (next.size > CD_BASES_MAX) { unknown = true; continue; }
+      bases = [...next];
+      for (const d of bases) all.add(d);
     }
   }
-  return { dirs: [...bases], unknown };
+  return { dirs: [...all], unknown, moved };
 }
 
-/* A .env path that is not at the working directory: it may be built when the command runs ($DIR/.env, $(...)/.env),
-   or be read after a cd. Refused when zn cannot rule out that it reaches a .env file with values. */
+/* A .env path the working directory alone does not settle: one built while the command runs ($DIR/.env, $(...)/.env),
+   or one read after a cd. Refused when zn cannot rule out that it reaches a .env file with values.
+   The answer is kept per word: the places a cd leads to are the same for the whole command. */
 function dotenvElsewhereDenial(text, opts) {
+  if (opts.elsewhere && opts.elsewhere.has(text)) return opts.elsewhere.get(text);
+  const deny = dotenvElsewhereOf(text, opts);
+  if (opts.elsewhere) opts.elsewhere.set(text, deny);
+  return deny;
+}
+
+function dotenvElsewhereOf(text, opts) {
   const home = opts.home || os.homedir();
-  const expanded = expandEnv(expandHome(text, home), opts.env || process.env).text;
+  const env = opts.env || process.env;
+  const expanded = expandEnv(expandHome(text, home), env).text;
   const missing = !fs.existsSync(resolvedOf(text, opts));
-  if (/[$`]/.test(expanded) || (missing && opts.substitution)) {
+  // $DIR/.env with a variable zn does not know, or a path whose start is the output of another command
+  // (`cat $(echo app)/.env` leaves the word /.env right after the closing bracket).
+  const cmdText = opts.cmdText || '';
+  const afterSubstitution = /[()]/.test(text) || cmdText.includes(')' + text) || cmdText.includes('`' + text);
+  if (/[$`]/.test(expanded) || (missing && afterSubstitution)) {
     return 'zn: this command builds the path of a .env file while it runs (' + text + '), so zn cannot check whether it holds secrets. ' +
       'Name the file directly, for example `cat app/.env`; if it holds values, ask the user to run `' + znCommand('env shadow .env', opts) + '` in that folder.';
   }
-  if (path.isAbsolute(expanded) || !missing) return null;
-  const bases = opts.cdBases || { dirs: [], unknown: false };
+  const bases = opts.cdBases || { dirs: [], unknown: false, moved: false };
+  if (!bases.moved) return null;
+  // $PWD follows the cd; any other absolute path does not.
+  const pwdRef = /\$\{?PWD\b/.test(text);
+  if (path.isAbsolute(expanded) && !pwdRef) return null;
+  const cwd = path.resolve(opts.cwd || process.cwd());
   for (const dir of bases.dirs) {
-    const deny = readDenial(text, { ...opts, cwd: dir });
-    if (deny) return deny;
+    if (dir === cwd) continue;
+    const deny = readDenial(text, { ...opts, cwd: dir, env: pwdRef ? { ...env, PWD: dir } : env });
+    if (deny) return 'zn: this command changes to ' + path.relative(cwd, dir) + ' first. ' + deny.replace(/^zn: /, '');
   }
   if (bases.unknown) {
     return 'zn: this command changes to a folder zn cannot follow and then reads ' + text + ', so zn cannot check whether it holds secrets. ' +
