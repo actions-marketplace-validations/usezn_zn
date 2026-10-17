@@ -153,6 +153,13 @@ are confirmed by the vault daemon:
 These prompts stop prompt injection that drives the agent's tools. They do not
 stop malware running as the same user (see above).
 
+## The saved API key (`zn-gate connect`)
+
+`zn-gate connect` is the only way zn-gate keeps a cloud API key. It stores the key in the system keychain, or in the zn vault when there is no keychain, never in a file, after a person pastes it at a hidden prompt in their own terminal (the command refuses to run under an agent or without a terminal).
+
+- **What an agent cannot do:** read the key through zn's hooks (they refuse keychain queries for zn's own entries and keep `~/.zn` out of reach), see it in tool output (the scrubber hides its format), or switch the cloud check on by writing `~/.zn/config.json`: the marker there holds no key, and without the key nothing is sent.
+- **What it does not stop:** malware running as your user can ask the keychain itself, as it can for any keychain entry (see above). The key can be limited to analyzing text when the server offers that, and `zn-gate disconnect` revokes it.
+
 ## Failure behaviour
 
 - **Vault locked:** the hooks still run the scrubber without it. They redact

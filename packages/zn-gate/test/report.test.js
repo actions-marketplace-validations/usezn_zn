@@ -51,7 +51,7 @@ test('empty data gives a friendly message and the Team line', () => {
   const { code, out } = run([]);
   assert.equal(code, 0);
   assert.match(out, /Nothing to report yet/);
-  assert.match(out, /zn Team/);
+  assert.match(out, /usezn\.com\/team/);
 });
 
 test('a normal week: counts, agents, secret types, new servers, pending, busiest day', () => {
@@ -65,7 +65,7 @@ test('a normal week: counts, agents, secret types, new servers, pending, busiest
   assert.match(out, /waiting for your approval: 1/);
   assert.match(out, /Busiest day: 2026-10-14 \(9 blocked\)/);
   assert.match(out, /Nothing left it/);
-  assert.match(out, /Teams: share these protections across your team with zn Team/);
+  assert.match(out, /Teams can see this for everyone in one place: usezn\.com\/team  \(hide this line: zn-gate report --no-team-line\)/);
 });
 
 test('never prints paths, folders or token values', () => {
@@ -199,16 +199,16 @@ test('--json has the documented schema and no Team line', () => {
   assert.equal(j.pending_tool_changes, 1);
   assert.equal(j.new_mcp_servers.length, 1);
   assert.deepEqual(j.busiest_day, { day: '2026-10-14', blocked: 9 });
-  assert.doesNotMatch(out, /Teams|zn Team/);
+  assert.doesNotMatch(out, /Teams can see|usezn\.com\/team/);
 });
 
 test('--no-team-line and being in a Team hide the Team line', () => {
   reset(); seed();
-  assert.doesNotMatch(run(['--no-team-line']).out, /zn Team/);
+  assert.doesNotMatch(run(['--no-team-line']).out, /usezn\.com\/team/);
   const policy = require('../lib/team/policy');
   const orig = policy.readTeam;
   policy.readTeam = () => ({ v: 1, org: 'acme' });
-  try { assert.doesNotMatch(run([]).out, /zn Team/); } finally { policy.readTeam = orig; }
+  try { assert.doesNotMatch(run([]).out, /usezn\.com\/team/); } finally { policy.readTeam = orig; }
 });
 
 test('ZN_STATS=off with no data says counting is off', () => {

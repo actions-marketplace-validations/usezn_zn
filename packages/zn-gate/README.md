@@ -131,6 +131,14 @@ npx -y zn-gate report
 
 A short summary of the last 7 days on this computer: blocked actions, secrets hidden, new protected MCP servers and tool changes waiting for your approval. It reads only local files, needs no account and sends nothing. `--since 30d` changes the period, `--json` prints it for scripts. [What it shows](https://github.com/usezn/zn/blob/main/docs/report.md).
 
+## Turn on the optional cloud check
+
+```bash
+npx -y zn-gate connect
+```
+
+Optional, and you do it yourself in your own terminal (an agent cannot). It opens usezn.com so you can create an API key, then asks you to paste it at a hidden prompt. The key is kept in your system keychain (or the zn vault when there is no keychain), never in a file, and your agent cannot read it. After that, the text you or your agent send through `analyze_prompt`, with detected secrets removed first, is also checked by the Galvanize 2 classifier at usezn.com. Until you run it, nothing is sent. `zn-gate disconnect` removes the key from this computer. [How it works](https://github.com/usezn/zn/blob/main/docs/connect.md).
+
 ## Check that it works
 
 ```bash
@@ -191,9 +199,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"c
 | Tool-call arguments (`check_tool_call`, `shield`) | Locally | **Never**, in any configuration |
 | MCP tool and parameter descriptions (`shield`) | Locally | **Never**, in any configuration |
 | Counts of what zn-gate did (`zn-gate stats`: checks, blocks, secrets replaced, per secret type) | Written locally to `~/.zn/stats.json` | **Never**, unless you turn on `zn-gate stats share on`: then one report a day with a random installation id, the day, the zn-gate, OS and Node.js versions, the agent and part of zn-gate used most, and the number of secrets found per built-in type (never values, prompts, variable or secret names, paths, hosts or emails). `zn-gate stats share show` shows it first. |
-| Prompts (`analyze_prompt`, `zn-gate analyze`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. Secrets are redacted locally before sending. |
+| Prompts (`analyze_prompt`, `zn-gate analyze`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`, or run `zn-gate connect` yourself. Secrets are redacted locally before sending. |
 
-`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1`. `npx -y zn-gate status` shows the active detection engine and whether the optional cloud check is on. Sharing of usage statistics is off by default and has its own status: `npx -y zn-gate stats share status`. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
+`ZN_API_KEY` alone enables nothing. `zn-gate connect` is the other way to opt in: you run it, in your own terminal, and it keeps the key in your system keychain or the zn vault, never in a file (`zn-gate disconnect` undoes it; [details](https://github.com/usezn/zn/blob/main/docs/connect.md)). `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1` and a connected key. `npx -y zn-gate status` shows the active detection engine and whether the optional cloud check is on. Sharing of usage statistics is off by default and has its own status: `npx -y zn-gate stats share status`. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
 
 > **1.4.0 and earlier:** with `ZN_API_KEY` set, tool output and tool-call arguments not blocked locally were sent to `api.usezn.com` without redaction. 1.4.1 removes that path. See the [CHANGELOG](https://github.com/usezn/zn/blob/main/CHANGELOG.md).
 
@@ -226,7 +234,7 @@ The local engine is a deterministic signature and normalization layer. It is fas
 ## Configuration
 
 - `ZN_CLOUD`: `1` lets `analyze_prompt` / `zn-gate analyze` also query the cloud classifier. Requires `ZN_API_KEY`. Off by default.
-- `ZN_API_KEY`: API key from [usezn.com/dashboard](https://usezn.com/dashboard/). No effect without `ZN_CLOUD=1`.
+- `ZN_API_KEY`: API key from [usezn.com/dashboard](https://usezn.com/dashboard/). No effect without `ZN_CLOUD=1`. (`zn-gate connect` keeps a key for you instead and turns the cloud check on.)
 - `ZN_LOCAL_ONLY`: `true` forces local-only, even with `ZN_CLOUD=1`.
 - `ZN_STRICT`: `1` also blocks the rules that only warn by default (see below).
 - `ZN_LONG_INPUT`: how a long text (over 1,000 characters) is sent to the cloud classifier. `windows` (default) asks it to check overlapping 512-token windows, up to 20, so an injection in the middle or at the end of a long document is not missed; `off` checks only the first 512 tokens. Also `--long-input windows|off`. Windows are slower and slightly more likely to flag a long benign text, and cloud checks are billed by text size with or without windows, so `off` does not lower the count (1 call up to 2,000 characters, 1 more per further 1,000; `billed_calls` in the result); see the [changelog](https://github.com/usezn/zn/blob/main/CHANGELOG.md).

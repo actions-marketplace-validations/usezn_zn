@@ -13,7 +13,7 @@ const { logEvidence, verifyEvidenceLedger } = require('zn-gate/lib/evidence');
 - Returns: `{ verdict: 'allow' | 'block', confidence: number, rule: string, reason: string | null }`
 
 ### `analyze(text, options)`
-- Prompt evaluation: runs local rules first. Queries the cloud classifier only when the user opted in with both an API key (`apiKey` or `ZN_API_KEY`) and `ZN_CLOUD=1`, and `ZN_LOCAL_ONLY` is not `true`. The text is secret-redacted locally before it is sent.
+- Prompt evaluation: runs local rules first. Queries the cloud classifier only when the user opted in, with both an API key (`apiKey` or `ZN_API_KEY`) and `ZN_CLOUD=1` or with `zn-gate connect`, and `ZN_LOCAL_ONLY` is not `true`. The text is secret-redacted locally before it is sent.
 - Returns: `Promise<AssessmentResult>`
 
 ### `sanitizeToolResult(toolName, content, options)`

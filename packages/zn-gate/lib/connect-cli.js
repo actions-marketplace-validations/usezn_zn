@@ -1,0 +1,247 @@
+'use strict';
+
+/**
+ * zn-gate connect      turn on the optional cloud check (opt-in, you in your own terminal)
+ * zn-gate disconnect   forget the key on this computer, and optionally revoke it on usezn.com
+ *
+ * `connect` opens https://usezn.com/connect in the browser, where you create an
+ * API key, then asks you to paste it into a hidden prompt here (no echo; never
+ * an argument or an environment variable). The key is checked once against
+ * https://api.usezn.com over TLS (a fixed host, nothing else is contacted) and
+ * stored in the system keychain or the zn vault, never in a plain file.
+ * See lib/cloud-key.js. Nothing here runs unless you run it, and hooks, the
+ * shield and every other command stay local.
+ */
+
+const cloudKey = require('./cloud-key');
+
+const CONNECT_URL = 'https://usezn.com/connect?source=cli&utm_source=cli';
+// The only host this module talks to, and the routes on it.
+const API_HOST = 'api.usezn.com';
+const VERIFY_PATH = '/prod/usage';          // GET; 200 for a live key, 401 for a revoked or unknown one
+const REVOKE_PATH = '/prod/keys/self';      // DELETE with the key itself, once the API offers it
+const REQUEST_TIMEOUT_MS = 8000;
+const MAX_BODY = 64 * 1024;
+
+const USAGE_CONNECT = 'Usage: zn-gate connect [--reconnect]\n';
+const USAGE_DISCONNECT = 'Usage: zn-gate disconnect\n';
+
+const STORE_WORDS = { keychain: 'your system keychain', vault: 'the zn vault' };
+
+function defaults(io = {}) {
+  return {
+    out: io.out || ((s) => process.stdout.write(s)),
+    err: io.err || ((s) => process.stderr.write(s)),
+    tty: io.tty || require('./broker/tty'),
+    https: io.https || require('https'),
+    openBrowser: io.openBrowser || openBrowser,
+    deps: io.deps,
+    ttyIo: io.ttyIo || {},
+  };
+}
+
+/** Open the URL with the system's own opener, by absolute path. Returns true when a helper started. */
+function openBrowser(url) {
+  const { spawnSync } = require('child_process');
+  const fs = require('fs');
+  let cmd = null;
+  let args = [url];
+  if (process.platform === 'darwin') cmd = '/usr/bin/open';
+  else if (process.platform === 'win32') {
+    cmd = require('./exe').systemPowerShell();
+    args = ['-NoProfile', '-NonInteractive', '-Command', "Start-Process '" + url + "'"];
+  } else {
+    cmd = ['/usr/bin/xdg-open', '/bin/xdg-open', '/usr/local/bin/xdg-open'].find((p) => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } }) || null;
+  }
+  if (!cmd) return false;
+  try {
+    const r = spawnSync(cmd, args, { stdio: 'ignore', timeout: 15000, windowsHide: true });
+    return !r.error && r.status === 0;
+  } catch (_) { return false; }
+}
+
+/** Text with the key (and anything shaped like one) removed. */
+function scrub(text, key) {
+  let s = String(text);
+  if (key) s = s.split(key).join('[key]');
+  return s.replace(/zn_[0-9a-f]{48}/g, '[key]');
+}
+
+/**
+ * One HTTPS request to the fixed zn API host, with the key as a Bearer token.
+ * Resolves {status, body} or {error}. Redirects are not followed, the
+ * certificate is always verified, and the host cannot be changed by the caller.
+ */
+function request(h, method, path, key) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    let req;
+    try {
+      req = h.request({
+        hostname: API_HOST,
+        port: 443,
+        path,
+        method,
+        headers: { Authorization: 'Bearer ' + key, Accept: 'application/json', 'User-Agent': 'zn-gate/' + version() + ' (connect)' },
+        timeout: REQUEST_TIMEOUT_MS,
+        rejectUnauthorized: true,
+      }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { if (body.length < MAX_BODY) body += c; });
+        res.on('end', () => finish({ status: res.statusCode, body }));
+        res.on('error', (e) => finish({ error: scrub(e && e.message, key) }));
+      });
+    } catch (e) { finish({ error: scrub(e && e.message, key) }); return; }
+    req.on('timeout', () => { req.destroy(); finish({ error: 'timed out' }); });
+    req.on('error', (e) => finish({ error: scrub(e && (e.code || e.message), key) }));
+    req.end();
+  });
+}
+
+function version() {
+  try { return require('../package.json').version; } catch (_) { return '0.0.0'; }
+}
+
+/** The scope the server reports for a key, when it reports one (a limited key says "analyze"). */
+function scopeOf(body) {
+  try {
+    const j = JSON.parse(body);
+    const s = (j && j.key && j.key.scope) || (j && j.scope);
+    return typeof s === 'string' && /^[a-z_,:-]{1,40}$/.test(s) ? s : null;
+  } catch (_) { return null; }
+}
+
+/** {state: 'ok' | 'rejected' | 'unverified', scope, detail} */
+async function verifyKey(h, key) {
+  const r = await request(h, 'GET', VERIFY_PATH, key);
+  if (r.error) return { state: 'unverified', scope: null, detail: r.error };
+  if (r.status === 200) return { state: 'ok', scope: scopeOf(r.body), detail: null };
+  if (r.status === 401) return { state: 'rejected', scope: null, detail: null };
+  return { state: 'unverified', scope: null, detail: 'HTTP ' + r.status };
+}
+
+function scopeLine(scope) {
+  if (scope === 'analyze') return 'Key scope: analyze only. It cannot list, create or revoke keys.\n';
+  if (scope) return 'Warning: this key can do more than analyze text (scope: ' + scope + '). Prefer a key limited to analyzing, from usezn.com/connect.\n';
+  return 'Warning: this key is not limited to analyzing text (usezn.com does not report a limited scope yet). Treat it like a password.\n';
+}
+
+function noStoreText() {
+  return [
+    'zn-gate will not keep the key in a plain file, and this computer has no system keychain',
+    '(and the zn vault is not unlocked), so nothing was saved.',
+    '',
+    'To use the cloud check anyway, set the key in your own shell before starting your agent:',
+    '  ZN_API_KEY=<your key> and ZN_CLOUD=1',
+    'A key in ZN_API_KEY alone does nothing. Or run `zn unlock` first and then `zn-gate connect` again.',
+    '',
+  ].join('\n') + '\n';
+}
+
+async function connect(args, io) {
+  const c = defaults(io);
+  const rest = args.filter((a) => a !== '--reconnect');
+  const reconnect = rest.length !== args.length;
+  if (rest.length) {
+    // A key must never travel as an argument (shell history, process list).
+    const looksLikeKey = rest.some((a) => /zn_[A-Za-z0-9._-]{8,}/.test(a) || /^--?(key|api-key|token)\b/.test(a));
+    c.err(looksLikeKey ? 'Never put the key on the command line. Run `zn-gate connect` and paste it at the hidden prompt.\n' : USAGE_CONNECT);
+    return 2;
+  }
+  try { c.tty.requireHuman('zn-gate connect', c.ttyIo); } catch (e) {
+    c.err(String(e.message) + '\n');
+    return 1;
+  }
+  const marker = cloudKey.readMarker();
+  if (marker && !reconnect) {
+    c.out('Already connected: key ...' + (marker.last4 || '????') + ' is in ' + STORE_WORDS[marker.store] + '.\n'
+      + 'Use `zn-gate connect --reconnect` to replace it, or `zn-gate disconnect` to remove it.\n');
+    return 0;
+  }
+  const store = await cloudKey.availableStore(c.deps);
+  if (!store) { c.out(noStoreText()); return 1; }
+
+  c.out('zn-gate connect (optional)\n\n'
+    + 'Right now zn-gate runs entirely on your computer and sends nothing.\n'
+    + 'Connecting turns on an extra check: when you or your agent use the\n'
+    + 'analyze_prompt tool, the text (with secrets hidden first) is also checked by\n'
+    + 'usezn.com. Hooks and file/secret protection stay local and never use it.\n'
+    + 'The key is kept in ' + STORE_WORDS[store] + ', never in a plain file.\n\n');
+  if (!(await c.tty.confirm('Continue?', c.ttyIo))) {
+    c.out('Nothing changed. zn-gate stays fully local.\n');
+    return 1;
+  }
+
+  c.out('\nOpening ' + CONNECT_URL + ' in your browser...\n');
+  if (!c.openBrowser(CONNECT_URL)) c.out('Could not open a browser. Open this address yourself:\n  ' + CONNECT_URL + '\n');
+  c.out('Create a free account (or log in), create an API key, and paste it here.\n');
+
+  let key;
+  try { key = (await c.tty.readHidden('API key (hidden): ', c.ttyIo)).trim(); } catch (e) {
+    c.err('Cancelled. Nothing was saved.\n');
+    return 1;
+  }
+  if (!cloudKey.looksLikeZnKey(key)) {
+    c.err('That does not look like a zn API key (they start with zn_). Nothing was saved.\n');
+    return 1;
+  }
+
+  const v = await verifyKey(c.https, key);
+  if (v.state === 'rejected') {
+    c.err('usezn.com did not accept this key (it may be revoked or mistyped). Nothing was saved.\n');
+    return 1;
+  }
+  if (v.state === 'unverified') {
+    c.out('Could not check the key right now (' + v.detail + '). Saving it anyway; if the cloud does not answer, zn-gate uses its local rules.\n');
+  }
+
+  let where;
+  try { where = await cloudKey.saveKey(key, c.deps); } catch (e) {
+    if (e instanceof cloudKey.NoSecureStore || (e && e.code === 'ZN_NO_SECURE_STORE')) { c.out(noStoreText()); return 1; }
+    c.err('Could not save the key: ' + scrub(e && e.message, key) + '. Nothing was kept.\n');
+    return 1;
+  }
+  c.out(scopeLine(v.scope));
+  c.out('Saved in ' + STORE_WORDS[where] + '. Cloud check is ON for analyze_prompt. Key: ...' + cloudKey.last4(key) + '\n'
+    + 'Turn it off any time: zn-gate disconnect\n'
+    + 'Check what leaves your machine: zn-gate status\n');
+  return 0;
+}
+
+async function disconnect(args, io) {
+  const c = defaults(io);
+  if (args.length) { c.err(USAGE_DISCONNECT); return 2; }
+  try { c.tty.requireHuman('zn-gate disconnect', c.ttyIo); } catch (e) {
+    c.err(String(e.message) + '\n');
+    return 1;
+  }
+  const marker = cloudKey.readMarker();
+  if (!marker) {
+    c.out('Not connected. Nothing to remove.\n');
+    return 0;
+  }
+  const stored = await cloudKey.loadStoredKey(c.deps);
+  let revoked = null;
+  if (stored) {
+    const yes = await c.tty.confirm('Also revoke this key on usezn.com, so it stops working everywhere?', c.ttyIo);
+    if (yes) {
+      const r = await request(c.https, 'DELETE', REVOKE_PATH, stored.key);
+      revoked = !r.error && r.status >= 200 && r.status < 300;
+      if (!revoked) c.out('usezn.com could not revoke the key from here' + (r.error ? ' (' + r.error + ')' : ' (HTTP ' + r.status + ')') + '. Revoke it at usezn.com/api-keys.\n');
+    }
+  }
+  const del = await cloudKey.deleteKey(c.deps);
+  if (!del.removed) {
+    c.err('Could not remove the saved key from ' + STORE_WORDS[del.store] + ': ' + scrub(del.error && del.error.message, stored && stored.key)
+      + (del.store === 'vault' ? '. Run `zn unlock`, then `zn-gate disconnect` again.' : '.') + '\n');
+    return 1;
+  }
+  c.out('Removed the saved key from ' + STORE_WORDS[del.store] + '. The cloud check is off; zn-gate runs only on your computer.\n');
+  if (revoked) c.out('The key was revoked on usezn.com.\n');
+  else if (revoked === null) c.out('The key itself still works until you revoke it at usezn.com/api-keys.\n');
+  return 0;
+}
+
+module.exports = { connect, disconnect, verifyKey, request, scrub, openBrowser, CONNECT_URL, API_HOST, VERIFY_PATH, REVOKE_PATH };

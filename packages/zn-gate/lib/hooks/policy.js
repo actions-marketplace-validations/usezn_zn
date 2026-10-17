@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.15';
+const POLICY_RULES_VERSION = '2026-10-17.16';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1121,6 +1121,36 @@ function codesOfCommand(w, out) {
   }
 }
 
+/*
+ * zn keeps the API key of `zn-gate connect` and the vault identity in the
+ * system keychain, under zn's own service name. A command that asks the
+ * keychain for that entry is refused; the same tools stay free for any other
+ * entry. The tools: macOS `security find-generic-password` /
+ * `find-internet-password`, Linux `secret-tool lookup` / `search`, Windows
+ * `cmdkey /list:` and PowerShell `Get-StoredCredential` / CredRead.
+ */
+const KEYCHAIN_MESSAGE = 'zn: this command would read a zn secret (the API key or the vault key) from the system keychain, which is protected. Ask the user to do it.';
+const KEYCHAIN_TOOLS_RE = /(?:^|[^A-Za-z0-9_-])(?:security|secret-tool|cmdkey|Get-StoredCredential|CredRead|CredEnumerate|vaultcmd)(?![A-Za-z0-9_-])/i;
+const KEYCHAIN_VERBS_RE = /(?:find-(?:generic|internet)-password|dump-keychain|\blookup\b|\bsearch\b|\/list\b|Get-StoredCredential|CredRead|CredEnumerate|vaultcmd)/i;
+
+function keychainQuery(cmd, env) {
+  const text = String(cmd || '');
+  if (text.length > SHELL_SCAN_CAP) return false;
+  const names = ['zn-vault', 'zn-cloud'];
+  const custom = env && env.ZN_KEYCHAIN_SERVICE;
+  if (typeof custom === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(custom) && !names.includes(custom)) names.push(custom);
+  // Quotes, backslashes and backticks inside a name do not change what the tool sees.
+  const forms = [text, text.replace(/['"`\\^]/g, '')];
+  for (const t of forms) {
+    if (!KEYCHAIN_TOOLS_RE.test(t) || !KEYCHAIN_VERBS_RE.test(t)) continue;
+    for (const n of names) {
+      const esc = n.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+      if (new RegExp('(?<![A-Za-z0-9._-])' + esc + '(?![A-Za-z0-9._-])', 'i').test(t)) return true;
+    }
+  }
+  return false;
+}
+
 function bashDenial(cmd, opts = {}) {
   return shellPatchMessage(cmd, bashDenialOf(cmd, opts), opts);
 }
@@ -1129,6 +1159,7 @@ function bashDenialOf(cmd, opts = {}) {
   if (String(cmd || '').length > SHELL_SCAN_CAP) return TOO_LONG_MESSAGE;
   const admin = adminCommand(cmd);
   if (admin) return adminDenial(admin, opts, cmd);
+  if (keychainQuery(cmd, opts.env || process.env)) return KEYCHAIN_MESSAGE;
   // The context (home, project, agent directories) is built once per command.
   opts = { ...opts, ctx: contextOf(opts) };
   // The code of a shell inside the command (sh -c "...") is checked as a command of its own, with the same budget.
