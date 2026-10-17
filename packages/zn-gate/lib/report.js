@@ -19,7 +19,7 @@ const pins = require('./mcp-pins');
 
 const USAGE = 'Usage: zn-gate report [--since 1d-90d] [--json] [--no-team-line]\n';
 const DEFAULT_DAYS = 7;
-const TEAM_LINE = 'Teams: share these protections across your team with zn Team \u2014 https://usezn.com/team (hide this line with --no-team-line)';
+const TEAM_LINE = 'Teams can see this for everyone in one place: usezn.com/team  (hide this line: zn-gate report --no-team-line)';
 const STATS_CAP = 4 * 1024 * 1024;
 const PIN_CAP = 256 * 1024;
 const MAX_PIN_FILES = 500;

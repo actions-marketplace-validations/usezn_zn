@@ -50,7 +50,7 @@
     },
     "scrub": {
       "version_const": "SCRUB_RULES_VERSION",
-      "version": "2026-10-17.2",
+      "version": "2026-10-17.3",
       "ids": [
         "AGE_SECRET_KEY",
         "ALIBABA_KEY_ID",
@@ -130,6 +130,7 @@
         "URL_PASSWORD",
         "VAULT_TOKEN",
         "XAI_KEY",
+        "ZN_API_KEY",
         "exact.AC_PREFIX",
         "exact.AhoCorasick",
         "exact.MIN_LENGTH",
@@ -142,7 +143,7 @@
         "exact.variants"
       ],
       "sha256": {
-        "lib/scrub/patterns.js": "bffbfab9d1400be99892725a5836cccf8c49884c3a5ae3f324176a1587cdd0dc",
+        "lib/scrub/patterns.js": "1f836da9f9cee692d55d1ea46fbe16451b9e02c52f243aaab4cd1e9b147ad145",
         "lib/scrub/exact.js": "d104e85ec6a25e7d6d4b6c428bd0bf8b25d43c3ead313f6872f508b65793bf6b"
       }
     },
@@ -196,7 +197,7 @@
     },
     "policy": {
       "version_const": "POLICY_RULES_VERSION",
-      "version": "2026-10-17.15",
+      "version": "2026-10-17.20",
       "ids": [
         "SHELL_SCAN_CAP",
         "_decodeAnsiC",
@@ -218,7 +219,7 @@
         "writeDenial"
       ],
       "sha256": {
-        "lib/hooks/policy.js": "68bb9de7a931786015f278c15fadcc61adc5644da1c623aa26f4b57834a8bbd5",
+        "lib/hooks/policy.js": "8cfaad1952e1baef79af6f123a8e271bf5085ae0d98de8b8078e48328247b88c",
         "lib/broker/files.js": "45dd8927cc626ac35e8c036e5118ec3c584a3f3a396640c09cee8b545e67c097",
         "lib/broker/markers.js": "301eb1d763e8e88c32e32a02c344be8f44b342b06b61897f3a2d478dbe55d6b4",
         "lib/broker/dotenv.js": "d12a12bd12108a38f84e9f4772ed50f0b015962a1e68f75362142b9b3449e8fe",
