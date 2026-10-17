@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-17
+
+zn-gate 1.11.0 finds more kinds of secrets with `zn-gate scan`, the agent hooks and the Python package (Square and Discord bot tokens, and 24 provider token formats taken from gitleaks), makes `zn-gate check` and `zn-gate init` clearer the first time you run them, and on Windows starts the system PowerShell in a way an AI agent cannot redirect. Update with `npm install -g zn-gate@1.11.0` and `pip install -U zn-gate`.
+
+**If a CI job fails when `zn-gate scan` finds secrets:** it can start failing on tokens of the new types committed to the repository (for example Square, Discord, Grafana or Notion tokens). Look at each finding and rotate any real token.
+
+### Added
+- `zn-gate scan`, the agent hooks and the Python package find 24 more provider token formats, taken from gitleaks (MIT; notice in `THIRD_PARTY_NOTICES.md`): 1Password service accounts, age secret keys, Alibaba Cloud, Artifactory, Cloudflare Origin CA, Dynatrace, EasyPost, Fly.io, Grafana, Terraform Cloud, Heroku (new format), Notion, Perplexity, PlanetScale, Postman, Prefect, Pulumi, ReadMe, RubyGems, Brevo (Sendinblue), Sentry user tokens, Shippo, OpenShift and Microsoft Teams webhooks. Only formats with a fixed provider prefix were taken, each with the same check that its body looks random; gitleaks' generic rules were not. `RULES_VERSION` is `2026-10-16.10`.
+- `zn-gate scan`, the agent hooks and the Python package also find Square access tokens and OAuth secrets (`EAAA...`, `sq0atp-...`, `sq0csp-...`) and Discord bot tokens. A Discord token counts only when its first part encodes a numeric bot id, so dotted random strings are not reported.
+
+### Changed
+- GitHub Action: the default `version` is now 1.10.0, and the README and examples pin the action to the v1.10.0 commit.
+- `zn-gate check` and `zn-gate init` are clearer the first time you run them: `check` lists an agent that is not on this machine as "not found on this machine" instead of offering a setup for it; when zn-gate was only run with `npx`, its setup for Codex CLI, Cursor and OpenCode starts with `npm install -g zn-gate` (`zn hooks install` needs it); when nothing is set up, or an agent is found but not set up, it points to `npx -y zn-gate init`. The help lists `zn hooks install` for every agent, and the "secrets" MCP server note after `zn hooks install` says that it is optional. What the commands do and their exit codes do not change.
+- README, npm and Python package pages: `npx -y zn-gate init` is the one install path shown first; the other ways (one agent at a time, other editors, Python, MCP server only and, in the README, wrapping the MCP servers you already use) are folded under "Other ways to install". The npm, PyPI and MCP Registry descriptions use the same product sentence as the README and the website.
+
+### Fixed
+- The agent hooks: when a command is refused because of a secret file, the message names that file (`.env`) rather than a wildcard word such as `***`, and a patch sent as a shell command (`apply_patch` in Codex) is refused with the file it writes, or with the reason (zn cannot check a patch in that form file by file) and the next step. The decision itself does not change. `POLICY_RULES_VERSION` is `2026-10-16.8`.
+
+### Security
+- `zn-gate pins approve` also refuses to run under an AI agent, found by its environment variables or by its command-line program among the parent processes, like the other commands that only you may run.
+- Rust gateway in `src/` (experimental, not distributed: not part of the npm or PyPI packages or the plugin): bans are kept per tenant namespace, an allowed call forwards the sanitized images, `/mcp/ws` limits messages to 1 MiB, and query-string credentials are accepted only for SSE and WebSocket. See `docs/rust-core.md`.
+- On Windows, the approval dialog of the secret vault, the Windows Credential Manager backend and `zn secret set --clipboard` now start the system PowerShell (Windows PowerShell 5.1) found through the kernel's `\SystemRoot` link, as `zn run` already did for `cmd.exe`, instead of the path in the `SystemRoot` variable, which an AI agent running zn can change. Without the system PowerShell, the dialog is not shown (approvals are refused) and the Credential Manager backend stops with an error that suggests `zn unlock --backend passphrase`.
+
 ## [1.10.0] - 2026-10-16
 
 zn-gate 1.10.0 adds an audit mode with SARIF output to the GitHub Action, makes the commands that only you may run harder for an AI agent to start, gives the right repair in `zn-gate check` and `zn-gate init` when the zn-gate plugin is broken next to zn's own hooks, and checks long shell commands much faster. Update with `npm install -g zn-gate@1.10.0` and `pip install -U zn-gate`.
@@ -480,7 +503,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.10.0...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.11.0...next
+[1.11.0]: https://github.com/usezn/zn/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/usezn/zn/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/usezn/zn/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/usezn/zn/compare/v1.8.2...v1.9.0
