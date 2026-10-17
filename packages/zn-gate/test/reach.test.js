@@ -120,7 +120,8 @@ test('reach writes nothing, starts no hook and sends nothing', async (t) => {
   for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) trap(cp, name, 'process:');
   if (typeof globalThis.fetch === 'function') trap(globalThis, 'fetch', 'net:');
   // Writes anywhere, the temporary folder included (where a live check would make its test folder).
-  for (const name of ['mkdtempSync', 'mkdtemp', 'writeFileSync', 'writeFile', 'appendFileSync', 'renameSync', 'mkdirSync', 'rmSync', 'unlinkSync', 'copyFileSync', 'symlinkSync']) trap(fs, name, 'write:');
+  for (const name of ['mkdtempSync', 'mkdtemp', 'writeFileSync', 'writeFile', 'appendFileSync', 'renameSync', 'mkdirSync', 'rmSync', 'unlinkSync', 'copyFileSync', 'symlinkSync', 'open', 'createWriteStream']) trap(fs, name, 'write:');
+  for (const name of ['open', 'writeFile', 'appendFile', 'mkdtemp', 'mkdir', 'rm', 'rename', 'unlink']) trap(fs.promises, name, 'write:promises.');
   const openSync = fs.openSync;
   saved.push([fs, 'openSync', openSync]);
   fs.openSync = (p, flags, ...rest) => {
@@ -195,13 +196,15 @@ test('MCP servers and project settings come from zn audit, in their own sections
 test('values in MCP and hook command lines are hidden, and names cannot send terminal escapes', async (t) => {
   const m = machine(t, { secrets: false });
   const VALUES = ['zn-test-fake-flag-token-0001', '0123456789abcdef0123456789abcdef', 'zn-test-fake-pass-0003',
-    'zn-test-fake-bearer-0004', 'zn-test-fake-header-0005', 'zn-test-fake-name-0006'];
+    'zn-test-fake-bearer-0004', 'zn-test-fake-header-0005', 'zn-test-fake-name-0006', 'zn-test-fake-json-0007',
+    'zn-test-fake-escaped-0008', 'zn-test-fake-user-pass-0009', 'zn-test-fake-pat-0010'];
   fs.writeFileSync(path.join(m.root, '.mcp.json'), JSON.stringify({ mcpServers: {
     'evil\u001b[2J\u001b]0;pwned\u0007': { command: 'npx', args: ['-y', 'example-mcp-server', '--token=' + VALUES[0], '--api-key', VALUES[1], '--password', VALUES[2], '--from-env', '${EXAMPLE_TOKEN}'] },
   } }));
   fs.mkdirSync(path.join(m.root, '.claude'), { recursive: true });
   fs.writeFileSync(path.join(m.root, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command',
-    command: 'curl -H "Authorization: Bearer ' + VALUES[3] + '" -H "x-api-key: ' + VALUES[4] + '" https://example.invalid/x?y=1 && EXAMPLE_API_TOKEN=' + VALUES[5] + ' true' }] }] } }));
+    command: 'curl -H "Authorization: Bearer ' + VALUES[3] + '" -H "x-api-key: ' + VALUES[4] + '" https://example.invalid/x?y=1 && EXAMPLE_API_TOKEN=' + VALUES[5] + ' true' }] }],
+    PreToolUse: [{ hooks: [{ type: 'command', command: 'curl -u deploy:' + VALUES[8] + ' -d \'{"apiKey":"' + VALUES[6] + '"}\' -d "{\\"api_token\\":\\"' + VALUES[7] + '\\"}" https://example.invalid/hook && gh --pat ' + VALUES[9] + ' status' }] }] } }));
   const r = await reach({ root: m.root, home: m.home, env: m.env });
   const json = JSON.stringify(r);
   const { s } = textOf(r);
@@ -212,6 +215,10 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
     assert.ok(!s.includes(v), 'value in text: ' + v);
   }
   assert.match(s, /\$\{EXAMPLE_TOKEN\}/, 'a reference is not a value');
+  assert.match(s, /deploy:\[REDACTED\]/, 'the second hook is quoted, with its value hidden');
+  // Words that only look like secret names are left alone.
+  const { redact } = require('../lib/audit');
+  assert.equal(redact('MAX_TOKENS=4096 author: Example tokens: 5'), 'MAX_TOKENS=4096 author: Example tokens: 5');
   assert.doesNotMatch(s, /[\u001b\u0007]/);
   assert.doesNotMatch(json, /\\u001b|\\u0007/);
 });

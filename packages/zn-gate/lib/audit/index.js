@@ -72,18 +72,22 @@ function redact(text) {
   return redactByContext(s);
 }
 
-// Values in an unknown format, found by what precedes them: a credential flag (--token v, --api-key=v),
-// an auth header (Authorization: Bearer v, x-api-key: v), a bearer token, or NAME_TOKEN=v.
+// Values in an unknown format, found by what precedes them: a credential flag (--token v, --api-key=v,
+// --pat v), user:password after -u, an auth header (Authorization: Bearer v, x-api-key: v), a bearer token,
+// or a name that ends in a secret word (API_TOKEN=v, "apiKey": "v", also inside escaped JSON).
+// The secret word must end the name, so MAX_TOKENS or author are not secrets.
 // References ($VAR, ${VAR}, %VAR%), zn markers and values already redacted are kept.
 const SECRET_WORD = '(?:token|secret|passw(?:or)?d|pwd|api[-_]?key|access[-_]?key|private[-_]?key|auth|credentials?)';
+const QUOTED = '\\\\?"[^"\\\\\\n]{1,512}\\\\?"|\'[^\'\\n]{1,512}\'';
 const CONTEXT_RES = [
-  new RegExp('(--?[A-Za-z0-9]{0,40}' + SECRET_WORD + '[A-Za-z0-9-]{0,40}(?:=|\\s{1,8}))("[^"\\n]{1,512}"|\'[^\'\\n]{1,512}\'|[^\\s"\'`]{1,512})', 'gi'),
+  new RegExp('(--?[A-Za-z0-9]{0,40}(?:' + SECRET_WORD + '|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}(?:=|\\s{1,8}))(' + QUOTED + '|[^\\s"\'`]{1,512})', 'gi'),
+  new RegExp('((?:^|\\s)(?:-u|--user)(?:=|\\s{1,8})[^\\s:"\']{1,128}:)([^\\s"\'@]{1,512})', 'g'),
   new RegExp('(\\b(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)\\s{0,8}:\\s{0,8}(?:(?:bearer|basic|token)\\s{1,8})?)([^\\s"\'\\\\]{1,512})', 'gi'),
   new RegExp('(\\bbearer\\s{1,8})([A-Za-z0-9._~+/=-]{8,512})', 'gi'),
-  new RegExp('(\\b[A-Za-z0-9_]{0,60}' + SECRET_WORD + '[A-Za-z0-9_]{0,60}\\s{0,8}[=:]\\s{0,8})("[^"\\n]{1,512}"|\'[^\'\\n]{1,512}\'|[^\\s"\',;`]{1,512})', 'gi'),
+  new RegExp('(\\b[A-Za-z0-9_]{0,60}' + SECRET_WORD + '(?![A-Za-z0-9])\\\\?["\']?\\s{0,8}[=:]\\s{0,8})(' + QUOTED + '|[^\\s"\'\\\\,;`]{1,512})', 'gi'),
 ];
 function keepValue(v) {
-  const t = v.replace(/^["']|["']$/g, '');
+  const t = v.replace(/^\\?["']|\\?["']$/g, '');
   return !t || /^(?:\$\{?[A-Za-z_]|%[A-Za-z_]|\[REDACTED|__ZN_|<)/.test(t);
 }
 function redactByContext(s) {
@@ -91,7 +95,9 @@ function redactByContext(s) {
   return s;
 }
 
-// Never clip before redacting: a value cut in half is no longer recognised.
+// Never clip before redacting: a value cut in half is no longer recognised. Text is cut at REDACT_SPAN
+// only where far less than that is shown afterwards, so the cut part never reaches a finding.
+const REDACT_SPAN = 8192;
 function clip(s, max) {
   const t = String(s).replace(/\s+/g, ' ').trim();
   return t.length > max ? t.slice(0, max - 3) + '...' : t;
@@ -119,7 +125,8 @@ class FileCtx {
   }
 
   redactedLine(ln) {
-    if (!this.redacted.has(ln)) this.redacted.set(ln, redact(this.lines[ln - 1] || ''));
+    // Only the start of a long line is ever shown, so only that much is redacted (well past what is shown).
+    if (!this.redacted.has(ln)) this.redacted.set(ln, redact((this.lines[ln - 1] || '').slice(0, REDACT_SPAN)));
     return this.redacted.get(ln);
   }
 
@@ -188,7 +195,7 @@ class FileCtx {
       file: this.rec.display,
       line: ln,
       title: (extra && extra.title) || rule.title,
-      detail: clip(redact(detail), 600),
+      detail: clip(redact(String(detail).slice(0, REDACT_SPAN)), 600),
       evidence: clip((extra && extra.evidence != null) ? redact(extra.evidence) : this.redactedLine(ln), EVIDENCE_MAX),
       fix: (extra && extra.fix) || rule.fix,
       references: (extra && extra.references) || rule.references.slice(),
