@@ -1045,7 +1045,12 @@ function dotenvElsewhereOf(text, opts) {
   for (const dir of bases.dirs) {
     if (dir === cwd) continue;
     const deny = readDenial(text, { ...opts, cwd: dir, env: pwdRef ? { ...env, PWD: dir } : env });
-    if (deny) return 'zn: this command changes to ' + path.relative(cwd, dir) + ' first. ' + deny.replace(/^zn: /, '');
+    if (deny) {
+      // The folder as the user would type it: relative below the current folder, absolute above it.
+      const rel = path.relative(cwd, dir);
+      const where = slash(rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : dir);
+      return 'zn: this command changes to ' + where + ' first. ' + deny.replace(/^zn: /, '');
+    }
   }
   if (bases.unknown) {
     return 'zn: this command changes to a folder zn cannot follow and then reads ' + text + ', so zn cannot check whether it holds secrets. ' +
