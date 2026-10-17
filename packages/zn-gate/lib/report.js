@@ -87,7 +87,25 @@ const num = (x) => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? Math.
 const own = (o) => Object.entries(o).slice(0, MAX_ENTRIES);
 
 const RUNNERS = new Set(['npx', 'bunx', 'uvx', 'pipx', 'node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'py', 'tsx', 'ts-node', 'pnpm', 'yarn', 'npm', 'uv']);
-const SKIP_WORDS = new Set(['run', 'dlx', 'exec', 'x', 'tool']);
+// Options of each runner that take no value (from their --help). Any other option is assumed to take one.
+const NPM_FLAGS = ['-y', '--yes', '-n', '--no', '-q', '--quiet', '--no-install', '--prefer-offline', '--offline', '--ignore-scripts', '--no-progress', '--silent'];
+const FLAG_ONLY = {
+  npx: new Set(NPM_FLAGS),
+  npm: new Set(NPM_FLAGS),
+  pnpm: new Set(['-s', '--silent', '--shell-mode', '-y', '--yes']),
+  yarn: new Set(['-q', '--quiet', '--silent']),
+  bunx: new Set(['--bun', '--no-install', '--silent', '--verbose']),
+  bun: new Set(['--bun', '--silent']),
+  uvx: new Set(['--isolated', '--no-cache', '-n', '--no-progress', '--quiet', '-q', '--verbose', '-v', '--offline', '--native-tls', '--no-config', '--refresh', '--no-managed-python', '--managed-python']),
+  uv: new Set(['--isolated', '--no-cache', '--quiet', '-q', '--verbose', '-v', '--offline', '--native-tls', '--no-config']),
+  pipx: new Set(['--quiet', '-q', '--verbose', '-v', '--no-cache']),
+  node: new Set(['--no-warnings', '--harmony', '--enable-source-maps', '--trace-warnings']),
+  nodejs: new Set(['--no-warnings']),
+  python: new Set(['-u', '-B', '-E', '-s', '-S', '-I', '-O', '-OO', '-q', '-v', '-b']),
+  python3: new Set(['-u', '-B', '-E', '-s', '-S', '-I', '-O', '-OO', '-q', '-v', '-b']),
+  deno: new Set(['-A', '--allow-all', '-q', '--quiet', '--no-prompt']),
+};
+const SKIP_WORDS =new Set(['run', 'dlx', 'exec', 'x', 'tool']);
 
 /**
  * How a server is named in the report: the program and the package or script file, with NO arguments
@@ -103,9 +121,16 @@ function safeName(cmd) {
   const program = base(tokens[i]);
   if (!ok(program)) return 'MCP server';
   if (!RUNNERS.has(program)) return program;
+  const flagOnly = FLAG_ONLY[program] || new Set();
   for (let j = i + 1; j < tokens.length; j++) {
     const t = tokens[j];
-    if (t.startsWith('-') || t.includes('=') || SKIP_WORDS.has(t)) continue;
+    if (t.startsWith('-')) {
+      // An option written without "=" takes the next word as its value, unless it is known to take none:
+      // a value must never be mistaken for the package.
+      if (!t.includes('=') && !flagOnly.has(t)) j++;
+      continue;
+    }
+    if (t.includes('=') || SKIP_WORDS.has(t)) continue;
     const isPath = /[\\/]/.test(t) && !t.startsWith('@');
     const target = isPath ? base(t) : t;
     return ok(target) ? `${program} ${target}` : program;
