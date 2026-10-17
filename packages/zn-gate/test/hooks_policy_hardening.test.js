@@ -579,6 +579,74 @@ test('a read placed after thousands of chained commands is still found, and a lo
   assert.equal(policy.bashDenial(heredoc, o), null, 'a 1200-line heredoc writing a file');
 });
 
+/* ------------------- here-document bodies read as data ------------------- */
+
+test('the body of a here-document a program reads as data is not refused for a glob or a path in it', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.mkdirSync(path.join(dir, '.aws'));
+  fs.writeFileSync(path.join(dir, '.aws', 'credentials'), '[default]\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  // Code with a glob, brackets, braces and secret-looking paths, written to a file: all data.
+  let body = '';
+  for (let i = 0; body.length < 90 * 1024; i++) body += 'const v' + i + ' = a[' + i + '] * b; // .env ~/.aws/credentials "quoted"\n';
+  const cmd = (head, tail) => head + '\n' + body + tail;
+  assert.equal(policy.bashDenial(cmd("cat > generated.js <<'EOF'", 'EOF'), o), null, 'quoted delimiter');
+  assert.equal(policy.bashDenial(cmd('cat > generated.js <<EOF', 'EOF'), o), null, 'bare delimiter');
+  assert.equal(policy.bashDenial(cmd('tee generated.js <<"EOF"', 'EOF'), o), null, 'double-quoted delimiter');
+  assert.equal(policy.bashDenial(cmd("dd of=generated.js <<'EOF'", 'EOF'), o), null, 'dd');
+  assert.equal(policy.bashDenial(cmd('cat > generated.js <<-EOF', '\tEOF'), o), null, '<<- strips tabs');
+  assert.equal(policy.bashDenial(cmd('cat > generated.js <<\\EOF', 'EOF'), o), null, 'backslash-quoted delimiter');
+  assert.equal(policy.bashDenial(cmd("sudo tee /tmp/generated.js <<'EOF'", 'EOF'), o), null, 'behind a wrapper');
+  // Two here-documents on one line: each body ends at its own delimiter.
+  assert.equal(policy.bashDenial("cat <<'A' <<'B'\n* ? [a-z]\nA\n{ }\nB", o), null, 'two bodies on one line');
+});
+
+test('a here-document that runs its body as code, or a read on the command line, is still refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-deny-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.mkdirSync(path.join(dir, '.aws'));
+  fs.writeFileSync(path.join(dir, '.aws', 'credentials'), '[default]\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  const body = Array.from({ length: 2000 }, (_, i) => 'line ' + i).join('\n');
+  // The read stays on the command line, before or after the here-document.
+  assert.ok(policy.bashDenial("cat .env <<'EOF'\n" + body + '\nEOF', o), 'read before the here-document');
+  assert.ok(policy.bashDenial("cat <<'EOF'\n" + body + '\nEOF\ncat .env', o), 'read after the here-document');
+  // A bare delimiter expands the body, so a substitution in it still reads the file.
+  assert.ok(policy.bashDenial('cat > out.txt <<EOF\n$(cat .env)\nEOF', o), 'command substitution');
+  assert.ok(policy.bashDenial('cat > out.txt <<EOF\n`cat .aws/credentials`\nEOF', o), 'backticks');
+  assert.ok(policy.bashDenial('cat > out.txt <<EOF\n$(cat .env)\n' + body, o), 'unterminated body');
+  // A shell, an interpreter or apply_patch runs the body as code, so it keeps its check.
+  assert.ok(policy.bashDenial("bash <<'EOF'\ncat .env\nEOF", o), 'bash reads code from stdin');
+  assert.ok(policy.bashDenial("sudo bash <<EOF\ncat .aws/credentials\nEOF", o), 'bash behind a wrapper');
+  assert.ok(policy.bashDenial("python3 - <<'PY'\nopen('.env').read()\nPY", o), 'python reads code from stdin');
+  // A quoted delimiter turns the expansions off: the same text is data.
+  assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n$(cat .env)\nEOF", o), null, 'quoted: data');
+  // A comment that spells a here-document does not eat the command after it.
+  assert.ok(policy.bashDenial('# example: cat <<EOF\ncat .env', o), 'comment');
+  // `<<` in arithmetic is a shift, not a here-document.
+  assert.ok(policy.bashDenial('echo $(( 1 <<2 ))\ncat .env\n2', o), 'arithmetic shift');
+  // A glob on the command line itself is still refused.
+  assert.ok(policy.bashDenial('cat *', o), 'glob on the command line');
+});
+
+test('a 100 KB here-document read as data is checked in milliseconds', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-big-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  const line = 'export const value = a * b + 1; // 100 KB of code written to a file\n';
+  let body = '';
+  while (body.length + line.length < 100 * 1024 - 64) body += line;
+  const cmd = "cat > generated.js <<'EOF'\n" + body + 'EOF';
+  const t0 = process.hrtime.bigint();
+  const deny = policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.equal(deny, null, 'the body is data, so the command is allowed');
+  assert.ok(ms < 25, 'checked in ' + ms + ' ms');
+});
+
 test('thousands of cd in one command are followed within the time budget', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-manycd-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.15';
+const POLICY_RULES_VERSION = '2026-10-17.16';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1121,6 +1121,251 @@ function codesOfCommand(w, out) {
   }
 }
 
+/* --------------------------- here-documents --------------------------- */
+
+/*
+ * The body of a here-document (`cat > f <<'EOF' ... EOF`) is data the shell
+ * writes to a file or feeds to a program that reads it as data, not words of
+ * the command line: a `*` in it names no file and a path in it is not read.
+ * Its body is dropped before the command is read, which also keeps a 100 KB
+ * write cheap to check. A quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`)
+ * turns the expansions off, so the body is dropped whole. A bare delimiter
+ * (`<<EOF`) still expands the body first, so its `$( )`, backticks and `$VAR`
+ * are put back as words; dropping them would hide a substitution that reads a
+ * secret file. A body a program runs as code (see HEREDOC_DATA_CMDS) is not
+ * dropped: it keeps the check it had.
+ */
+
+// A here-document operator starts a redirect. `<<` glued to the end of a word
+// (`x<<y`, an arithmetic shift) is left alone: missing one only means its body
+// is checked as if it were code, which is the safe side.
+const HEREDOC_START_RE = /[\s;&|(\n]/;
+const HEREDOC_SPECIAL_RE = /[<>('"\\#\n]/g;
+
+/** The here-document operator at `from` (`<<`, `<<-`) with its delimiter, or null. */
+function heredocAt(s, from) {
+  if (s[from] !== '<' || s[from + 1] !== '<' || s[from + 2] === '<') return null;
+  if (from > 0 && !HEREDOC_START_RE.test(s[from - 1])) return null;
+  let j = from + 2;
+  const stripTabs = s[j] === '-';
+  if (stripTabs) j++;
+  let quoted = false;
+  let delimiter = '';
+  while (j < s.length) {
+    const c = s[j];
+    if (c === "'" || c === '"') {
+      const close = s.indexOf(c, j + 1);
+      if (close === -1) return null;
+      quoted = true;
+      delimiter += s.slice(j + 1, close);
+      j = close + 1;
+      continue;
+    }
+    if (c === '\\') {
+      if (j + 1 >= s.length) return null;
+      quoted = true;
+      delimiter += s[j + 1];
+      j += 2;
+      continue;
+    }
+    if (/[\s;&|()<>]/.test(c)) break;
+    delimiter += c;
+    j++;
+  }
+  if (!delimiter) return null;
+  return { doc: { delimiter, quoted, stripTabs }, end: j };
+}
+
+/** What an unquoted here-document body still runs, as words: its `$( )`, backticks and `$VAR`. */
+function heredocExpansions(body) {
+  let out = '';
+  const add = (text) => { out += (out && !/\s$/.test(out) ? ' ' : '') + text; };
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '\\') { i++; continue; }
+    if (ch === '`') {
+      const end = body.indexOf('`', i + 1);
+      const stop = end === -1 ? body.length : end + 1;
+      add(body.slice(i, stop));
+      i = stop - 1;
+      continue;
+    }
+    if (ch !== '$') continue;
+    const n = body[i + 1];
+    if (n === '(') {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < body.length; j++) {
+        if (body[j] === '(') depth++;
+        else if (body[j] === ')' && --depth === 0) { j++; break; }
+      }
+      add(body.slice(i, j));
+      i = j - 1;
+    } else if (n === '{') {
+      const end = body.indexOf('}', i + 2);
+      const stop = end === -1 ? body.length : end + 1;
+      add(body.slice(i, stop));
+      i = stop - 1;
+    } else {
+      const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(body.slice(i + 1));
+      if (name) { add('$' + name[0]); i += name[0].length; }
+    }
+  }
+  return out;
+}
+
+/*
+ * Drop the bodies of the pending here-documents from `s`, starting at the line
+ * after their operator, and return the index to read on from. `keep` receives
+ * what is left of each unquoted body. A delimiter with no closing line makes
+ * the shell feed the rest of the input as the body (it is not run), so the rest
+ * is dropped too.
+ */
+function skipHeredocBodies(s, from, pending, keep) {
+  let cursor = from;
+  for (const doc of pending) {
+    const bodyStart = cursor;
+    let termStart = -1;
+    let pos = cursor;
+    for (;;) {
+      const nl = s.indexOf('\n', pos);
+      const lineEnd = nl === -1 ? s.length : nl;
+      let line = s.slice(pos, lineEnd);
+      if (doc.stripTabs) line = line.replace(/^\t+/, '');
+      if (line.replace(/\r$/, '') === doc.delimiter) { termStart = pos; break; }
+      if (nl === -1) break;
+      pos = nl + 1;
+    }
+    const bodyEnd = termStart === -1 ? s.length : termStart;
+    if (!doc.quoted) keep(heredocExpansions(s.slice(bodyStart, bodyEnd)));
+    if (termStart === -1) return s.length;
+    const nl = s.indexOf('\n', termStart);
+    cursor = nl === -1 ? s.length : nl + 1;
+  }
+  return cursor;
+}
+
+/**
+ * The command with the bodies of its here-documents removed (see above). The
+ * operator and its delimiter stay in place; a comment runs to the end of its
+ * line, and a `<<` inside a quote or in arithmetic is not an operator.
+ */
+function stripHeredocs(cmd) {
+  const s = String(cmd);
+  if (s.indexOf('<<') === -1) return s;
+  const parts = [];
+  const keep = (t) => { if (t) parts.push(t); };
+  let quote = null;
+  let pending = [];
+  let i = 0;
+  while (i < s.length) {
+    if (quote === "'") {
+      const end = s.indexOf("'", i + 1);
+      keep(s.slice(i, end === -1 ? s.length : end + 1));
+      i = end === -1 ? s.length : end + 1;
+      if (end !== -1) quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      let j = i;
+      while (j < s.length && s[j] !== '"') j += s[j] === '\\' ? 2 : 1;
+      const stop = Math.min(j + 1, s.length);
+      keep(s.slice(i, stop));
+      i = stop;
+      if (j < s.length) quote = null;
+      continue;
+    }
+    HEREDOC_SPECIAL_RE.lastIndex = i;
+    const m = HEREDOC_SPECIAL_RE.exec(s);
+    if (!m) { keep(s.slice(i)); break; }
+    if (m.index > i) { keep(s.slice(i, m.index)); i = m.index; }
+    const ch = s[i];
+    if (ch === "'" || ch === '"') { quote = ch; keep(ch); i++; continue; }
+    if (ch === '\\') { keep(s.slice(i, i + 2)); i += 2; continue; }
+    if (ch === '#' && (i === 0 || HEREDOC_START_RE.test(s[i - 1]))) {
+      const nl = s.indexOf('\n', i);
+      if (nl === -1) { keep(s.slice(i)); break; }
+      keep(s.slice(i, nl));
+      i = nl;
+      continue;
+    }
+    if (ch === '\n') {
+      keep('\n');
+      i++;
+      if (pending.length) {
+        i = skipHeredocBodies(s, i, pending, keep);
+        pending = [];
+      }
+      continue;
+    }
+    if (ch === '<') {
+      const h = heredocAt(s, i);
+      if (h) {
+        if (heredocIsData(s, i)) pending.push(h.doc);
+        keep(s.slice(i, h.end));
+        i = h.end;
+        continue;
+      }
+    }
+    // Arithmetic (`$(( ))`, `(( ))`): a `<<` inside it is a shift, not a here-document.
+    if (ch === '(' && s[i + 1] === '(') {
+      let depth = 0;
+      let j = i;
+      for (; j < s.length && s[j] !== '\n'; j++) {
+        if (s[j] === '(') depth++;
+        else if (s[j] === ')' && --depth === 0) { j++; break; }
+      }
+      if (depth === 0 && s[j - 1] === ')') { keep(s.slice(i, j)); i = j; continue; }
+    }
+    keep(ch);
+    i++;
+  }
+  return parts.join('');
+}
+
+/*
+ * A here-document whose body a program reads as plain data (`cat > f`, `tee`,
+ * `dd`) cannot leak a secret by reading it, so its body is dropped before the
+ * command is checked. A body a program runs as code (a shell, an interpreter,
+ * apply_patch) still holds a command or a file pattern, so it keeps the check
+ * it had. Only the data programs are listed: an unknown program keeps the
+ * check, which is the safe side.
+ */
+const HEREDOC_DATA_CMDS = new Set(['cat', 'tac', 'tee', 'dd', 'tr', 'sort', 'uniq', 'wc', 'head', 'tail', 'cut', 'paste',
+  'join', 'grep', 'egrep', 'fgrep', 'rg', 'diff', 'cmp', 'comm', 'jq', 'base64', 'nl', 'od', 'xxd', 'hexdump',
+  'sha256sum', 'sha1sum', 'sha512sum', 'md5sum', 'shasum', 'cksum', 'gzip', 'gunzip', 'zcat', 'bzip2', 'bunzip2',
+  'xz', 'unxz', 'zstd', 'split', 'fold', 'expand', 'unexpand', 'fmt', 'column', 'rev']);
+
+/** The program a here-document feeds, read through assignments, reserved words and wrappers (`sudo cat`). */
+function heredocConsumer(segment) {
+  const words = segment.split(/\s+/).filter(Boolean).map((text) => ({ text }));
+  let k = 0;
+  while (k < words.length && (ASSIGNMENT_RE.test(words[k].text) || RESERVED_WORDS.has(words[k].text))) k++;
+  for (let guard = 0; k < words.length && guard < 16; guard++) {
+    const name = programName(words[k].text);
+    if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) return name;
+    k = skipWrapper(words, k, name);
+  }
+  return k < words.length ? programName(words[k].text) : '';
+}
+
+/** Start of the simple command that holds the operator at `i`: the last separator before it. */
+function heredocCommandStart(s, i) {
+  let start = i;
+  while (start > 0) {
+    const c = s[start - 1];
+    if (c === '\n' || c === ';' || c === '&' || c === '|' || c === '(' || c === ')' || c === '{' || c === '}' || c === '`') break;
+    start--;
+  }
+  return start;
+}
+
+/** Whether the body of the here-document at `i` is read as plain data, so it can be dropped. */
+function heredocIsData(s, i) {
+  const program = heredocConsumer(s.slice(heredocCommandStart(s, i), i));
+  return program === '' || HEREDOC_DATA_CMDS.has(program);
+}
+
 function bashDenial(cmd, opts = {}) {
   return shellPatchMessage(cmd, bashDenialOf(cmd, opts), opts);
 }
@@ -1134,13 +1379,15 @@ function bashDenialOf(cmd, opts = {}) {
   // The code of a shell inside the command (sh -c "...") is checked as a command of its own, with the same budget.
   const depth = opts.depth || 0;
   if (!depth || !opts.budget) opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
+  // The bodies of the here-documents are data, not command-line words, and are dropped first.
+  const text = stripHeredocs(cmd);
   // The command is read three times: a backslash before a letter is a Windows
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.
-  const readings = [allWords(cmd, false), allWords(cmd, true), allWords(String(cmd).replace(/`(.)/gs, '$1'), false)];
+  const readings = [allWords(text, false), allWords(text, true), allWords(text.replace(/`(.)/gs, '$1'), false)];
   // Bash $'...' quoting spells characters as escapes ($'\x2eenv' is .env), and $"..." is a plain "...":
   // a fourth reading with them decoded.
-  if (/\$['"]/.test(String(cmd))) readings.push(allWords(decodeAnsiC(String(cmd)), true));
+  if (/\$['"]/.test(text)) readings.push(allWords(decodeAnsiC(text), true));
   // A reading that could not be split to the end is refused, not checked in part.
   if (readings.some((r) => r.truncated)) return TOO_MANY_MESSAGE;
   const words = readings.flat();
@@ -1157,9 +1404,9 @@ function bashDenialOf(cmd, opts = {}) {
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   // The same for the code an interpreter runs (python -c "open('.env')"), where a path sits inside quotes and brackets.
-  if (/\$\(|`/.test(String(cmd)) || words.some((w) => CODE_CMDS_RE.test(bareHead(w.head)))) {
+  if (/\$\(|`/.test(text) || words.some((w) => CODE_CMDS_RE.test(bareHead(w.head)))) {
     const split = [];
-    for (const t of String(cmd).split(/[\s'"`$(){};|&<>=,]+/)) if (t) split.push({ text: t, redirectTarget: false, head: '', seq: 0 });
+    for (const t of text.split(/[\s'"`$(){};|&<>=,]+/)) if (t) split.push({ text: t, redirectTarget: false, head: '', seq: 0 });
     words.push(...split);
     readings.push(split);
   }
@@ -1168,7 +1415,7 @@ function bashDenialOf(cmd, opts = {}) {
   opts.cdBases = cdBasesOf(readings, opts);
   opts.elsewhere = new Map();
   if (overBudget(opts.budget, 0)) return TOO_SLOW_MESSAGE;
-  opts.cmdText = String(cmd);
+  opts.cmdText = text;
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
   const classified = new Map();
