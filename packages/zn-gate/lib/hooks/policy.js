@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.13';
+const POLICY_RULES_VERSION = '2026-10-17.14';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1026,6 +1026,7 @@ function shellCodesOf(words, out = new Set()) {
 const FALLBACK_LAUNCHERS = new Set([...SHELL_NAMES, 'busybox', 'pwsh', 'powershell', 'cmd']);
 // Options of bash and zsh that take a value, which may sit between the shell and -c.
 const SHELL_VALUE_OPTS = new Set(['-O', '+O', '-o', '+o', '--rcfile', '--init-file', '--init-command']);
+const FALLBACK_HEAVY_MAX = 16;
 const POWERSHELL_PARAM_RE = /^[-\/]([A-Za-z]+)$/;
 
 /* The code strings a launcher at w[k] runs from a string; true when `name` is a launcher that was read (the rest of the
@@ -1049,13 +1050,14 @@ function launcherCodes(w, k, name, out) {
     }
     return true;
   }
-  if (name === 'su' || name === 'runuser' || name === 'script' || name === 'flock') {
+  if (name === 'su' || name === 'sg' || name === 'runuser' || name === 'script' || name === 'flock') {
     for (let j = k + 1; j < w.length; j++) {
       const t = w[j].text;
       if (t.startsWith('--command=')) out.add(t.slice(10));
       else if (t === '--command' || t === '-c' || (name !== 'flock' && SHELL_C_FLAG_RE.test(t))) { if (w[j + 1]) out.add(w[j + 1].text); }
     }
-    return name !== 'runuser' && name !== 'flock' ? true : name === 'runuser' ? false : true;
+    // runuser -u user -- command goes on through the wrapper chain; the others are done.
+    return name !== 'runuser';
   }
   if (name === 'pwsh' || name === 'powershell') {
     let first = -1;
@@ -1107,9 +1109,14 @@ function codesOfCommand(w, out) {
   }
   // The chain did not reach a launcher (an unknown wrapper, odd options): the first shell word counts as the launcher.
   if (!resolved && first >= 0) {
-    for (let j = first, seen = 0; j < w.length && seen < 4; j++) {
+    // A shell word costs a look at the next few words; the launchers that read the whole rest are limited, and past
+    // the limit the rest of the command is read as code (never skipped).
+    let heavy = 0;
+    for (let j = first; j < w.length; j++) {
       const name = programName(w[j].text);
-      if (FALLBACK_LAUNCHERS.has(name)) { seen++; launcherCodes(w, j, name, out); }
+      if (!FALLBACK_LAUNCHERS.has(name)) continue;
+      if (!SHELL_NAMES.has(name) && ++heavy > FALLBACK_HEAVY_MAX) { out.add(w.slice(j).map((x) => x.text).join(' ')); break; }
+      launcherCodes(w, j, name, out);
     }
   }
 }
@@ -1380,7 +1387,7 @@ function gitObjectDenial(text, opts) {
 // Commands that change the directory the rest of the command runs in.
 const CD_CMDS = new Set(['cd', 'chdir', 'pushd', 'sl', 'set-location', 'push-location']);
 // Interpreters and shells whose code argument can name a file inside quotes or brackets.
-const CODE_CMDS_RE = /^(?:python[0-9.]*|py|node|nodejs|deno|bun|ruby|perl|php|lua|osascript|pwsh|powershell|bash|sh|zsh|dash|ksh|fish|cmd)(?:\.exe)?$/;
+const CODE_CMDS_RE = /^(?:python[0-9.]*|py|node|nodejs|deno|bun|ruby|perl|php|lua|osascript|pwsh|powershell|bash|sh|zsh|dash|ksh|fish|cmd|iex|invoke-expression)(?:\.exe)?$/;
 const CD_BASES_MAX = 16;
 
 function bareHead(h) {
