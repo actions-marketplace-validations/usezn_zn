@@ -500,7 +500,19 @@ async function decidePrompt(ev, d, agentId) {
 // The expanded text of a skill or command: the same checks as a typed prompt,
 // plus private keys, and a size cap so the check fits in the hook's time.
 const EXPANSION_CAP = 1000000;
-const PRIVATE_KEY_RE = /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File-/;
+const PRIVATE_KEY_HEADER_RE = /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY(?: BLOCK)?-----/g;
+const PRIVATE_KEY_BODY_RE = /^\s*(?:[ \t]*[A-Za-z0-9+\/=]{8,}[ \t]*\r?\n){2}|^\s*[A-Za-z0-9+\/=]{64,}/;
+
+// A key, not a line that names one: the header must be followed by a base64 body.
+function hasPrivateKey(text) {
+  if (/PuTTY-User-Key-File-/.test(text)) return true;
+  PRIVATE_KEY_HEADER_RE.lastIndex = 0;
+  let m;
+  while ((m = PRIVATE_KEY_HEADER_RE.exec(text)) !== null) {
+    if (PRIVATE_KEY_BODY_RE.test(text.slice(m.index + m[0].length, m.index + m[0].length + 4096))) return true;
+  }
+  return false;
+}
 
 async function decideExpansion(ev, d, agentId) {
   return decidePromptText(ev, d, agentId, true);
@@ -515,7 +527,7 @@ async function decidePromptText(ev, d, agentId, expansion) {
         'Use a shorter skill or command, or point it at a file the agent reads (zn checks that read).',
     };
   }
-  if (expansion && PRIVATE_KEY_RE.test(prompt)) {
+  if (expansion && hasPrivateKey(prompt)) {
     return {
       decision: 'deny',
       stats: { detections: { PRIVATE_KEY: 1 } },

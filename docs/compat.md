@@ -39,6 +39,10 @@ limit applies to a patch (`apply_patch`) in Codex and OpenCode.
   the lines of a `.env` file. It says why and what to do next. If the hook
   cannot run or takes too long, the expansion is blocked, like the other prompt
   hook. Expanded text over 1 MB is blocked because it cannot be checked in time.
+  The hook needs a Claude Code version that has the `UserPromptExpansion` event
+  (builds from about 2.1.141 on; 2.1.110 does not have it). With the plugin, an older
+  Claude Code that does not know the event can ignore every hook in the plugin's
+  `hooks.json`, so zn's plugin needs Claude Code 2.1.295 or later.
   The hook cannot rewrite the text, so there is no redaction here: the command
   is stopped and you remove the value or save it with `zn secret set`.
 - **`!` shell commands inside skills and commands**: Claude Code checks them

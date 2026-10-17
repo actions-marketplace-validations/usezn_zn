@@ -253,9 +253,12 @@ test('UserPromptExpansion blocks an expanded skill that carries a secret value, 
   assert.ok(!res.output.reason.includes(AWS));
   const env = await run(expansion('Contents of .env:\nDB_PASSWORD=sunshine2024\nMODE=dev\n', '/'));
   assert.equal(env.output.decision, 'block');
-  const pem = await run(expansion('Use this:\n-----BEGIN ' + 'RSA PRIVATE KEY-----\nZmFrZQ==\n-----END RSA PRIVATE KEY-----\n', '/'));
+  const pem = await run(expansion('Use this:\n-----BEGIN ' + 'RSA PRIVATE KEY-----\nZmFrZWtleWZha2VrZXk=\nZmFrZWtleWZha2VrZXk=\n-----END RSA PRIVATE KEY-----\n', '/'));
   assert.equal(pem.output.decision, 'block');
   assert.match(pem.output.reason, /private key/);
+  // Only the header line, quoted in a sentence: not a key.
+  const hdr = await run(expansion('Never paste a block that starts with -----BEGIN ' + 'PRIVATE KEY----- into a prompt.', '/'));
+  assert.equal(hdr.output, null);
   const big = await run(expansion('a '.repeat(600000), '/'));
   assert.equal(big.output.decision, 'block');
   assert.match(big.output.reason, /too long/);
