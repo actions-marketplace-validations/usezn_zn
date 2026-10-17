@@ -405,7 +405,7 @@ test('deleteIdentity removes the passphrase files and is safe to repeat', async 
   await keychain.deleteIdentity({ home });
   assert.ok(!fs.existsSync(p.identityFile));
   assert.ok(!fs.existsSync(p.metaFile));
-  await assert.doesNotReject(() => keychain.deleteIdentity({ home }));
+  await assert.doesNotReject(() => keychain.deleteIdentity({ home, backend: "passphrase" }));
   assert.equal(keychain.readMeta({ home }), null);
 });
 
