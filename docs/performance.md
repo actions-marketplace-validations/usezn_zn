@@ -29,25 +29,25 @@ and each result is also given as its p95 divided by that start-up time.
 ## Results
 
 GitHub Actions `ubuntu-latest` runner (4 vCPU AMD EPYC 7763), Node.js 22.23, 2026-10-17. Times in
-milliseconds; a bare `node -e ""` takes 23.8 ms (p50).
+milliseconds; a bare `node -e ""` takes 25 ms (p50).
 
 | Agent | Event | p50 | p95 |
 |---|---|---|---|
-| Claude Code | PreToolUse, shell command | 50.9 | 62.8 |
-| Codex CLI | PreToolUse, shell command | 50.6 | 52.9 |
-| Cursor | beforeShellExecution | 49.9 | 53.7 |
-| Claude Code | PostToolUse, 1 KB of output | 60.3 | 64.5 |
-| Codex CLI | PostToolUse, 1 KB | 59.6 | 61.7 |
-| Cursor | postToolUse (MCP), 1 KB | 59.9 | 62.4 |
-| Claude Code | PostToolUse, 100 KB | 64.9 | 66.8 |
-| Codex CLI | PostToolUse, 100 KB | 65.7 | 67.7 |
-| Cursor | postToolUse (MCP), 100 KB | 65.5 | 71.2 |
-| Claude Code | PostToolUse, 100 KB with 2 secrets | 70.4 | 73.7 |
-| Codex CLI | PostToolUse, 100 KB with 2 secrets | 70.6 | 74.1 |
-| Cursor | postToolUse (MCP), 100 KB with 2 secrets | 71.1 | 75.2 |
-| Claude Code | PostToolUse, 1000 KB | 81.8 | 100.7 |
-| Codex CLI | PostToolUse, 1000 KB | 82.3 | 85.3 |
-| Cursor | postToolUse (MCP), 1000 KB | 85.1 | 89.2 |
+| Claude Code | PreToolUse, shell command | 51 | 54.7 |
+| Codex CLI | PreToolUse, shell command | 52 | 53.8 |
+| Cursor | beforeShellExecution | 51.7 | 58.6 |
+| Claude Code | PostToolUse, 1 KB | 63 | 65 |
+| Codex CLI | PostToolUse, 1 KB | 62.2 | 65.3 |
+| Cursor | postToolUse (MCP), 1 KB | 62.2 | 64 |
+| Claude Code | PostToolUse, 100 KB | 67.5 | 70.4 |
+| Codex CLI | PostToolUse, 100 KB | 67 | 68.8 |
+| Cursor | postToolUse (MCP), 100 KB | 66.9 | 68.9 |
+| Claude Code | PostToolUse, 100 KB with 2 secrets | 73.8 | 76.3 |
+| Codex CLI | PostToolUse, 100 KB with 2 secrets | 74.7 | 77.5 |
+| Cursor | postToolUse (MCP), 100 KB with 2 secrets | 75.9 | 77.9 |
+| Claude Code | PostToolUse, 1000 KB | 85.8 | 89.4 |
+| Codex CLI | PostToolUse, 1000 KB | 86.4 | 88.5 |
+| Cursor | postToolUse (MCP), 1000 KB | 88.9 | 92.3 |
 
 On another machine the times change with it: dividing by Node's own start-up, as the budget does, removes
 most of that difference, not all of it.
