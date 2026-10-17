@@ -39,8 +39,8 @@ const ccOf = (items) => items.find((i) => i.id === 'claude-code');
 
 test('pluginNodeOk: 20.12 is the first supported version', () => {
   const ok = _internal.pluginNodeOk;
-  for (const v of ['18.19.0', '20.0.0', '20.11.1']) assert.equal(ok(v), false, v);
-  for (const v of ['20.12.0', '20.18.3', '22.0.0', '24.21.0']) assert.equal(ok(v), true, v);
+  for (const v of ['18.19.0', '20.0.0', '20.11.1', '21.0.0', '21.6.0']) assert.equal(ok(v), false, v);
+  for (const v of ['20.12.0', '20.18.3', '21.7.0', '22.0.0', '24.21.0']) assert.equal(ok(v), true, v);
 });
 
 test('init plan: Node.js 20.12 or later still installs the plugin, with no note', async (t) => {
@@ -91,8 +91,30 @@ test('init plan: a plugin installed next to an older Node.js is replaced by zn h
   const m = machine(t);
   pluginIn(m.home);
   const cc = ccOf((await plan({ ...m, nodeVersion: '18.19.0' })).items);
-  assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code']);
-  assert.match(cc.note, /^Claude Code plugin skipped/);
+  assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code', 'zn-gate check (go on only if it says the hooks work)', 'claude plugin disable zn-gate@usezn']);
+  assert.match(cc.note, /^Claude Code plugin turned off: it needs Node\.js 20\.12 or later \(you have 18\.19\.0\)\. zn's hooks are used instead/);
+});
+
+test('init (interactive): a plugin on an older Node.js: hooks installed, checked, and only then the plugin turned off', async (t) => {
+  const m = machine(t);
+  pluginIn(m.home);
+  const order = [];
+  let out = '';
+  await guide({
+    ...m, nodeVersion: '18.19.0', stdin: { isTTY: true }, write: (s) => { out += s; },
+    confirm: async () => true,
+    // The run stand-in does what the real commands do: the hooks are written, the plugin switch is only recorded.
+    run: (step) => {
+      order.push(step.manual);
+      if (/^zn hooks install/.test(step.manual)) {
+        getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+      }
+      return true;
+    },
+  });
+  assert.deepEqual(order, ['zn hooks install claude-code', 'claude plugin disable zn-gate@usezn']);
+  assert.match(out, /check that zn's hooks for Claude Code work now: yes/);
+  assert.ok(out.indexOf('plugin turned off') < out.indexOf('check that zn'), 'the note comes first');
 });
 
 test('check: a plugin on Node.js before 20.12 is reported, with the way out', async (t) => {
@@ -103,6 +125,7 @@ test('check: a plugin on Node.js before 20.12 is reported, with the way out', as
   assert.equal(r.problem, 'the zn-gate plugin needs Node.js 20.12 or later (you have 18.19.0)');
   assert.match(r.fix, /update Node\.js to 20\.12 or later/);
   assert.match(r.fix, /zn hooks install claude-code/);
+  assert.match(r.fix, /claude plugin disable zn-gate@usezn/);
 });
 
 test('check: the same plugin on Node.js 20.12 or later is protected', async (t) => {

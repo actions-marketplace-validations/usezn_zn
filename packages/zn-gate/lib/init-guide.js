@@ -108,9 +108,12 @@ async function plan(opts = {}) {
       let hooksVerb = r.id !== 'claude-code' ? 'install' : r.via === 'hooks' ? 'install'
         : r.via === 'both' && r.duplicate ? 'uninstall' : r.via === 'both' && r.pluginBroken && r.hooksBroken ? 'install' : null;
       // The plugin needs Node.js 20.12 or later: with an older one it is not installed, and zn's own hooks are set up instead.
+      // A plugin that is already installed does not work there either: once the hooks are seen to work, it is turned off.
+      let dropPlugin = false;
       if (r.id === 'claude-code' && !pluginNodeOk(nodeVersion) && !hooksVerb && !r.rulesFault && (r.via === 'plugin' || r.state === 'not-set-up')) {
         hooksVerb = 'install';
-        item.note = 'Claude Code plugin skipped: it needs Node.js 20.12 or later (you have ' + nodeVersion + '). zn\'s hooks are set up instead; update Node.js to use the plugin.';
+        dropPlugin = r.via === 'plugin' && !r.pluginOff;
+        item.note = 'Claude Code plugin ' + (dropPlugin ? 'turned off' : 'skipped') + ': it needs Node.js 20.12 or later (you have ' + nodeVersion + '). zn\'s hooks are ' + (dropPlugin ? 'used' : 'set up') + ' instead; update Node.js to use the plugin.';
       }
       const disablePlugin = () => {
         const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
@@ -148,8 +151,8 @@ async function plan(opts = {}) {
         item.steps.push({ label, run: zn ? [zn, args] : null, manual: 'zn hooks ' + hooksVerb + ' ' + r.id, needsGlobal: temporary });
         // Only after the hooks are repaired and seen to work: the steps stop at the first one that is skipped or fails,
         // so the plugin is never turned off while the hooks still do not work.
-        if (r.pluginBroken) {
-          item.steps.push({ label: 'check that zn\'s hooks for ' + r.name + ' work now', manual: 'zn-gate check (go on only if it says the hooks work)', verify: () => hooksWorkNextToPlugin(opts, r.id) });
+        if (r.pluginBroken || dropPlugin) {
+          item.steps.push({ label: 'check that zn\'s hooks for ' + r.name + ' work now', manual: 'zn-gate check (go on only if it says the hooks work)', verify: () => hooksWorkNextToPlugin({ ...opts, nodeVersion }, r.id) });
           item.steps.push(disablePlugin());
         }
       }
@@ -172,7 +175,7 @@ async function plan(opts = {}) {
 /* After the hooks are repaired next to a broken plugin: '' when check now finds those hooks working, else why not. */
 async function hooksWorkNextToPlugin(opts, id) {
   const { check } = require('./check');
-  const r = (await check({ home: opts.home, env: opts.env || process.env, cwd: opts.cwd })).results.find((x) => x.id === id);
+  const r = (await check({ home: opts.home, env: opts.env || process.env, cwd: opts.cwd, nodeVersion: opts.nodeVersion })).results.find((x) => x.id === id);
   if (!r) return 'zn-gate check did not report it';
   if (r.state === 'protected' || (r.pluginBroken && !r.hooksBroken)) return '';
   return r.problem || 'zn-gate check did not find them working';
@@ -264,7 +267,7 @@ async function guide(opts = {}) {
   }
   w('\n');
   const { check, report } = require('./check');
-  const code = report(await check({ home: opts.home, env, cwd: opts.cwd }), w);
+  const code = report(await check({ home: opts.home, env, cwd: opts.cwd, nodeVersion: opts.nodeVersion }), w);
   return skipped ? 1 : code;
 }
 

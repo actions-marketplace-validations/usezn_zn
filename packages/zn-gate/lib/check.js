@@ -33,7 +33,8 @@ const PLUGIN_ID = 'zn-gate@usezn';
 /* The zn-gate Claude Code plugin needs Node.js 20.12 or later; zn-gate itself runs on 18 and later. */
 function pluginNodeOk(version) {
   const [major, minor] = String(version || process.versions.node).split('.').map((x) => parseInt(x, 10) || 0);
-  return major > 20 || (major === 20 && minor >= 12);
+  // The loader constant the plugin needs arrives in Node.js 20.12 and in 21.7.
+  return major > 21 || (major === 21 && minor >= 7) || (major === 20 && minor >= 12);
 }
 function pluginNodeMessage(version) {
   return 'the zn-gate plugin needs Node.js 20.12 or later (you have ' + String(version || process.versions.node) + ')';
@@ -264,7 +265,7 @@ async function checkAgent(spec, ctx) {
       }
       if (!plugin.off && !pluginNodeOk(ctx.nodeVersion)) {
         res.problem = pluginNodeMessage(ctx.nodeVersion);
-        res.fix = 'update Node.js to 20.12 or later, or run `npm install -g zn-gate` and then `zn hooks install claude-code` to use zn\'s hooks without the plugin, in your own terminal';
+        res.fix = 'update Node.js to 20.12 or later, or use zn\'s hooks instead: run `npm install -g zn-gate`, then `zn hooks install claude-code`, and after that turn the plugin off with `claude plugin disable zn-gate@usezn`, all in your own terminal';
         res.pluginFault = true;
         res.pluginNode = true;
       }
