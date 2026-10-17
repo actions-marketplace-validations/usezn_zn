@@ -123,6 +123,14 @@ npx -y zn-gate shield -- uvx mcp-server-fetch
 
 ---
 
+## See what zn-gate did
+
+```bash
+npx -y zn-gate report
+```
+
+A short summary of the last 7 days on this computer: blocked actions, secrets hidden, new protected MCP servers and tool changes waiting for your approval. It reads only local files, needs no account and sends nothing. `--since 30d` changes the period, `--json` prints it for scripts. [What it shows](https://github.com/usezn/zn/blob/main/docs/report.md).
+
 ## Check that it works
 
 ```bash
