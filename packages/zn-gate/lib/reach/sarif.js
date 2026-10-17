@@ -2,7 +2,8 @@
 /**
  * SARIF 2.1.0 for `zn-gate reach --sarif`. zn audit findings keep their ZNA
  * rules; the findings reach adds have ZNR rules. Info findings are left out:
- * they say that something is already protected.
+ * they say that something is already protected. Only findings about a file of
+ * the checked folder are results; the others are notifications of the run.
  */
 
 const crypto = require('crypto');
@@ -55,30 +56,33 @@ function toSarif(r, meta = {}) {
   };
   const ordinals = new Map();
   const results = [];
+  // Code scanning needs a file of the repository for every result. What belongs to the machine (agents,
+  // environment variables, credential files) or to the home folder is reported as a notification instead.
+  const notifications = [];
   for (const f of r.findings) {
     if (!LEVEL[f.severity]) continue;
+    const text = f.title + (f.detail ? ': ' + f.detail : '') + (f.fix ? ' Fix: ' + f.fix : '');
+    if (!f.file || String(f.file).startsWith('~/')) {
+      notifications.push({ level: LEVEL[f.severity], message: { text }, properties: { severity: f.severity, section: f.section } });
+      continue;
+    }
     const ri = ruleOf(ruleKey(f));
     if (ri === null) continue;
-    const base = [used[ri].id, f.file || '', f.kind === 'audit' ? f.title : ''].join('\u0000');
+    const base = [used[ri].id, f.section, f.file, f.title].join('\u0000');
     const n = (ordinals.get(base) || 0) + 1;
     ordinals.set(base, n);
-    const res = {
+    results.push({
       ruleId: used[ri].id,
       ruleIndex: ri,
       level: LEVEL[f.severity],
-      message: { text: f.title + (f.detail ? ': ' + f.detail : '') + (f.fix ? ' Fix: ' + f.fix : '') },
+      message: { text },
+      locations: [{ physicalLocation: {
+        artifactLocation: { uri: encodePath(f.file), uriBaseId: '%SRCROOT%' },
+        region: { startLine: f.line || 1 },
+      } }],
       partialFingerprints: { 'znReach/v1': crypto.createHash('sha256').update(base + '\u0000' + n).digest('hex') },
       properties: { severity: f.severity, 'security-severity': SECURITY_SEVERITY[f.severity], section: f.section },
-    };
-    // Only findings about a file have a location; agents and environment variables belong to the machine.
-    if (f.file) {
-      const home = String(f.file).startsWith('~/');
-      res.locations = [{ physicalLocation: {
-        artifactLocation: { uri: encodePath(home ? f.file.slice(2) : f.file), uriBaseId: home ? 'HOME' : '%SRCROOT%' },
-        region: { startLine: f.line || 1 },
-      } }];
-    }
-    results.push(res);
+    });
   }
   return JSON.stringify({
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
@@ -87,8 +91,8 @@ function toSarif(r, meta = {}) {
       tool: { driver: { name: 'zn-gate reach', informationUri: DOCS_URL, version: meta.toolVersion, semanticVersion: meta.toolVersion, rules: used } },
       originalUriBaseIds: {
         '%SRCROOT%': { description: { text: 'The folder that was checked.' } },
-        HOME: { description: { text: 'The user home folder.' } },
       },
+      invocations: [{ executionSuccessful: true, toolExecutionNotifications: notifications }],
       columnKind: 'utf16CodeUnits',
       results,
     }],

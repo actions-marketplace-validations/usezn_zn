@@ -270,11 +270,19 @@ test('--sarif: one result per finding that is not info, with no value, and --fai
   const run0 = sarif.runs[0];
   assert.equal(run0.tool.driver.name, 'zn-gate reach');
   const ids = run0.results.map((x) => x.ruleId);
-  for (const id of ['ZNR001', 'ZNR002', 'ZNR003', 'ZNR004']) assert.ok(ids.includes(id), id + ' in ' + ids.join(','));
+  assert.ok(ids.includes('ZNR002'), ids.join(','));
+  // Code scanning refuses a result without a file of the repository: every result has one.
   for (const x of run0.results) {
     assert.equal(run0.tool.driver.rules[x.ruleIndex].id, x.ruleId);
     assert.ok(['error', 'warning', 'note'].includes(x.level));
+    const loc = x.locations && x.locations[0] && x.locations[0].physicalLocation.artifactLocation;
+    assert.ok(loc && loc.uriBaseId === '%SRCROOT%' && !loc.uri.startsWith('~'), JSON.stringify(x));
   }
+  // What belongs to the machine is reported as notifications of the run.
+  const notes = run0.invocations[0].toolExecutionNotifications.map((n) => n.message.text).join('\n');
+  assert.match(notes, /Cursor is on this machine/);
+  assert.match(notes, /credential files in your home folder/);
+  assert.match(notes, /environment variables with a secret/);
   const env0 = run0.results.find((x) => x.ruleId === 'ZNR002' && x.locations[0].physicalLocation.artifactLocation.uri === '.env');
   assert.ok(env0, 'the .env result has its file');
   for (const v of FAKES) assert.ok(!s.stdout.includes(v), 'value in SARIF: ' + v);
@@ -286,6 +294,26 @@ test('--sarif: one result per finding that is not info, with no value, and --fai
   const clean = machine(t, { agents: ['claude-code', 'codex', 'cursor', 'opencode'], secrets: false });
   const ok = spawnSync(process.execPath, [CLI, 'reach', clean.root, '--json', '--fail-on', 'low'], { encoding: 'utf8', env: { ...clean.env, ZN_STATS: 'off' }, cwd: clean.root });
   assert.equal(ok.status, 0, ok.stdout);
+});
+
+test('--remember keeps only counts, and only when asked; the next run shows them', (t) => {
+  const m = machine(t, { found: ['.cursor'] });
+  const env = { ...m.env, ZN_STATS: 'off' };
+  const file = _internal.memoryFile(m.home, env);
+  const run = (...a) => spawnSync(process.execPath, [CLI, 'reach', m.root, ...a], { encoding: 'utf8', env, cwd: m.root });
+  assert.equal(run().status, 0);
+  assert.ok(!fs.existsSync(file), 'nothing is written without --remember');
+  const first = run('--remember');
+  assert.equal(first.status, 0, first.stderr);
+  assert.doesNotMatch(first.stdout, /last time/);
+  const saved = fs.readFileSync(file, 'utf8');
+  for (const v of FAKES) assert.ok(!saved.includes(v));
+  assert.ok(!saved.includes(m.root) && !saved.includes('OPENAI_API_KEY') && !saved.includes('.env'), saved);
+  const entry = Object.values(JSON.parse(saved))[0];
+  assert.deepEqual(Object.keys(entry).sort(), ['at', 'high', 'low', 'medium']);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const second = run('--remember');
+  assert.match(second.stdout, /\(last time, \d{4}-\d{2}-\d{2}: \d+ high, \d+ medium, \d+ low\)/);
 });
 
 test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) => {

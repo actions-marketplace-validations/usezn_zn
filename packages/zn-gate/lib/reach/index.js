@@ -4,7 +4,7 @@
  *
  *   reach({ root, home, env }) -> { tool, version, root, agents, findings, counts, truncated }
  *
- * Read only, no network, nothing written. It puts together what zn already
+ * Read only, no network, nothing written (with --remember, only its counts). It puts together what zn already
  * knows: which agents are set up (zn-gate check, setup only: no hook is
  * started), the .env files of the folder (names of their secrets), the
  * credential files of the user (whether they exist: they are never opened),
@@ -235,7 +235,41 @@ async function reach(opts = {}) {
   findings.sort((a, b) => rank(a.severity) - rank(b.severity));
   const counts = { high: 0, medium: 0, low: 0, info: 0 };
   for (const f of findings) counts[f.severity] = (counts[f.severity] || 0) + 1;
-  return { tool: 'zn-gate reach', version: VERSION, root, agents, findings, counts, truncated: au.truncated };
+  const r = { tool: 'zn-gate reach', version: VERSION, root, agents, findings, counts, truncated: au.truncated };
+  if (opts.remember) r.previous = remember(root, counts, home, env);
+  return r;
+}
+
+/*
+ * --remember: the counts of the last run for this folder, kept in ~/.zn/reach-last.json (ZN_HOME overrides
+ * ~/.zn), so the next run can say "was N". Only counts and a date, under a hash of the folder path: no
+ * path, name or value. Without --remember nothing is read or written.
+ */
+function memoryFile(home, env) {
+  return path.join(env.ZN_HOME ? path.resolve(env.ZN_HOME) : path.join(home, '.zn'), 'reach-last.json');
+}
+
+function remember(root, counts, home, env) {
+  const file = memoryFile(home, env);
+  const key = require('crypto').createHash('sha256').update(root).digest('hex').slice(0, 32);
+  let data = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed;
+  } catch (_) { data = {}; }
+  const was = data[key] && typeof data[key] === 'object' ? data[key] : null;
+  const previous = was ? { high: +was.high || 0, medium: +was.medium || 0, low: +was.low || 0, at: String(was.at || '').slice(0, 10) } : null;
+  data[key] = { high: counts.high, medium: counts.medium, low: counts.low, at: new Date().toISOString().slice(0, 10) };
+  // Up to 200 folders: the oldest go first.
+  const keys = Object.keys(data).sort((a, b) => String(data[a].at).localeCompare(String(data[b].at)));
+  while (keys.length > 200) delete data[keys.shift()];
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = file + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (_) { /* a report that cannot remember is still a report */ }
+  return previous;
 }
 
 const SECTIONS = [
@@ -288,7 +322,9 @@ function report(r, write) {
     next.forEach((c, i) => w('  ' + (i + 1) + '. ' + c + '\n'));
     w('\n');
   }
-  w(r.counts.high + ' high, ' + r.counts.medium + ' medium, ' + r.counts.low + ' low.\n\n');
+  const p = r.previous;
+  const was = p ? ' (last time, ' + p.at + ': ' + p.high + ' high, ' + p.medium + ' medium, ' + p.low + ' low)' : '';
+  w(r.counts.high + ' high, ' + r.counts.medium + ' medium, ' + r.counts.low + ' low' + was + '.\n\n');
   return 0;
 }
 
@@ -307,4 +343,4 @@ function failed(r, failOn) {
   return r.findings.some((f) => f.severity !== 'info' && SEVERITIES.indexOf(f.severity) <= limit);
 }
 
-module.exports = { reach, report, failed, FAIL_ON, VERSION, _internal: { dotenvFiles, credentialFiles, secretEnvNames, SECRET_ENV_NAME_RE } };
+module.exports = { reach, report, failed, FAIL_ON, VERSION, _internal: { dotenvFiles, credentialFiles, secretEnvNames, SECRET_ENV_NAME_RE, memoryFile } };
