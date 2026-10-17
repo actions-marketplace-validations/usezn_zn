@@ -10,12 +10,11 @@ name: Release
 #   jobs and the GitHub Release each ask for that approval).
 # - workflow_dispatch: dry run for an existing tag. It verifies and builds,
 #   uploads the unsigned workflow artifact and stops. It never signs or publishes.
-# - workflow_dispatch with publish: how tag-release.yml starts a release after
-#   it has created and signed the tag (a tag pushed with a workflow token
-#   starts no workflow). The same approvals as a tag push.
 #
-# A tag whose commit has tag-release.yml is published only with a valid
-# signature from that workflow, however this workflow was started.
+# From 1.12.0 on (and for any commit that has tag-release.yml), a tag is
+# released only with a valid signature from tag-release.yml, which creates,
+# signs and pushes it; a tag pushed any other way is refused before anything
+# is built.
 #
 # How to verify a release: docs/verify-release.md
 
@@ -30,11 +29,6 @@ on:
         description: "Existing tag to build (dry run, nothing is signed or published), e.g. v1.5.0"
         required: true
         type: string
-      publish:
-        description: "Publish instead of a dry run (used by tag-release.yml, for a tag it signed)"
-        required: false
-        default: false
-        type: boolean
 
 env:
   ARTIFACT_NAME: zn-gate-release
@@ -86,7 +80,7 @@ jobs:
         id: meta
         env:
           TAG: ${{ steps.tag.outputs.tag }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           tag_version="${TAG#v}"
@@ -148,21 +142,25 @@ jobs:
             echo "dry_run=$DRY_RUN"
           } >> "$GITHUB_OUTPUT"
           echo "tag=$TAG sha=$sha npm=$npm_version pypi=$py_version prerelease=$prerelease dry_run=$DRY_RUN"
-      # A commit that has tag-release.yml is released only from a tag that workflow signed:
-      # a tag pushed by hand, or by anyone else, is refused before anything is built.
+      # From 1.12.0 on, and for any commit that has tag-release.yml, a release comes only from a tag that
+      # workflow signed: a tag pushed by hand, or by anyone else, is refused before anything is built.
+      # The version rule holds even for a release commit from which tag-release.yml was removed.
       - name: Check the tag signature
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           SHA: ${{ steps.meta.outputs.sha }}
         run: |
           set -euo pipefail
-          if ! git cat-file -e "$SHA:.github/workflows/tag-release.yml" 2>/dev/null; then
-            echo "The tagged commit predates tag-release.yml: its tag is not signed."
+          base="${TAG#v}"; base="${base%%-*}"
+          if ! git cat-file -e "$SHA:.github/workflows/tag-release.yml" 2>/dev/null \
+              && [ "$(printf '%s\n' 1.12.0 "$base" | sort -V | head -n 1)" != 1.12.0 ]; then
+            echo "$TAG predates signed tags (before 1.12.0): its tag is not signed."
             exit 0
           fi
-          # The annotated tag object itself, as it is on GitHub.
+          # The annotated tag object itself, as it is on GitHub, and still on the verified commit.
           git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
           [ "$(git cat-file -t "refs/tags/$TAG")" = tag ] || { echo "::error::$TAG is not an annotated, signed tag"; exit 1; }
+          [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SHA" ] || { echo "::error::$TAG no longer points to $SHA"; exit 1; }
           url="https://github.com/sigstore/gitsign/releases/download/v${GITSIGN_VERSION}/gitsign_${GITSIGN_VERSION}_linux_amd64"
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitsign" "$url"
           echo "${GITSIGN_SHA256}  $RUNNER_TEMP/gitsign" | sha256sum --strict -c -
