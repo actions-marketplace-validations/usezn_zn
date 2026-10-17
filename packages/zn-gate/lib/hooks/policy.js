@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.11';
+const POLICY_RULES_VERSION = '2026-10-17.12';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1001,26 +1001,87 @@ function shellPatchMessage(cmd, deny, opts) {
 // How deep sh -c "sh -c '...'" is followed; deeper is refused.
 const SHELL_CODE_DEPTH = 3;
 const TOO_NESTED_MESSAGE = 'zn: this command nests shell code (sh -c "sh -c ...") deeper than zn checks, so it was blocked. Next step: run the inner command directly, or tell the user.';
-// The flag that gives a shell or a wrapper its code: sh -c, bash -lc, pwsh -Command, cmd /c, flock -c, env -S.
-const SHELL_CODE_FLAG_RE = /^(?:-[A-Za-z]*c|-command|\/[ck]|-S|--split-string)$/i;
+const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'fish', 'csh', 'tcsh', 'rbash']);
+const SHELL_C_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
 
-/* The code strings that follow such a flag in a command, and "git <args>" for PowerShell's Start-Process git -ArgumentList.
-   Any word after such a flag counts (a few are not code, which only costs a look), so nothing is missed by the program's name. */
-function shellCodesOf(words) {
-  const out = new Set();
-  for (let k = 0; k < words.length; k++) {
-    const t = words[k].text;
-    if (t.startsWith('--split-string=')) { out.add(t.slice(15)); continue; }
-    const next = words[k + 1];
-    if (!next || next.seq !== words[k].seq || !next.text) continue;
-    if (SHELL_CODE_FLAG_RE.test(t)) out.add(next.text);
-    else if (/^-arg/i.test(t)) {
-      for (let j = k - 1; j >= 0 && words[j].seq === words[k].seq; j--) {
-        if (wordIsGit(words[j].text)) { out.add('git ' + next.text.replace(/,/g, ' ')); break; }
-      }
-    }
+function programName(text) {
+  return String(text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+}
+
+/* The code strings that programs which run code from a string would run: sh -c, bash -lc, su -c, flock -c, env -S,
+   pwsh -Command, cmd /c, eval, watch, and "git <args>" for PowerShell's Start-Process git -ArgumentList. Only these
+   launchers (found through sudo, env, xargs and the other wrappers) are read this way: the -c of psql or grep is not code. */
+function shellCodesOf(words, out = new Set()) {
+  let start = 0;
+  while (start < words.length) {
+    let end = start;
+    while (end < words.length && words[end].seq === words[start].seq) end++;
+    codesOfCommand(words.slice(start, end), out);
+    start = end;
   }
   return out;
+}
+
+function codesOfCommand(w, out) {
+  const join = (from) => w.slice(from).map((x) => x.text).join(' ');
+  for (let j = 1; j < w.length; j++) {
+    if (!/^-arg/i.test(w[j - 1].text) || !w[j].text) continue;
+    for (let i = j - 2; i >= 0; i--) if (wordIsGit(w[i].text)) { out.add('git ' + w[j].text.replace(/,/g, ' ')); break; }
+  }
+  let k = w.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
+  for (let guard = 0; k >= 0 && k < w.length && guard < 16; guard++) {
+    const name = programName(w[k].text);
+    if (name === 'eval') { out.add(join(k + 1)); return; }
+    if (name === 'watch') {
+      let j = k + 1;
+      while (j < w.length && w[j].text.startsWith('-')) j += w[j].text === '-n' || w[j].text === '--interval' ? 2 : 1;
+      if (j < w.length) out.add(join(j));
+      return;
+    }
+    if (SHELL_NAMES.has(name)) {
+      for (let j = k + 1; j < w.length; j++) {
+        const t = w[j].text;
+        if (t === '--' || !/^[-+]/.test(t)) break;
+        if (t === '-o' || t === '+o') { j++; continue; }
+        if (SHELL_C_FLAG_RE.test(t)) { if (w[j + 1]) out.add(w[j + 1].text); break; }
+      }
+      return;
+    }
+    if (name === 'su' || name === 'flock') {
+      for (let j = k + 1; j < w.length; j++) {
+        const t = w[j].text;
+        if (t.startsWith('--command=')) out.add(t.slice(10));
+        else if (t === '--command' || t === '-c' || (name === 'su' && SHELL_C_FLAG_RE.test(t))) { if (w[j + 1]) out.add(w[j + 1].text); }
+      }
+      return;
+    }
+    if (name === 'pwsh' || name === 'powershell') {
+      for (let j = k + 1; j < w.length; j++) {
+        const t = w[j].text;
+        if (/^-c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?$/i.test(t)) { out.add(join(j + 1)); return; }
+        if (/^-(?:e|ec|enc|encodedcommand)$/i.test(t) && w[j + 1]) {
+          // Base64 of UTF-16 text: decoded and read as code.
+          out.add(Buffer.from(w[j + 1].text, 'base64').toString('utf16le'));
+          return;
+        }
+      }
+      return;
+    }
+    if (name === 'cmd') {
+      for (let j = k + 1; j < w.length; j++) if (/^\/[ckr]$/i.test(w[j].text)) { out.add(join(j + 1)); return; }
+      return;
+    }
+    if (name === 'env') {
+      for (let j = k + 1; j < w.length && w[j].text.startsWith('-'); j++) {
+        const t = w[j].text;
+        if (t === '-S' || t === '--split-string') { if (w[j + 1]) out.add(w[j + 1].text); }
+        else if (t.startsWith('--split-string=')) out.add(t.slice(15));
+        else if (t.startsWith('-S')) out.add(t.slice(2));
+      }
+    }
+    if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) return;
+    k = skipWrapper(w, k, name);
+  }
 }
 
 function bashDenial(cmd, opts = {}) {
@@ -1046,7 +1107,8 @@ function bashDenialOf(cmd, opts = {}) {
   // A reading that could not be split to the end is refused, not checked in part.
   if (readings.some((r) => r.truncated)) return TOO_MANY_MESSAGE;
   const words = readings.flat();
-  const codes = shellCodesOf(words);
+  const codes = new Set();
+  for (const r of readings) shellCodesOf(r, codes);
   if (codes.size) {
     if (depth >= SHELL_CODE_DEPTH) return TOO_NESTED_MESSAGE;
     for (const code of codes) {
@@ -1171,13 +1233,32 @@ function isGit(head) {
 // back to the first word that is git (a refused command is the safe side).
 const GIT_WRAPPERS = {
   sudo: 'ugphCDrtUTR', doas: 'uC', env: 'uCS', command: '', nohup: '', time: 'fo', builtin: '', exec: 'a', nice: 'n', timeout: 'sk',
-  xargs: 'IinLPdEsa', setsid: '', ionice: 'cnpPu', stdbuf: 'ioe',
+  xargs: 'IinLPdEsa', setsid: '', ionice: 'cnpPu', stdbuf: 'ioe', busybox: '',
 };
 const WRAPPER_LONG_VALUE = new Set(['--user', '--group', '--chdir', '--unset', '--max-args', '--max-procs', '--replace', '--delimiter',
   '--arg-file', '--eof', '--signal', '--kill-after', '--split-string', '--host', '--prompt', '--close-from', '--role', '--type']);
 
 function wordIsGit(text) {
   return isGit(String(text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase());
+}
+
+/* The index of the word after a wrapper and its options (and the values some take), env's assignments and timeout's duration. */
+function skipWrapper(words, k, name) {
+  const valueOpts = GIT_WRAPPERS[name];
+  k++;
+  while (k < words.length) {
+    const t = words[k].text;
+    if (t === '--') { k++; break; }
+    if (t.startsWith('--') && t.length > 2) { k += !t.includes('=') && WRAPPER_LONG_VALUE.has(t) ? 2 : 1; continue; }
+    if (t.startsWith('-') && t.length > 1) {
+      // -n, -E, -En: flags; a cluster ending in an option that takes a value (sudo -u root) takes the next word.
+      k += /^-[A-Za-z]+$/.test(t) && valueOpts.includes(t[t.length - 1]) ? 2 : 1;
+      continue;
+    }
+    if (ASSIGNMENT_RE.test(t) || (name === 'timeout' && /^[0-9.]+[smhd]?$/.test(t))) { k++; continue; }
+    break;
+  }
+  return k;
 }
 
 /* The index of the word that is git in a simple command, directly or behind wrappers; -1 when it is not git. */
@@ -1189,21 +1270,7 @@ function gitStart(words) {
     if (wordIsGit(words[k].text)) return k;
     const name = String(words[k].text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase();
     if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) break;
-    const valueOpts = GIT_WRAPPERS[name];
-    // Skip the wrapper's options (and the values some take), env's assignments and timeout's duration.
-    k++;
-    while (k < words.length) {
-      const t = words[k].text;
-      if (t === '--') { k++; break; }
-      if (t.startsWith('--') && t.length > 2) { k += !t.includes('=') && WRAPPER_LONG_VALUE.has(t) ? 2 : 1; continue; }
-      if (t.startsWith('-') && t.length > 1) {
-        // -n, -E, -En: flags; a cluster ending in an option that takes a value (sudo -u root) takes the next word.
-        k += /^-[A-Za-z]+$/.test(t) && valueOpts.includes(t[t.length - 1]) ? 2 : 1;
-        continue;
-      }
-      if (ASSIGNMENT_RE.test(t) || (name === 'timeout' && /^[0-9.]+[smhd]?$/.test(t))) { k++; continue; }
-      break;
-    }
+    k = skipWrapper(words, k, name);
     if (k >= words.length) break;
   }
   // The chain did not resolve to git: the first word that is git counts as the start, so nothing slips past.

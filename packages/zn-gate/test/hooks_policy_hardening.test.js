@@ -696,11 +696,18 @@ test('git run by the code of a shell (sh -c, bash -lc, flock -c, env -S, Start-P
     'flock /x.lock -c "git log -p -- .env"', 'flock -c "git log -p -- .env" /x.lock', 'env -S "git log -p -- .env"', 'env --split-string="git log -p -- .env"',
     'zsh -c "git show HEAD:.env"', 'dash -c "git log -p -- old/server.key"', 'pwsh -Command "git log -p -- .env"', 'powershell -c "git log -p -- .env"',
     'cmd /c "git log -p -- .env"', 'Start-Process git -ArgumentList "log -p -- .env"', "Start-Process git -ArgumentList 'log','-p','--','.env'",
-    "bash -c \"sh -c 'git log -p -- .env'\"", 'sh -c "sudo -n git log -p -- .env"', 'sh -c "cat certs/server.key"']) {
+    "bash -c \"sh -c 'git log -p -- .env'\"", 'sh -c "sudo -n git log -p -- .env"', 'sh -c "cat certs/server.key"',
+    'su -c "git log -p -- .env"', 'su - app -c "git log -p -- .env"', 'busybox sh -c "git log -p -- .env"', 'xargs sh -c "git log -p -- .env"',
+    'eval "git log -p -- .env"', 'watch -n 5 "git log -p -- .env"', 'watch "git log -p -- .env"', 'bash -xc "git log -p -- .env"', 'bash -o pipefail -c "git log -p -- .env"',
+    'sudo -n bash -ec "git log -p -- .env"', 'pwsh -NoProfile -Command git log -p -- .env', 'pwsh -EncodedCommand ' + Buffer.from('git log -p -- .env', 'utf16le').toString('base64'),
+    'cmd /c git log -p -- .env', 'env -i sh -c "git log -p -- .env"']) {
     assert.ok(policy.bashDenial(cmd, o), cmd);
   }
   for (const cmd of ['bash -c "npm test"', 'sh -c "git status"', 'bash -c "echo .env"', 'sh -c "git log --oneline -- old/gone.key"', 'bash -lc "ls"',
-    'Start-Process git -ArgumentList "status"', 'cmd /c dir', 'env -S "ls -l"', "bash -c \"sh -c 'echo hi'\"", 'grep -c foo README.md']) {
+    'Start-Process git -ArgumentList "status"', 'cmd /c dir', 'env -S "ls -l"', "bash -c \"sh -c 'echo hi'\"", 'grep -c foo README.md',
+    'psql -c "SELECT * FROM users"', 'psql -c "select count(*) from t"', 'docker exec db psql -U app -c "select * from t limit 5"',
+    'grep -c "source .env" README.md', 'grep -rc "cat .env" docs', 'grep -c "git log -p -- .env" README.md', 'git -c core.pager=cat status',
+    'watch -n 5 "ls"', 'eval "echo hi"', 'su -c "ls"', 'sudo -n psql -c "select * from t"', 'pwsh -c "Get-Date"']) {
     assert.equal(policy.bashDenial(cmd, o), null, cmd);
   }
   // Nested deeper than zn follows is refused, never let through.
