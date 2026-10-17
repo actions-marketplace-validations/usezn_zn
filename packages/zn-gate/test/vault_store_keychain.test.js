@@ -293,9 +293,11 @@ test('an invalid service name or keychain path is refused before any helper runs
   assert.equal(helperCalls.length, before);
 });
 
-test('a native helper that cannot start is reported as locked, and the blocked launcher saw it', (t) => {
+test('a native helper that cannot start is reported as locked, and the blocked launcher saw the call', (t) => {
   withEnv(t, { ZN_KEYCHAIN_SERVICE: 'zn-vault-test', ZN_KEYCHAIN_PATH: undefined });
-  assert.throws(() => keychain._native.libsecret.load(), (e) => e.code === 'ZN_LOCKED');
+  const before = helperCalls.length;
+  assert.throws(() => keychain._native.macos.load(), (e) => e.code === 'ZN_LOCKED' && /failed to start/.test(e.message));
+  assert.equal(helperCalls.length, before + 1);
 });
 
 /* ---------------- keychain: metadata ---------------- */
@@ -405,7 +407,7 @@ test('deleteIdentity removes the passphrase files and is safe to repeat', async 
   await keychain.deleteIdentity({ home });
   assert.ok(!fs.existsSync(p.identityFile));
   assert.ok(!fs.existsSync(p.metaFile));
-  await assert.doesNotReject(() => keychain.deleteIdentity({ home, backend: "passphrase" }));
+  await assert.doesNotReject(() => keychain.deleteIdentity({ home, backend: 'passphrase' }));
   assert.equal(keychain.readMeta({ home }), null);
 });
 
