@@ -512,3 +512,25 @@ test('a private key kept in the project is refused; a certificate or public key 
   assert.ok(policy.readDenial(path.join(dir, 'deploy', 'server.key'), o));
   assert.equal(policy.readDenial(path.join(dir, 'deploy', 'cert.pem'), o), null);
 });
+
+test('reading a key or .env file never blocks and a repeated word is read once', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-keys-perf-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'cert.pem'), '-----BEGIN CERTIFICATE-----\n' + 'A'.repeat(1024 * 1024) + '\n-----END CERTIFICATE-----\n');
+  fs.writeFileSync(path.join(dir, 'pgp.key'), '-----BEGIN PGP PRIVATE KEY BLOCK-----\nZN-TEST-FAKE\n-----END PGP PRIVATE KEY BLOCK-----\n');
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  const t0 = process.hrtime.bigint();
+  assert.ok(policy.bashDenial('cat cert.pem '.repeat(7000) + '; cat .env', o), 'still reaches the .env');
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 5000, 'too slow');
+  assert.ok(policy.bashDenial('cat pgp.key', o));
+  if (process.platform !== 'win32') {
+    const { execFileSync } = require('child_process');
+    execFileSync('mkfifo', [path.join(dir, 'pipe.pem'), path.join(dir, 'pipe.env')]);
+    fs.renameSync(path.join(dir, 'pipe.env'), path.join(dir, '.env.pipe'));
+    const t1 = process.hrtime.bigint();
+    assert.ok(policy.bashDenial('cat pipe.pem', o), 'a FIFO named .pem is refused without being read');
+    assert.ok(policy.bashDenial('cat .env.pipe', o), 'a FIFO named .env.* is refused without being read');
+    assert.ok(Number(process.hrtime.bigint() - t1) / 1e6 < 2000, 'a FIFO must not block');
+  }
+});

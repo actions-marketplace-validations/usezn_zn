@@ -56,8 +56,9 @@ const DOTENV_SAFE_RE = /\.(example|sample|template|dist|defaults|schema)$/i;
 const SSH_KEY_BASENAME_RE = /^id_(?:rsa|dsa|ecdsa|ed25519|xmss)(?:_sk)?$/;
 const KEY_CONTAINER_RE = /\.(?:p12|pfx|jks|keystore|ppk)$/i;
 const KEY_FILE_RE = /\.(?:pem|key|p8)$/i;
-const PRIVATE_KEY_RE = /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY-----|PuTTY-User-Key-File-/;
+const PRIVATE_KEY_RE = /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File-/;
 const KEY_SCAN_BYTES = 1024 * 1024;
+const DOTENV_SCAN_BYTES = 8 * 1024 * 1024;
 
 const CREDENTIAL_RES = [
   [/(^|\/)\.aws\/credentials$/, 'AWS credentials file'],
@@ -537,13 +538,12 @@ function readDenial(p, opts = {}) {
   if (!c || c.kind === 'agent_config') return null;
   if (c.kind === 'dotenv') {
     const abs = resolvedOf(p, opts);
-    let text;
-    try {
-      text = fs.readFileSync(abs, 'utf8');
-    } catch (_) {
-      return null; // missing file: nothing to protect
-    }
-    if (dotenv.isShadowed(text)) return null;
+    const head = readHead(abs, DOTENV_SCAN_BYTES);
+    if (head === null) return null; // missing file: nothing to protect
+    // Not a regular file (a FIFO), or too big to check whole: refused rather than read.
+    let text = head === NOT_A_FILE ? null : Buffer.from(head, 'latin1').toString('utf8');
+    if (text !== null && Buffer.byteLength(head, 'latin1') >= DOTENV_SCAN_BYTES) text = null;
+    if (text !== null && dotenv.isShadowed(text)) return null;
     return 'zn: ' + path.basename(abs) + ' holds plain-text secrets. Ask the user to run `' +
       znCommand('env shadow ' + path.basename(abs)) + '` in their terminal: it moves the values to the local vault and leaves __ZN_<NAME>__ markers you can read and use.';
   }
@@ -552,21 +552,42 @@ function readDenial(p, opts = {}) {
   return credentialDenial(p, c);
 }
 
+/* The first `max` bytes of a file, as latin1 text. null when it does not exist; NOT_A_FILE for anything that is not
+   a regular file (a FIFO, a device, a directory): opening is non-blocking, so a FIFO cannot hold the hook until the
+   agent's timeout lets the command through. */
+const NOT_A_FILE = Symbol('not a regular file');
+function readHead(abs, max) {
+  let fd;
+  try {
+    fd = fs.openSync(abs, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+  } catch (_) {
+    return null;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return NOT_A_FILE;
+    const n = Math.min(st.size, max);
+    const buf = Buffer.allocUnsafe(n);
+    let got = 0;
+    while (got < n) {
+      const r = fs.readSync(fd, buf, got, n - got, got);
+      if (r <= 0) break;
+      got += r;
+    }
+    return buf.toString('latin1', 0, got);
+  } catch (_) {
+    return NOT_A_FILE;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /* A .pem, .key or .p8 file: refused when it holds a private key, allowed when it is a certificate or a public key. */
 function keyFileDenial(p, c, opts) {
-  let text;
-  try {
-    const fd = fs.openSync(resolvedOf(p, opts), 'r');
-    try {
-      const buf = Buffer.alloc(KEY_SCAN_BYTES);
-      text = buf.toString('latin1', 0, fs.readSync(fd, buf, 0, KEY_SCAN_BYTES, 0));
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch (_) {
-    return null; // missing file: nothing to protect
-  }
-  return PRIVATE_KEY_RE.test(text) ? credentialDenial(p, c) : null;
+  const text = readHead(resolvedOf(p, opts), KEY_SCAN_BYTES);
+  if (text === null) return null; // missing file: nothing to protect
+  if (text === NOT_A_FILE || PRIVATE_KEY_RE.test(text)) return credentialDenial(p, c);
+  return null;
 }
 
 /* Reads of credential files: what was refused, why, and how to use a value instead. */
@@ -961,6 +982,8 @@ function bashDenialOf(cmd, opts = {}) {
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
   const classified = new Map();
+  // And so is its verdict, which may read the file (a .env, a .pem).
+  const denied = new Map();
   // A word with * ? or [ can match a secret file; the message names a literal file when the command has one too.
   // The command is refused either way, so after a glob only a few more words are resolved on disk to find that file.
   const GLOB_NAME_LOOKAHEAD = 32;
@@ -1006,7 +1029,9 @@ function bashDenialOf(cmd, opts = {}) {
       continue; // reading the settings is allowed
     }
     if (w.redirectTarget) continue; // appending to .env is a write, not a read
-    let deny = denialOf(c, text, opts);
+    let deny;
+    if (denied.has(text)) deny = denied.get(text);
+    else { deny = denialOf(c, text, opts); denied.set(text, deny); }
     if (!deny && c.kind === 'dotenv') deny = dotenvElsewhereDenial(text, opts);
     if (deny && /[*?[]/.test(text)) { globDeny = globDeny || deny; continue; }
     if (deny) return deny;
