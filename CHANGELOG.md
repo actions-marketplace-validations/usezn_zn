@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.12.0] - 2026-10-17
+## [1.12.0] - 2026-10-18
 
 zn-gate 1.12.0 adds `zn-gate reach`, a read-only report of what the coding agents on this machine can reach (secret names, credential files, MCP servers and agent settings) with the command that fixes each finding, also as SARIF for code scanning. Releases are now built and signed in a separate workflow (SLSA Build Level 3), and release tags are signed by a workflow with gitsign. `zn audit` stops showing secret values it did not recognise in the commands it quotes, and the agent hooks refuse long shell patches quickly again. The agent hooks also refuse more of the ways a shell command can reach a `.env` file with values (see Security). Update with `npm install -g zn-gate@1.12.0` and `pip install -U zn-gate`.
 
@@ -23,12 +23,14 @@ zn-gate 1.12.0 adds `zn-gate reach`, a read-only report of what the coding agent
 
 ### Changed
 - The README and the npm package page show the getting-started path in four steps: `zn-gate reach`, `zn-gate init`, `zn-gate check` and `zn-gate env shadow`. `zn-gate reach` is documented in full in `docs/reach.md`: what it shows, its flags and exit codes, the memory file of `--remember`, SARIF upload to code scanning, and what it never sends.
+- The two MCP servers (`zn mcp` and the `secrets` server) are now checked against Claude Code 2.1.302 and the newest MCP SDK client. They keep answering with MCP protocol version 2024-11-05, whatever version the client asks for, and the compatibility page says so.
 
 ### Fixed
 - The agent hooks: a long patch sent as a shell command (`apply_patch` in Codex) is refused in a fraction of a second again. To name a secret file in the message, zn now checks only the first 32 files of the patch (and, in other refused commands, the next 32 words after a wildcard) instead of every one on disk, which took several seconds for a patch near the 100 KB limit and could reach the agent's time limit for the hook on a slow machine. The decision does not change. `POLICY_RULES_VERSION` is `2026-10-17.2`.
 - The agent hooks on Windows: a PowerShell command that already runs through `zn-gate run -- ...` with a secret placeholder is left as it is. Before, `zn-gate` was taken for a PowerShell cmdlet because of its name and the command was refused (`zn run -- ...` worked).
 
 ### Security
+- [GHSA-rccq-h3xc-j9qj](https://github.com/usezn/zn/security/advisories/GHSA-rccq-h3xc-j9qj): the agent hooks could let a protected file be read without being checked when the command reached it indirectly, or when the command was too long or slow to check. The bullets below are the fixes.
 - `zn audit` hides a secret value given as the next item of a JSON array after a credential flag, as in the arguments of an MCP server: `"args": ["--api-key", "..."]`. Earlier versions could quote it in the evidence of a finding.
 - `zn audit` no longer shows secret values in a format it does not know when they follow a credential flag (`--token`, `--api-key`, `--password`), an auth header (`Authorization: Bearer ...`, `x-api-key: ...`) or a name such as `API_TOKEN=`, in the command lines and hook commands it quotes. Earlier versions could quote such a value in a finding; rotate any that a finding showed. References such as `$TOKEN` or `${API_KEY}` are kept.
 - Releases are built, attested and signed by a separate reusable workflow, `build-release.yml`, whose build and signing jobs the release workflow calls but cannot reach. That makes the build provenance of the npm and Python packages SLSA Build Level 3. To verify a release from 1.12.0 on, the signer workflow of the GitHub attestations and Sigstore signatures is `usezn/zn/.github/workflows/build-release.yml` (earlier releases: `release.yml`; npm provenance and PyPI attestations still name `release.yml`); see `docs/verify-release.md`. The agent plugin's checks pick the signer workflow from the release's own tag.
