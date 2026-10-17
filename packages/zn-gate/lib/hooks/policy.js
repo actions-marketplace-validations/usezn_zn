@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.8';
+const POLICY_RULES_VERSION = '2026-10-17.9';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -457,6 +457,7 @@ function globClass(word, opts = {}) {
   // Each alternative is resolved and matched in full: past this much work the
   // pattern is refused as too broad instead of being checked.
   if (alts.length * word.length > GLOB_WORK_MAX) return { kind: 'credential', reason: 'a pattern too broad to check' };
+  let keyHit = null;
   const examples = [...GLOB_EXAMPLES.map((e) => path.join(ctx.home, e)), ...PROJECT_EXAMPLES.map((e) => path.join(ctx.cwd, e))];
   for (const alt of alts) {
     const e = expandEnv(expandHome(alt, ctx.home), ctx.env);
@@ -474,16 +475,18 @@ function globClass(word, opts = {}) {
       }
     }
     // What the pattern matches on the disk now, read with a limit.
-    const hits = globOnDisk(abs);
-    if (hits === 'too-broad') return { kind: 'credential', reason: 'a pattern too broad to check' };
+    const hits = globOnDisk(abs, opts.budget);
+    if (hits === 'too-broad' || hits === 'too-slow') return { kind: 'credential', reason: 'a pattern too broad to check' };
     for (const hit of hits || []) {
       for (const cand of new Set([hit, realTargetOf(hit)])) {
         const c = classifyResolved(cand, ctx);
+        // A key file match is judged by its content (keyFileGlobDenial); a protected file found later still wins.
+        if (c && c.kind === 'keyfile') { keyHit = keyHit || c; continue; }
         if (c) return c.kind === 'dotenv' ? { kind: 'credential', reason: 'a pattern that matches a .env file' } : c;
       }
     }
   }
-  return null;
+  return keyHit;
 }
 
 /**
@@ -491,7 +494,7 @@ function globClass(word, opts = {}) {
  * each glob component is matched against the names in its directory.
  * Returns the matches, 'too-broad' past GLOB_DISK_LIMIT entries, or null.
  */
-function globOnDisk(abs) {
+function globOnDisk(abs, cmdBudget) {
   const parts = abs.split('/');
   let i = 0;
   while (i < parts.length && !GLOB_RE.test(parts[i])) i++;
@@ -511,6 +514,8 @@ function globOnDisk(abs) {
         try { names = fs.readdirSync(d); } catch (_) { continue; }
         budget -= names.length;
         if (budget < 0) return 'too-broad';
+        // Reading the names of a folder also spends the command's own budget (an over-budget command is refused).
+        if (cmdBudget && overBudget(cmdBudget, names.length)) return 'too-slow';
         for (const n of names) if (segRe.test(keyOf(n))) next.push(join(d, n));
       }
     }
@@ -592,9 +597,35 @@ function readHead(abs, max) {
 
 /* A .pem, .key or .p8 file: refused when it holds a private key, allowed when it is a certificate or a public key. */
 function keyFileDenial(p, c, opts) {
+  if (GLOB_RE.test(p)) return keyFileGlobDenial(p, c, opts);
   const text = readHead(resolvedOf(p, opts), KEY_SCAN_BYTES);
   if (text === null) return null; // missing file: nothing to protect
   if (text === NOT_A_FILE || PRIVATE_KEY_RE.test(text)) return credentialDenial(p, c);
+  return null;
+}
+
+/* A glob or brace word that can name a key file: what it matches on the disk now is read with the command's budget,
+   and the word is refused when any match holds a private key (or is not a regular file). */
+function keyFileGlobDenial(p, c, opts) {
+  const ctx = contextOf(opts);
+  const broad = { kind: 'keyfile', reason: 'a pattern too broad to check' };
+  const alts = expandBraces(p);
+  if (alts === null) return credentialDenial(p, broad);
+  if (alts.length * p.length > GLOB_WORK_MAX) return credentialDenial(p, broad);
+  for (const alt of alts) {
+    if (overBudget(opts.budget, 1)) return TOO_SLOW_MESSAGE;
+    const abs = slash(path.resolve(opts.cwd || ctx.cwd, expandEnv(expandHome(alt, ctx.home), opts.env || ctx.env).text));
+    const hits = globOnDisk(abs, opts.budget);
+    if (hits === 'too-slow') return TOO_SLOW_MESSAGE;
+    if (hits === 'too-broad') return credentialDenial(p, broad);
+    for (const hit of hits || []) {
+      const hc = classifyPath(hit, { ...opts, ctx });
+      if (!hc || hc.kind !== 'keyfile') continue;
+      if (overBudget(opts.budget, 1)) return TOO_SLOW_MESSAGE;
+      const text = readHead(hit, KEY_SCAN_BYTES);
+      if (text !== null && (text === NOT_A_FILE || PRIVATE_KEY_RE.test(text))) return credentialDenial(p, hc);
+    }
+  }
   return null;
 }
 
@@ -701,14 +732,16 @@ function allWords(cmd, posix = false) {
   while (rest.length && guard++ < SIMPLE_COMMANDS_MAX) {
     const scan = scanFirstCommand(rest, posix);
     const head = commandName(scan.words);
-    const sub = isGit(head) ? gitSubcommand(scan.words) : '';
+    // git also runs behind sudo, env, command, xargs and the like.
+    const gi = gitStart(scan.words);
+    const sub = gi >= 0 ? gitSubcommand(scan.words.slice(gi)) : '';
     const gitArgs = sub ? scan.words.map((x) => x.text) : null;
     for (let k = 0; k < scan.words.length; k++) {
       const w = scan.words[k];
       const prev = k > 0 ? scan.words[k - 1].text : '';
       const isRedirTarget = /^[0-9]*>>?$/.test(prev) || /^[0-9]*>>?./.test(w.text);
       // Input redirections: <file, 0<file, <>file (read and write), {fd}<file.
-      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard, sub, gitArgs });
+      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard, sub, gitArgs, git: gi >= 0 });
     }
     rest = rest.slice(scan.end + 1);
   }
@@ -1011,13 +1044,15 @@ function bashDenialOf(cmd, opts = {}) {
   const GLOB_NAME_LOOKAHEAD = 32;
   let globDeny = null;
   let afterGlob = 0;
+  // A <rev>:<path> word is read as a git object in any command that runs git (echo HEAD:.env | xargs git show).
+  const anyGit = words.some((x) => x.git || x.text === 'git' || x.text.endsWith('/git'));
   for (const w of words) {
     // --flag=value carries a path too (--kubeconfig=~/.kube/config).
     let text = w.text;
     if (text.startsWith('-')) {
       const eq = text.indexOf('=');
       // git log -L<range>:<file> names a file after the colon.
-      const lineRange = isGit(w.head) ? /^-L[^:]*:(.+)$/.exec(text) : null;
+      const lineRange = w.git ? /^-L[^:]*:(.+)$/.exec(text) : null;
       if (lineRange) text = lineRange[1];
       else if (eq < 0) continue;
       else text = text.slice(eq + 1);
@@ -1026,6 +1061,8 @@ function bashDenialOf(cmd, opts = {}) {
       text = text.slice(text.indexOf('=') + 1);
     }
     if (!text) continue;
+    // A git pathspec with magic names the path after it.
+    if (anyGit && text.charCodeAt(0) === 58) text = text.replace(PATHSPEC_MAGIC_RE, '') || text;
     const writing = !READ_ONLY_CMDS.has(w.head);
     if (!classified.has(text)) {
       if (globDeny && ++afterGlob > GLOB_NAME_LOOKAHEAD) return globDeny;
@@ -1033,11 +1070,11 @@ function bashDenialOf(cmd, opts = {}) {
       classified.set(text, classifyWord(text, opts));
     }
     const c = classified.get(text);
-    if ((!c || c.kind === 'dotenv') && isGit(w.head)) {
+    if ((!c || c.kind === 'dotenv' || c.kind === 'keyfile') && (w.git || anyGit)) {
       // git show HEAD:.env, git cat-file -p :app/.env: a secret file read from the repository, not from disk.
       const deny = gitObjectDenial(text, opts) ||
         // git log -p -- .env, git checkout HEAD -- .env: its history, also once the file is gone from disk.
-        (c && gitReadsContent(w.sub, w.gitArgs) ? gitHistoryDenial(text) : null);
+        (c && w.git && gitReadsContent(w.sub, w.gitArgs) ? gitHistoryDenial(text) : null);
       if (deny) return deny;
     }
     if (!c) {
@@ -1055,7 +1092,7 @@ function bashDenialOf(cmd, opts = {}) {
     let deny;
     if (denied.has(text)) deny = denied.get(text);
     else { deny = denialOf(c, text, opts); denied.set(text, deny); }
-    if (!deny && c.kind === 'dotenv') deny = dotenvElsewhereDenial(text, opts);
+    if (!deny && (c.kind === 'dotenv' || c.kind === 'keyfile')) deny = dotenvElsewhereDenial(text, opts, c.kind);
     if (deny && /[*?[]/.test(text)) { globDeny = globDeny || deny; continue; }
     if (deny) return deny;
   }
@@ -1092,6 +1129,36 @@ const GIT_VALUE_OPTS = new Set(['-c', '-C', '--git-dir', '--work-tree', '--names
 function isGit(head) {
   return String(head || '').replace(/\.exe$/, '') === 'git';
 }
+
+// Programs that run the next command: git behind them is still git. Options that take a value are skipped with it.
+const GIT_WRAPPERS = new Set(['sudo', 'doas', 'env', 'command', 'nohup', 'time', 'xargs', 'builtin', 'exec', 'nice', 'ionice', 'stdbuf', 'timeout', 'setsid']);
+const WRAPPER_VALUE_OPTS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U', '-S', '-I', '-L', '-P', '-n', '-E', '-s', '-a', '-d', '-k',
+  '--user', '--group', '--chdir', '--unset', '--max-args', '--max-procs', '--replace', '--delimiter', '--arg-file', '--eof', '--signal', '--kill-after']);
+
+/* The index of the word that is git in a simple command, directly or behind wrappers; -1 when it is not git. */
+function gitStart(words) {
+  let k = words.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
+  if (k < 0) return -1;
+  for (let guard = 0; guard < 16; guard++) {
+    const name = String(words[k].text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase();
+    if (isGit(name)) return k;
+    if (!GIT_WRAPPERS.has(name)) return -1;
+    // Skip the wrapper's options (and the values some take), env's assignments and timeout's duration.
+    k++;
+    while (k < words.length) {
+      const t = words[k].text;
+      if (t === '--') { k++; break; }
+      if (t.startsWith('-') && t.length > 1) { k += WRAPPER_VALUE_OPTS.has(t) ? 2 : 1; continue; }
+      if (ASSIGNMENT_RE.test(t) || (name === 'timeout' && /^[0-9.]+[smhd]?$/.test(t))) { k++; continue; }
+      break;
+    }
+    if (k >= words.length) return -1;
+  }
+  return -1;
+}
+
+// A git pathspec starts with :(magic) or :/ ... before the path (':(top).env', ':/.env', ':(glob)**/.env').
+const PATHSPEC_MAGIC_RE = /^:(?:\([^)]*\)|[\/!^])+(?=.)/;
 
 /* The subcommand of a git command: the first word after git that is not a global option (git -C app -c k=v log). */
 function gitSubcommand(words) {
@@ -1205,14 +1272,15 @@ function cdBasesOf(readings, opts) {
 /* A .env path the working directory alone does not settle: one built while the command runs ($DIR/.env, $(...)/.env),
    or one read after a cd. Refused when zn cannot rule out that it reaches a .env file with values.
    The answer is kept per word: the places a cd leads to are the same for the whole command. */
-function dotenvElsewhereDenial(text, opts) {
-  if (opts.elsewhere && opts.elsewhere.has(text)) return opts.elsewhere.get(text);
-  const deny = dotenvElsewhereOf(text, opts);
-  if (opts.elsewhere) opts.elsewhere.set(text, deny);
+function dotenvElsewhereDenial(text, opts, kind = 'dotenv') {
+  const key = kind + '\0' + text;
+  if (opts.elsewhere && opts.elsewhere.has(key)) return opts.elsewhere.get(key);
+  const deny = dotenvElsewhereOf(text, opts, kind);
+  if (opts.elsewhere) opts.elsewhere.set(key, deny);
   return deny;
 }
 
-function dotenvElsewhereOf(text, opts) {
+function dotenvElsewhereOf(text, opts, kind = 'dotenv') {
   const home = opts.home || os.homedir();
   const env = opts.env || process.env;
   const expanded = expandEnv(expandHome(text, home), env).text;
@@ -1221,7 +1289,8 @@ function dotenvElsewhereOf(text, opts) {
   // (`cat $(echo app)/.env` leaves the word /.env right after the closing bracket).
   const cmdText = opts.cmdText || '';
   const afterSubstitution = /[()]/.test(text) || cmdText.includes(')' + text) || cmdText.includes('`' + text);
-  if (/[$`]/.test(expanded) || (missing && afterSubstitution)) {
+  // A key file is judged by its content where the cd leads; only a .env is refused for a path built while the command runs.
+  if (kind === 'dotenv' && (/[$`]/.test(expanded) || (missing && afterSubstitution))) {
     return 'zn: this command builds the path of a .env file while it runs (' + text + '), so zn cannot check whether it holds secrets. ' +
       'Name the file directly, for example `cat app/.env`; if it holds values, ask the user to run `' + znCommand('env shadow .env', opts) + '` in that folder.';
   }
@@ -1234,7 +1303,8 @@ function dotenvElsewhereOf(text, opts) {
   for (const dir of bases.dirs) {
     if (dir === cwd) continue;
     if (overBudget(opts.budget, 1)) return TOO_SLOW_MESSAGE;
-    const deny = readDenial(text, { ...opts, cwd: dir, env: pwdRef ? { ...env, PWD: dir } : env });
+    const where2 = { ...opts, cwd: dir, env: pwdRef ? { ...env, PWD: dir } : env };
+    const deny = kind === 'keyfile' ? keyFileDenial(text, { kind }, where2) : readDenial(text, where2);
     if (deny) {
       // The folder as the user would type it: relative below the current folder, absolute above it.
       const rel = path.relative(cwd, dir);
@@ -1244,7 +1314,7 @@ function dotenvElsewhereOf(text, opts) {
   }
   if (bases.unknown) {
     return 'zn: this command changes to a folder zn cannot follow and then reads ' + text + ', so zn cannot check whether it holds secrets. ' +
-      'Give the path from the current folder instead, for example `cat app/.env`.';
+      'Give the path from the current folder instead, for example `' + (kind === 'keyfile' ? 'cat certs/server.pem' : 'cat app/.env') + '`.';
   }
   return null;
 }
@@ -1289,7 +1359,8 @@ function adminDenial(admin, opts = {}, cmd = '') {
 /** The deny message for a read or write classified by classifyWord. */
 function denialOf(c, text, opts) {
   if (c.kind === 'zn_state') return vaultMessage(opts);
-  if (c.kind === 'dotenv' || c.kind === 'keyfile') return readDenial(text, opts);
+  if (c.kind === 'keyfile') return keyFileDenial(text, c, opts);
+  if (c.kind === 'dotenv') return readDenial(text, opts);
   return credentialDenial(text, c);
 }
 
