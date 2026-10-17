@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.9';
+const POLICY_RULES_VERSION = '2026-10-17.10';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1130,30 +1130,48 @@ function isGit(head) {
   return String(head || '').replace(/\.exe$/, '') === 'git';
 }
 
-// Programs that run the next command: git behind them is still git. Options that take a value are skipped with it.
-const GIT_WRAPPERS = new Set(['sudo', 'doas', 'env', 'command', 'nohup', 'time', 'xargs', 'builtin', 'exec', 'nice', 'ionice', 'stdbuf', 'timeout', 'setsid']);
-const WRAPPER_VALUE_OPTS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U', '-S', '-I', '-L', '-P', '-n', '-E', '-s', '-a', '-d', '-k',
-  '--user', '--group', '--chdir', '--unset', '--max-args', '--max-procs', '--replace', '--delimiter', '--arg-file', '--eof', '--signal', '--kill-after']);
+// Programs that run the next command: git behind them is still git. For each, the short options that take a value
+// (skipped with it); every other option is a flag. A wrapper not listed here, or a chain that does not resolve, falls
+// back to the first word that is git (a refused command is the safe side).
+const GIT_WRAPPERS = {
+  sudo: 'ugphCDrtUTR', doas: 'uC', env: 'uCS', command: '', nohup: '', time: 'fo', builtin: '', exec: 'a', nice: 'n', timeout: 'sk',
+  xargs: 'IinLPdEsa', setsid: '', ionice: 'cnpPu', stdbuf: 'ioe',
+};
+const WRAPPER_LONG_VALUE = new Set(['--user', '--group', '--chdir', '--unset', '--max-args', '--max-procs', '--replace', '--delimiter',
+  '--arg-file', '--eof', '--signal', '--kill-after', '--split-string', '--host', '--prompt', '--close-from', '--role', '--type']);
+
+function wordIsGit(text) {
+  return isGit(String(text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase());
+}
 
 /* The index of the word that is git in a simple command, directly or behind wrappers; -1 when it is not git. */
 function gitStart(words) {
   let k = words.findIndex((x) => !ASSIGNMENT_RE.test(x.text));
   if (k < 0) return -1;
+  const first = k;
   for (let guard = 0; guard < 16; guard++) {
+    if (wordIsGit(words[k].text)) return k;
     const name = String(words[k].text).replace(/^\(+/, '').split(/[\\/]/).pop().toLowerCase();
-    if (isGit(name)) return k;
-    if (!GIT_WRAPPERS.has(name)) return -1;
+    if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) break;
+    const valueOpts = GIT_WRAPPERS[name];
     // Skip the wrapper's options (and the values some take), env's assignments and timeout's duration.
     k++;
     while (k < words.length) {
       const t = words[k].text;
       if (t === '--') { k++; break; }
-      if (t.startsWith('-') && t.length > 1) { k += WRAPPER_VALUE_OPTS.has(t) ? 2 : 1; continue; }
+      if (t.startsWith('--') && t.length > 2) { k += !t.includes('=') && WRAPPER_LONG_VALUE.has(t) ? 2 : 1; continue; }
+      if (t.startsWith('-') && t.length > 1) {
+        // -n, -E, -En: flags; a cluster ending in an option that takes a value (sudo -u root) takes the next word.
+        k += /^-[A-Za-z]+$/.test(t) && valueOpts.includes(t[t.length - 1]) ? 2 : 1;
+        continue;
+      }
       if (ASSIGNMENT_RE.test(t) || (name === 'timeout' && /^[0-9.]+[smhd]?$/.test(t))) { k++; continue; }
       break;
     }
-    if (k >= words.length) return -1;
+    if (k >= words.length) break;
   }
+  // The chain did not resolve to git: the first word that is git counts as the start, so nothing slips past.
+  for (let j = first; j < words.length; j++) if (wordIsGit(words[j].text)) return j;
   return -1;
 }
 

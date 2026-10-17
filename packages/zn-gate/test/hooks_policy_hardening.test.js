@@ -674,3 +674,18 @@ test('many distinct key file globs and words after several cd are decided within
     assert.ok(ms < 5000, shape + ' took ' + ms + ' ms');
   }
 });
+
+test('git behind wrappers with flags, unknown wrappers or odd chains is still read as git, with the file gone from disk', (t) => {
+  const { o } = keyDir(t, 'zn-gitwrap2-');
+  for (const cmd of ['sudo -n git log -p -- .env', 'sudo -E git log -p -- old/server.key', 'sudo -s git log -p -- .env', 'sudo -En git log -p -- .env',
+    'sudo -u root -E git log -p -- .env', 'sudo -k git log -p -- .env', 'time -p git log -p -- .env', 'nice -n 5 git log -p -- .env',
+    'ionice -c 3 git log -p -- .env', 'stdbuf -o L git log -p -- .env', 'chrt -b 0 git log -p -- .env', 'taskset 0x1 git log -p -- .env',
+    'flock /x.lock git log -p -- .env', 'timeout -s KILL 5 git log -p -- .env', 'env -i git log -p -- .env',
+    'xargs -I{} git show {} <<< HEAD:.env', 'xargs -n 1 git log -p -- .env', 'sudo -n env -i git show HEAD:.env', 'exec -a x git show HEAD:.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['sudo apt-get install git-lfs', 'time npm test', 'xargs grep x', 'sudo -n true', 'sudo -E env', 'ionice -c 3 ls', 'flock /x.lock ls',
+    'sudo -n git status', 'sudo -E git log --oneline -- old/gone.key', 'chrt -b 0 ls', 'taskset 0x1 true', 'time -p ls']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
