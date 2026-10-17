@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.10';
+const POLICY_RULES_VERSION = '2026-10-17.11';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -998,6 +998,31 @@ function shellPatchMessage(cmd, deny, opts) {
     '(its *** lines look like file patterns that can match secret files). Next step: use the apply_patch tool, or write the file another way.';
 }
 
+// How deep sh -c "sh -c '...'" is followed; deeper is refused.
+const SHELL_CODE_DEPTH = 3;
+const TOO_NESTED_MESSAGE = 'zn: this command nests shell code (sh -c "sh -c ...") deeper than zn checks, so it was blocked. Next step: run the inner command directly, or tell the user.';
+// The flag that gives a shell or a wrapper its code: sh -c, bash -lc, pwsh -Command, cmd /c, flock -c, env -S.
+const SHELL_CODE_FLAG_RE = /^(?:-[A-Za-z]*c|-command|\/[ck]|-S|--split-string)$/i;
+
+/* The code strings that follow such a flag in a command, and "git <args>" for PowerShell's Start-Process git -ArgumentList.
+   Any word after such a flag counts (a few are not code, which only costs a look), so nothing is missed by the program's name. */
+function shellCodesOf(words) {
+  const out = new Set();
+  for (let k = 0; k < words.length; k++) {
+    const t = words[k].text;
+    if (t.startsWith('--split-string=')) { out.add(t.slice(15)); continue; }
+    const next = words[k + 1];
+    if (!next || next.seq !== words[k].seq || !next.text) continue;
+    if (SHELL_CODE_FLAG_RE.test(t)) out.add(next.text);
+    else if (/^-arg/i.test(t)) {
+      for (let j = k - 1; j >= 0 && words[j].seq === words[k].seq; j--) {
+        if (wordIsGit(words[j].text)) { out.add('git ' + next.text.replace(/,/g, ' ')); break; }
+      }
+    }
+  }
+  return out;
+}
+
 function bashDenial(cmd, opts = {}) {
   return shellPatchMessage(cmd, bashDenialOf(cmd, opts), opts);
 }
@@ -1008,7 +1033,9 @@ function bashDenialOf(cmd, opts = {}) {
   if (admin) return adminDenial(admin, opts, cmd);
   // The context (home, project, agent directories) is built once per command.
   opts = { ...opts, ctx: contextOf(opts) };
-  opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
+  // The code of a shell inside the command (sh -c "...") is checked as a command of its own, with the same budget.
+  const depth = opts.depth || 0;
+  if (!depth || !opts.budget) opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
   // The command is read three times: a backslash before a letter is a Windows
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.
@@ -1019,6 +1046,15 @@ function bashDenialOf(cmd, opts = {}) {
   // A reading that could not be split to the end is refused, not checked in part.
   if (readings.some((r) => r.truncated)) return TOO_MANY_MESSAGE;
   const words = readings.flat();
+  const codes = shellCodesOf(words);
+  if (codes.size) {
+    if (depth >= SHELL_CODE_DEPTH) return TOO_NESTED_MESSAGE;
+    for (const code of codes) {
+      if (overBudget(opts.budget, 5)) return TOO_SLOW_MESSAGE;
+      const deny = bashDenialOf(code, { ...opts, depth: depth + 1 });
+      if (deny) return deny;
+    }
+  }
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   // The same for the code an interpreter runs (python -c "open('.env')"), where a path sits inside quotes and brackets.

@@ -1,0 +1,2 @@
+### Security
+- The agent hooks: the code a shell or wrapper runs from a string (`sh -c`, `bash -lc`, `sudo sh -c`, `flock -c`, `env -S`, `pwsh -Command`, `cmd /c`, `Start-Process git -ArgumentList`) is now checked as a command of its own, so every rule applies inside it, including reading a `.env`, credential or key file from git history. Nesting deeper than three levels is refused. `POLICY_RULES_VERSION` is `2026-10-17.11`.
