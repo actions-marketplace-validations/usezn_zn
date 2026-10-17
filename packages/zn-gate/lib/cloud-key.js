@@ -34,7 +34,7 @@ const TLS_REFUSAL = 'NODE_TLS_REJECT_UNAUTHORIZED=0 is set, so zn-gate will not 
  * Why a saved key must not be sent now, or null. The key goes only over a connection checked against the
  * system's certificate authorities: not while the environment turns checking off or adds authorities or code
  * (NODE_TLS_REJECT_UNAUTHORIZED=0, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, or NODE_OPTIONS with --require, --import,
- * -r or --use-openssl-ca). A key given with --key or ZN_API_KEY is the person's own choice and is not held back.
+ * -r, --use-openssl-ca, --tls-keylog or --inspect*). A key given with --key or ZN_API_KEY is the person's own choice and is not held back.
  */
 function tlsRefusal(env = process.env) {
   if (env.NODE_TLS_REJECT_UNAUTHORIZED === '0') return TLS_REFUSAL;
@@ -43,13 +43,14 @@ function tlsRefusal(env = process.env) {
   }
   if (env.OPENSSL_CONF) return 'OPENSSL_CONF is set, so zn-gate will not send the saved key: the TLS settings could be changed';
   if (nodeOptionsList(env.NODE_OPTIONS).some((t) => RISKY_NODE_OPTION.test(t))) {
-    return 'NODE_OPTIONS loads code or changes the TLS settings, so zn-gate will not send the saved key';
+    return 'NODE_OPTIONS loads code, changes the TLS settings or opens a debugger, so zn-gate will not send the saved key';
   }
   return null;
 }
 
-// Options that load code or change the certificates or TLS settings Node uses.
-const RISKY_NODE_OPTION = /^(?:-r|--require|--import|--loader|--experimental-loader|--use-openssl-ca|--openssl-config)(?:=|$)/;
+// Options that load code, change the certificates or TLS settings Node uses, write the TLS session keys to a file,
+// or open a debugger that can read the key from memory.
+const RISKY_NODE_OPTION = /^(?:-r|--require|--import|--loader|--experimental-loader|--use-openssl-ca|--openssl-config|--openssl-shared-config|--tls-keylog|--inspect(?:-brk|-port|-wait)?)(?:=|$)/;
 
 /** NODE_OPTIONS split the way Node does: on spaces outside quotes, quotes removed (a backslash escapes inside double quotes). */
 function nodeOptionsList(value) {
@@ -209,6 +210,15 @@ async function saveKey(key, deps) {
   return store;
 }
 
+/**
+ * The marker must prove that `connect` wrote it: it carries the last four characters of the key it stored, and
+ * the stored key must end the same way. A marker written by hand cannot know them, and without a matching stored
+ * key it turns nothing on. (Not a secret: four characters, shown by `status`.)
+ */
+function provesMarker(marker, key) {
+  return Boolean(marker.last4) && marker.last4 === last4(key);
+}
+
 /** The stored key {key, store}, or null (nothing stored, keychain empty, vault locked). Never throws. */
 async function loadStoredKey(deps) {
   const m = readMarker();
@@ -217,11 +227,11 @@ async function loadStoredKey(deps) {
     if (m.store === 'keychain') {
       const n = nativeKeychain(deps);
       const v = n ? usableApiKey(n.impl.load(n.slot)) : null;
-      return v ? { key: v, store: 'keychain' } : null;
+      return v && provesMarker(m, v) ? { key: v, store: 'keychain' } : null;
     }
     const raw = await vaultClient(deps).resolve(process.cwd(), '__ZN_' + VAULT_SECRET + '__');
     const v = usableApiKey(raw);
-    return v ? { key: v, store: 'vault' } : null;
+    return v && provesMarker(m, v) ? { key: v, store: 'vault' } : null;
   } catch (_) {
     return null;
   }
