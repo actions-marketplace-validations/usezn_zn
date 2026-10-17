@@ -975,6 +975,7 @@ function bashDenialOf(cmd, opts = {}) {
   if (admin) return adminDenial(admin, opts, cmd);
   // The context (home, project, agent directories) is built once per command.
   opts = { ...opts, ctx: contextOf(opts) };
+  opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
   // The command is read three times: a backslash before a letter is a Windows
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.
@@ -998,7 +999,7 @@ function bashDenialOf(cmd, opts = {}) {
   // Each reading is followed on its own, so a cd counts once.
   opts.cdBases = cdBasesOf(readings, opts);
   opts.elsewhere = new Map();
-  opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
+  if (overBudget(opts.budget, 0)) return TOO_SLOW_MESSAGE;
   opts.cmdText = String(cmd);
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
@@ -1173,11 +1174,14 @@ function cdBasesOf(readings, opts) {
   let unknown = false;
   let moved = false;
   for (const words of readings) {
+    if (unknown) break;
     let bases = [cwd];
-    for (let k = 0; k < words.length; k++) {
+    for (let k = 0; k < words.length && !unknown; k++) {
       // Found by its text, not by the command's head, so { cd x; ... } and if cd x; then ... count too.
       if (!CD_CMDS.has(words[k].text.replace(/^[({]+/, '').toLowerCase())) continue;
       moved = true;
+      // Each cd followed costs its new places; past the budget, the rest cannot be followed.
+      if (overBudget(opts.budget, bases.length)) { unknown = true; break; }
       // The target: the next word of the same simple command that is not an option (cd -P dir, Set-Location -Path dir).
       let t = '~';
       for (let j = k + 1; j < words.length && words[j].seq === words[k].seq; j++) {

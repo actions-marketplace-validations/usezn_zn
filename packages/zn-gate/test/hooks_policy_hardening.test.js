@@ -578,3 +578,18 @@ test('a read placed after thousands of chained commands is still found, and a lo
   const heredoc = "cat > out.py <<'EOF'\n" + Array.from({ length: 1200 }, (_, i) => 'x' + i + ' = ' + i).join('\n') + '\nEOF';
   assert.equal(policy.bashDenial(heredoc, o), null, 'a 1200-line heredoc writing a file');
 });
+
+test('thousands of cd in one command are followed within the time budget', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-manycd-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=__ZN_EXAMPLE_API_KEY__\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const unit of ['cd x; ', 'cd x/y/z; ', "(cd a;$'b'); ", 'cd a;cd b; ']) {
+    const cmd = unit.repeat(Math.floor(98000 / unit.length)) + 'cat .env';
+    const t0 = process.hrtime.bigint();
+    const deny = policy.bashDenial(cmd, o);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(deny, unit + ': a .env read after cd it cannot follow is refused');
+    assert.ok(ms < 5000, unit + ' took ' + ms + ' ms');
+  }
+});
