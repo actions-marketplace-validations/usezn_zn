@@ -7,6 +7,13 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const policy = require('../lib/hooks/policy');
 const exe = require('../lib/exe');
+const os = require('os');
+const path = require('path');
+
+// Real absolute paths for the platform: a POSIX-style home such as '/home/u' is not
+// absolute on Windows, so "~/..." would not resolve to a credential file there.
+const HOME = path.join(os.tmpdir(), 'zn-glob-home');
+const OPTS = { cwd: path.join(HOME, 'project'), home: HOME, env: {} };
 
 // The previous implementation, kept here as the reference for short inputs.
 function reference(pattern) {
@@ -53,13 +60,13 @@ test('many "*" never make the match slow', () => {
 
 test("a very long glob word is handled quickly", () => {
   const t0 = process.hrtime.bigint();
-  policy.classifyWord('*a'.repeat(30000) + 'b', { cwd: '/home/u/project', home: '/home/u', env: {} });
+  policy.classifyWord('*a'.repeat(30000) + 'b', OPTS);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.ok(ms < 1000, 'took ' + ms.toFixed(1) + ' ms');
 });
 
 test('a bash command with a long glob is checked quickly, and still denied when it names a credential file', () => {
-  const opts = { cwd: '/home/u/project', home: '/home/u', env: {} };
+  const opts = OPTS;
   const t0 = process.hrtime.bigint();
   policy.bashDenial('cat ' + '*'.repeat(20000) + 'a*a*a*b', opts);
   const deny = policy.bashDenial('cat ~/' + '*'.repeat(20000) + '/credentials', opts);
@@ -123,7 +130,7 @@ test('a bracket expression never matches a separator', () => {
 });
 
 test('a very long path is classified quickly', () => {
-  const opts = { cwd: '/home/u/project', home: '/home/u', env: {} };
+  const opts = OPTS;
   for (const w of ['a/'.repeat(25000) + 'x', '*/'.repeat(25000) + 'x', '/home/u/' + 'b/'.repeat(25000) + '.env']) {
     const t0 = process.hrtime.bigint();
     policy.classifyWord(w, opts);
@@ -135,7 +142,7 @@ test('a very long path is classified quickly', () => {
 });
 
 test('long legitimate commands with "?" are not refused', () => {
-  const opts = { cwd: '/home/u/project', home: '/home/u', env: {} };
+  const opts = OPTS;
   const text = 'Why does this fail? '.repeat(250);
   for (const cmd of ['git commit -m "' + text + '"', "printf '%s' '" + text + "' > notes.txt", "curl 'https://example.com/?q=" + 'x'.repeat(5000) + "'"]) {
     const t0 = process.hrtime.bigint();
@@ -148,7 +155,7 @@ test('long legitimate commands with "?" are not refused', () => {
 
 test('a word with very many "[" is refused quickly', () => {
   const t0 = process.hrtime.bigint();
-  const c = policy.classifyWord('['.repeat(50000), { cwd: '/home/u/project', home: '/home/u', env: {} });
+  const c = policy.classifyWord('['.repeat(50000), OPTS);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.equal(c && c.kind, 'credential');
   assert.ok(ms < 1000, 'took ' + ms.toFixed(1) + ' ms');
@@ -171,7 +178,7 @@ test('realTargetOf keeps its result for existing and missing paths', () => {
 });
 
 test('bracket expressions are scanned once per pattern', () => {
-  const opts = { cwd: '/home/u/project', home: '/home/u', env: {} };
+  const opts = OPTS;
   const braces = '{a,b,c,d,e,f,g,h}{a,b,c,d,e,f,g,h}';
   const words = ['[:'.repeat(1000) + 'a'.repeat(48000), braces + '[:'.repeat(300) + 'a'.repeat(20000),
     braces + '[:'.repeat(990) + 'a'.repeat(48000), '[' + '[:'.repeat(20000) + ']', '[!' + ':]['.repeat(15000)];
@@ -211,7 +218,7 @@ test('the class end table gives the same answers as a direct scan', () => {
 });
 
 test('brace patterns are read without backtracking, and very large ones are refused quickly', () => {
-  const opts = { cwd: '/home/u/project', home: '/home/u', env: {} };
+  const opts = OPTS;
   const braces = '{a,b,c,d,e,f,g,h}{a,b,c,d,e,f,g,h}';
   const cases = [['{' + ','.repeat(50000), 500], ['{' + ','.repeat(50000) + '}', 500], [braces + '*/'.repeat(100000) + 'x', 2000]];
   for (const [w, limit] of cases) {
