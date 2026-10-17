@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.3';
+const POLICY_RULES_VERSION = '2026-10-17.4';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -798,7 +798,8 @@ function wrapPowerShell(cmd, opts) {
   }
   const first = scan.words[0].text;
   const base = path.basename(first.replace(/\\/g, '/')).toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '');
-  if (/^[a-z]+-[a-z]+$/i.test(first) || PS_ALIASES.has(first.toLowerCase())) {
+  // zn-gate has the Verb-Noun shape of a cmdlet but is the zn program itself.
+  if ((/^[a-z]+-[a-z]+$/i.test(first) && base !== 'zn-gate') || PS_ALIASES.has(first.toLowerCase())) {
     return { ok: false, reason: 'zn: "' + first + '" is a PowerShell command, not a program, so zn cannot pass a secret to it.' + guidance };
   }
   if (/\.ps1$/i.test(first)) {
