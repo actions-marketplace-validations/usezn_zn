@@ -231,6 +231,12 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
   assert.doesNotMatch(escaped, /zn-test-fake/);
   assert.match(escaped, /example-user/, escaped);
   assert.equal(redact('tool -url:https://example.invalid/path'), 'tool -url:https://example.invalid/path');
+  // An escaped quote or backslash inside an escaped JSON value never ends it early.
+  for (const line of ['{\\"password\\":\\"ab\\\\\\"zn-test-fake-e1\\"}', '{\\"token\\":\\"\\\\\\"zn-test-fake-e2\\"}','PASSWORD: \\"\\\\\\"zn-test-fake-e3\\"',
+    '{\\"password\\":\\"ab\\\\\\"zn-test-fake-e4\\",\\"x\\":\\"y\\"}', '{\\"password\\":\\"ab\\\\\\\\zn-test-fake-e5\\"}',
+    'curl -u deploy:http://zn-test-fake-e6 x', 'curl --user=deploy:git+ssh://zn-test-fake-e7 x']) {
+    assert.doesNotMatch(redact(line), /zn-test-fake/, line + ' -> ' + redact(line));
+  }
   assert.doesNotMatch(s, /[\u001b\u0007]/);
   assert.doesNotMatch(json, /\\u001b|\\u0007/);
 });

@@ -82,11 +82,14 @@ const SECRET_WORD = '(?:token|secret|passw(?:or)?d|pwd|api[-_]?key|access[-_]?ke
 // the next delimiter. No length limit, so a long token (a JWT) is hidden whole. A value opened with \" (JSON
 // inside a string) ends at the next \"; one opened with " may hold escaped quotes. Each alternative excludes
 // what the other takes, so matching stays linear for each place a lead matches.
-const QUOTED = '\\\\"(?:[^"\\\\\\n]|\\\\[^"\\n])+(?:\\\\")?|"(?:[^"\\\\\\n]|\\\\.)+"?|\'[^\'\\n]+\'?';
+// Inside \"...\", an escaped quote arrives as \\\" and a backslash as \\\\: both stay in the value.
+const QUOTED = '\\\\"(?:[^"\\\\\\n]|\\\\\\\\\\\\"|\\\\\\\\|\\\\[^"\\\\\\n])+(?:\\\\")?|"(?:[^"\\\\\\n]|\\\\.)+"?|\'[^\'\\n]+\'?';
 const CONTEXT_RES = [
   new RegExp('(--?[A-Za-z0-9]{0,40}(?:' + SECRET_WORD + '|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}(?:=|\\s{1,8}))(' + QUOTED + '|[^\\s"\'`]+)', 'gi'),
-  // user:password, also attached (-uuser:pass); not a URL that follows a flag such as -url:https://...
-  new RegExp('((?:^|\\s)(?:-u|--user)(?:=|\\s{1,8})?["\']?[^\\s:"\']{1,128}:)(?!//|[A-Za-z][A-Za-z0-9+.-]{0,15}://)([^\\s"\'@]+)', 'g'),
+  // user:password after -u or --user; attached to -u (-uuser:pass) too, but there not a URL, because a flag
+  // such as -url:https://... is not a password.
+  new RegExp('((?:^|\\s)(?:-u|--user)(?:=|\\s{1,8})["\']?[^\\s:"\']{1,128}:)([^\\s"\'@]+)', 'g'),
+  new RegExp('((?:^|\\s)-u["\']?[^\\s:"\']{1,128}:)(?!//|[A-Za-z][A-Za-z0-9+.-]{0,15}://)([^\\s"\'@]+)', 'g'),
   new RegExp('(\\b(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)\\s{0,8}:\\s{0,8}(?:(?:bearer|basic|token)\\s{1,8})?)([^\\s"\'\\\\]+)', 'gi'),
   new RegExp('(\\bbearer\\s{1,8})([A-Za-z0-9._~+/=-]{8,})', 'gi'),
   new RegExp('(\\b[A-Za-z0-9_]{0,60}' + SECRET_WORD + '(?![A-Za-z0-9])\\\\?["\']?\\s{0,8}[=:]\\s{0,8})(' + QUOTED + '|[^\\s"\'\\\\,;`]+)', 'gi'),
