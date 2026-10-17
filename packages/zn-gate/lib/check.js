@@ -166,6 +166,14 @@ function bare(s) {
 const RULES_FIX = 'install zn-gate again: run `npm install -g zn-gate` in your own terminal, then run `zn-gate check` again';
 const REINSTALL = (id) => 'install zn-gate again for the Node.js you use now: run `npm install -g zn-gate`, then `zn hooks install ' + id + '`, in your own terminal';
 
+/* Absolute path of the `zn` command, searched only in absolute PATH entries; null when there is none. */
+function znOnPath(env) {
+  // Only absolute PATH entries: a relative one (node_modules/.bin, .) depends on the folder check runs from.
+  const absPath = String((env || process.env).PATH || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d)).join(path.delimiter);
+  const found = require('./exe').whichSync(process.platform === 'win32' ? 'zn.cmd' : 'zn', absPath);
+  return found ? path.resolve(found) : null;
+}
+
 /*
  * zn's own hooks in the user's hooks file (`zn hooks install <agent>`), not run yet:
  * {installed, problem, fix, live, notes}. `live` is {file, args, env} when the read hook can be run as the agent runs it.
@@ -188,10 +196,7 @@ function cliHooks(spec, ctx, userFile) {
     // Usually a Node.js version removed with nvm (or similar), which takes its global zn-gate with it.
     out.fix = REINSTALL(spec.id);
   } else if (cmd.onPath) {
-    // Only absolute PATH entries: a relative one (node_modules/.bin, .) depends on the folder check runs from.
-    const absPath = String((ctx.env || process.env).PATH || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d)).join(path.delimiter);
-    const found = require('./exe').whichSync(process.platform === 'win32' ? 'zn.cmd' : 'zn', absPath);
-    const zn = found ? path.resolve(found) : null;
+    const zn = znOnPath(ctx.env);
     if (!zn) { out.problem = 'its hook runs `zn`, and there is no `zn` on your PATH'; out.fix = REINSTALL(spec.id); }
     else if (process.platform !== 'win32') out.live = { file: zn, args: ['hook', spec.id], env: {} };
     else out.notes.push('the installed hook runs `zn` from your PATH; zn\'s rules were checked directly');
@@ -280,6 +285,10 @@ async function checkAgent(spec, ctx) {
   if (spec.id === 'opencode' && installed) res.notes.push('zn\'s rules were checked; its plugin runs inside OpenCode, so it was not started here');
 
   if (!installed) {
+    // Whether the agent is on this machine at all, so the report offers no setup for an agent that is not there.
+    try { res.found = Boolean(adapter.detect({ home: ctx.home, env: ctx.env })); } catch (err) { res.found = true; }
+    // `zn hooks install` needs zn-gate installed for the user: run from npx alone, there is no `zn` command yet.
+    if (spec.id !== 'claude-code' && !znOnPath(ctx.env)) res.fix = 'run `npm install -g zn-gate`, then `zn hooks install ' + spec.id + '`, in your own terminal';
     const proj = spec.project(ctx.cwd);
     // The project folder can be anyone's repository: read only a regular file, and only so much of it.
     const text = path.resolve(proj) !== path.resolve(userFile) ? require('./audit')._internal.readBounded(proj, 256 * 1024, false).text : null;
@@ -371,12 +380,18 @@ async function check(opts = {}) {
 function report({ results, removed }, write) {
   const w = write || ((s) => process.stdout.write(s));
   w('\nzn-gate check: does zn stop your coding agent from reading a secret?\n\n');
-  w('zn made a test folder with a .env file that holds a fake key, and asked each agent\'s zn hook\n');
-  w('to let the agent read it, and an ordinary file next to it. This is what happened:\n\n');
+  w('zn made a test folder with a fake key in a .env file and an ordinary file next to it, then asked\n');
+  w('each agent\'s zn hook whether the agent may read them. This is what happened:\n\n');
   let setUp = 0;
   let bad = 0;
+  const missing = [];
   for (const r of results) {
+    if (r.state === 'not-set-up' && r.found === false) {
+      w(`  -  ${r.name.padEnd(12)} not found on this machine\n`);
+      continue;
+    }
     if (r.state === 'not-set-up') {
+      missing.push(r.name);
       w(`  -  ${r.name.padEnd(12)} zn is not set up for this agent. To protect it, ${r.fix}.\n`);
       continue;
     }
@@ -396,11 +411,17 @@ function report({ results, removed }, write) {
     for (const n of r.notes) w(`     (${n})\n`);
   }
   w('\n');
-  if (!setUp) {
-    w('zn is not set up for any agent yet, so nothing protects your secrets. Install it for your agent:\n');
-    w('https://usezn.com/docs/install\n\n');
+  const init = 'run `npx -y zn-gate init` in your own terminal: it shows each step and asks before it runs one.\n';
+  // Nothing to set up only when every agent is missing from the machine (a project-only setup counts as found).
+  if (!setUp && !results.some((r) => r.found !== false || r.state !== 'not-set-up')) {
+    w('No supported coding agent was found on this machine (Claude Code, Codex CLI, Cursor, OpenCode), so there is nothing to check.\n');
+    w('Install one, then run `npx -y zn-gate init`. Other editors: https://usezn.com/docs/install\n\n');
+  } else if (!setUp) {
+    w('zn is not set up for your agents yet, so nothing protects your secrets. To set it up, ' + init);
+    w('More: https://usezn.com/docs/install\n\n');
   } else if (!bad) {
     w('Your agent cannot read secret files such as .env through these tools. Nothing was sent anywhere.\n');
+    if (missing.length) w('Not set up yet: ' + missing.join(', ') + '. To add ' + (missing.length > 1 ? 'them' : 'it') + ', ' + init);
     w('If your agent needs a value from .env, keep it in zn\'s vault instead: `zn env shadow .env`.\n');
     w('More: https://usezn.com/docs/check\n\n');
   } else {

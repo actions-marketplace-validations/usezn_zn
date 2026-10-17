@@ -5,7 +5,6 @@
  * Values are read from a hidden TTY prompt or the clipboard, never from argv.
  */
 
-const path = require('path');
 const { spawnSync } = require('child_process');
 
 /**
@@ -110,18 +109,20 @@ function confirm(question, io = {}) {
 
 /** Read the clipboard with the platform tool. Returns a string or throws. */
 function readClipboard() {
-  // Absolute paths only: a clipboard tool planted on PATH would receive the value.
-  const ps = path.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  // Absolute paths only: a clipboard tool planted on PATH would receive the value. On Windows, the system
+  // PowerShell from the kernel's \\SystemRoot link, never from SystemRoot (see exe.js).
+  const ps = process.platform === 'win32' ? require('../exe').systemPowerShell() : null;
   const candidates = process.platform === 'darwin'
     ? [['/usr/bin/pbpaste', []]]
     : process.platform === 'win32'
-      ? [[ps, ['-NoProfile', '-Command', 'Get-Clipboard -Raw']]]
+      ? (ps ? [[ps, ['-NoProfile', '-Command', 'Get-Clipboard -Raw']]] : [])
       : [['/usr/bin/wl-paste', ['--no-newline']], ['/usr/bin/xclip', ['-selection', 'clipboard', '-o']], ['/usr/bin/xsel', ['--clipboard', '--output']]];
   for (const [cmd, args] of candidates) {
     const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true });
     if (!r.error && r.status === 0) return String(r.stdout || '').replace(/\r?\n$/, '');
   }
-  const err = new Error('could not read the clipboard (tried ' + candidates.map((c) => c[0]).join(', ') + ')');
+  const err = new Error(candidates.length ? 'could not read the clipboard (tried ' + candidates.map((c) => c[0]).join(', ') + ')'
+    : 'could not read the clipboard: the system PowerShell (Windows PowerShell 5.1) was not found');
   err.code = 'ZN_UNAVAILABLE';
   throw err;
 }

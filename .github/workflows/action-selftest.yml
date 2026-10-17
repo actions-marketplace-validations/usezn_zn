@@ -38,6 +38,11 @@ jobs:
       matrix:
         os: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
+      - name: Harden the runner (egress audit)
+        if: runner.os == 'Linux'
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -235,6 +240,11 @@ jobs:
       matrix:
         os: [ ubuntu-latest, windows-latest, macos-latest ]
     steps:
+      - name: Harden the runner (egress audit)
+        if: runner.os == 'Linux'
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -243,7 +253,7 @@ jobs:
         id: both
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: both
           path: .github/action-selftest/agent-config
           fail-on: none
@@ -252,7 +262,7 @@ jobs:
       - name: fail-on overrides severity-threshold
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           path: .github/action-selftest/agent-config
           severity-threshold: 'low'
@@ -262,7 +272,7 @@ jobs:
       - name: fail-on-threat false overrides severity-threshold
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           path: .github/action-selftest/agent-config
           severity-threshold: 'low'
@@ -273,7 +283,7 @@ jobs:
         id: filepath
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: both
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           fail-on-threat: 'false'
@@ -284,7 +294,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           path: packages/zn-gate/test/fixtures/rules_parity_samples.json
           format: text
@@ -294,21 +304,21 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
           npm-integrity: 'sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=='
           path: .github/action-selftest/agent-config
           fail-on: none
           format: text
 
-      # dist.integrity of zn-gate@1.9.0 on npm (npm view zn-gate@1.9.0 dist.integrity).
+      # dist.integrity of zn-gate@1.10.0 on npm (npm view zn-gate@1.10.0 dist.integrity).
       - name: Matching npm-integrity installs
         id: goodintegrity
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: audit
-          npm-integrity: 'sha512-Jlvgg32fbMqifMs+Qfi9KwJoXdPICh3cNJWbUM6V7nEbktDAh/J6plTfD1npmiwR5kgvm18vrO0+A2GcaLExjA=='
+          npm-integrity: 'sha512-AbaLhuUSgxJeGzF188fU/EbqdgtQltR0+3fkc5kEb01vbohSr/w2eNhWqhFlMyBGk43AhQa4Rq9axVqdvH+zOg=='
           path: .github/action-selftest/agent-config
           fail-on: none
           format: text
@@ -337,7 +347,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: scan
           path: .github/action-selftest/clean
           format: sarif
@@ -348,7 +358,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: scan
           path: .github/action-selftest/clean
           format: sarif
@@ -359,7 +369,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: scan
           path: .github/action-selftest/clean
           format: sarif
@@ -369,7 +379,7 @@ jobs:
         id: sarifnested
         uses: ./
         with:
-          version: '1.9.0'
+          version: '1.10.0'
           mode: both
           path: .github/action-selftest/agent-config
           fail-on: none
