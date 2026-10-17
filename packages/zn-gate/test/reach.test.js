@@ -219,8 +219,27 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
   // Words that only look like secret names are left alone.
   const { redact } = require('../lib/audit');
   assert.equal(redact('MAX_TOKENS=4096 author: Example tokens: 5'), 'MAX_TOKENS=4096 author: Example tokens: 5');
+  // More curl and JSON shapes, and long tokens: nothing of the value is left.
+  const jwt = 'eyJ' + 'x'.repeat(700) + '.zn-test-fake-jwt-tail';
+  for (const line of ['curl -u "deploy:zn-test-fake-q1" x', "curl -u 'deploy:zn-test-fake-q2' x", 'curl -udeploy:zn-test-fake-q3 x',
+    '{"password":"ab\\"zn-test-fake-q4"}', '--token ' + jwt, 'API_TOKEN="' + jwt + '"']) {
+    const out = redact(line);
+    assert.doesNotMatch(out, /zn-test-fake/, line.slice(0, 60) + ' -> ' + out.slice(0, 120));
+  }
   assert.doesNotMatch(s, /[\u001b\u0007]/);
   assert.doesNotMatch(json, /\\u001b|\\u0007/);
+});
+
+test('zn audit never shows part of a value cut at the end of a long line', async (t) => {
+  const { audit } = require('../lib/audit');
+  const root = tempDir(t, 'zn-reach-cut-');
+  const token = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0'.slice(0, 36);
+  // A value that a cut at 8192 characters would split, after a run of whitespace.
+  for (const pad of [8150, 8170, 8185, 8190]) {
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), ' '.repeat(pad) + token + '\n');
+    const json = JSON.stringify(audit({ root }).findings);
+    assert.ok(!json.includes(token.slice(0, 12)), 'part of the token at pad ' + pad);
+  }
 });
 
 test('an incomplete check never says that nothing needs fixing', () => {
