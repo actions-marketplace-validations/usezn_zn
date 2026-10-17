@@ -113,7 +113,9 @@ async function plan(opts = {}) {
       if (r.id === 'claude-code' && !pluginNodeOk(nodeVersion) && !hooksVerb && !r.rulesFault && (r.via === 'plugin' || r.state === 'not-set-up')) {
         hooksVerb = 'install';
         dropPlugin = r.via === 'plugin' && !r.pluginOff;
-        item.note = 'Claude Code plugin ' + (dropPlugin ? 'turned off' : 'skipped') + ': it needs Node.js 20.12 or later (you have ' + nodeVersion + '). zn\'s hooks are ' + (dropPlugin ? 'used' : 'set up') + ' instead; update Node.js to use the plugin.';
+        item.note = dropPlugin
+          ? 'Claude Code plugin will be turned off: it needs Node.js 20.12 or later (you have ' + nodeVersion + '); zn\'s hooks will be used instead. Update Node.js to use the plugin.'
+          : 'Claude Code plugin skipped: it needs Node.js 20.12 or later (you have ' + nodeVersion + '). zn\'s hooks are set up instead; update Node.js to use the plugin.';
       }
       const disablePlugin = () => {
         const claude = opts.claude !== undefined ? opts.claude : findProgram('claude', env);
@@ -153,7 +155,9 @@ async function plan(opts = {}) {
         // so the plugin is never turned off while the hooks still do not work.
         if (r.pluginBroken || dropPlugin) {
           item.steps.push({ label: 'check that zn\'s hooks for ' + r.name + ' work now', manual: 'zn-gate check (go on only if it says the hooks work)', verify: () => hooksWorkNextToPlugin({ ...opts, nodeVersion }, r.id) });
-          item.steps.push(disablePlugin());
+          const off = disablePlugin();
+          if (dropPlugin) off.done = 'Claude Code plugin turned off; zn\'s hooks protect Claude Code. Update Node.js to use the plugin.';
+          item.steps.push(off);
         }
       }
     }
@@ -263,6 +267,7 @@ async function guide(opts = {}) {
       if (!step.run) { w(`  ${s.label}: ${s.manual}\n`); skipped++; break; }
       if (!(await ask(`  ${s.label}: run \`${s.manual}\`?`))) { w(`  skipped. You can run it later: ${s.manual}\n`); skipped++; break; }
       if (!run(step, env)) { w(`  that did not finish. Run it yourself: ${s.manual}\n`); skipped++; break; }
+      if (step.done) w(`  ${step.done}\n`);
     }
   }
   w('\n');

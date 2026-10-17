@@ -92,7 +92,7 @@ test('init plan: a plugin installed next to an older Node.js is replaced by zn h
   pluginIn(m.home);
   const cc = ccOf((await plan({ ...m, nodeVersion: '18.19.0' })).items);
   assert.deepEqual(cc.steps.map(line), ['zn hooks install claude-code', 'zn-gate check (go on only if it says the hooks work)', 'claude plugin disable zn-gate@usezn']);
-  assert.match(cc.note, /^Claude Code plugin turned off: it needs Node\.js 20\.12 or later \(you have 18\.19\.0\)\. zn's hooks are used instead/);
+  assert.match(cc.note, /^Claude Code plugin will be turned off: it needs Node\.js 20\.12 or later \(you have 18\.19\.0\); zn's hooks will be used instead/);
 });
 
 test('init (interactive): a plugin on an older Node.js: hooks installed, checked, and only then the plugin turned off', async (t) => {
@@ -114,7 +114,31 @@ test('init (interactive): a plugin on an older Node.js: hooks installed, checked
   });
   assert.deepEqual(order, ['zn hooks install claude-code', 'claude plugin disable zn-gate@usezn']);
   assert.match(out, /check that zn's hooks for Claude Code work now: yes/);
-  assert.ok(out.indexOf('plugin turned off') < out.indexOf('check that zn'), 'the note comes first');
+  assert.ok(out.indexOf('plugin will be turned off') < out.indexOf('check that zn'), 'the plan comes first');
+  assert.ok(out.indexOf('Claude Code plugin turned off;') > out.indexOf('check that zn'), 'the confirmation comes after the steps');
+});
+
+test('init: the plugin is only said to be turned off when it was; declined, or without a terminal, it is not', async (t) => {
+  const m = machine(t);
+  pluginIn(m.home);
+  let out = '';
+  await guide({ ...m, nodeVersion: '18.19.0', stdin: { isTTY: true }, write: (s) => { out += s; }, confirm: async () => false, run: () => true });
+  assert.doesNotMatch(out, /Claude Code plugin turned off;/);
+  out = '';
+  await guide({ ...m, nodeVersion: '18.19.0', stdin: { isTTY: false }, write: (s) => { out += s; } });
+  assert.doesNotMatch(out, /Claude Code plugin turned off;/);
+  assert.match(out, /will be turned off/);
+  // The hooks step runs, but the disable step fails: no confirmation.
+  out = '';
+  await guide({
+    ...m, nodeVersion: '18.19.0', stdin: { isTTY: true }, write: (s) => { out += s; }, confirm: async () => true,
+    run: (step) => {
+      if (/^zn hooks install/.test(step.manual)) getAdapter('claude-code').install({ scope: 'user', home: m.home, env: m.env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+      return !/plugin disable/.test(step.manual);
+    },
+  });
+  assert.doesNotMatch(out, /Claude Code plugin turned off;/);
+  assert.match(out, /that did not finish/);
 });
 
 test('check: a plugin on Node.js before 20.12 is reported, with the way out', async (t) => {
