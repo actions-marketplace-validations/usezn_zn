@@ -257,6 +257,8 @@ SECRETS (values stay on this machine; agents only see __ZN_<NAME>__ markers):
                       (zn-gate init picks the right setup for each agent)
   check               Show that zn blocks your agent from reading a fake secret
                       (also: doctor). Safe: a temporary folder, nothing is sent
+  reach [path]        Show what your coding agents can reach: secrets (names only),
+                      credential files, MCP servers [--json]. Read only, nothing is sent
   secrets-mcp         Run the "secrets" MCP server (stdio)
   hook <agent>        Hook entry point used by agents (reads the event on stdin)
 
@@ -683,10 +685,38 @@ async function runBrokerCommand(command, rest) {
   process.exitCode = await require('../lib/broker/cli').dispatch(command, rest);
 }
 
+const REACH_USAGE = 'usage: zn-gate reach [path] [--json]';
+
+/* zn-gate reach [path] [--json]: read only, nothing sent; exit 0, or 2 for a usage error. */
+async function runReachCommand(rest) {
+  let target = null;
+  let json = false;
+  for (const a of rest) {
+    if (a === '-h' || a === '--help') { process.stdout.write(REACH_USAGE + '\nShows what the coding agents on this machine can reach. Read only: nothing is changed or sent.\n'); return 0; }
+    if (a === '--json') { json = true; continue; }
+    if (a.startsWith('-') && a !== '-') { process.stderr.write('zn-gate reach: unknown option ' + a + '\n' + REACH_USAGE + '\n'); return 2; }
+    if (target !== null) { process.stderr.write('zn-gate reach: only one folder at a time\n' + REACH_USAGE + '\n'); return 2; }
+    target = a;
+  }
+  const root = path.resolve(target || '.');
+  let st = null;
+  try { st = fs.statSync(root); } catch (_) { st = null; }
+  if (!st || !st.isDirectory()) { process.stderr.write('zn-gate reach: ' + root + ' is not a folder\n'); return 2; }
+  process.env.ZN_STATS = 'off';
+  const zr = require('../lib/reach');
+  const r = await zr.reach({ root });
+  if (json) { process.stdout.write(JSON.stringify(r, null, 2) + '\n'); return 0; }
+  return zr.report(r);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args[0] === 'audit') {
     await runAuditCommand(args.slice(1));
+    return;
+  }
+  if (args[0] === 'reach') {
+    process.exitCode = await runReachCommand(args.slice(1));
     return;
   }
   // zn Team and the OpenTelemetry export of the audit log. exitCode (not
