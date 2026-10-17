@@ -244,3 +244,30 @@ test('the client-module check stays linear on 100 KB', () => {
     assert.ok(ms < 2500, p.slice(0, 12) + ' took ' + ms.toFixed(0) + ' ms');
   }
 });
+
+test('the key-code barrier ignores case, accepts backslashes in vault/keychain and drops ./ segments', () => {
+  const q = "'";
+  const wrap = (m) => 'node -e "require(' + q + m + q + ').analyze(' + q + 'x' + q + ')"';
+  for (const m of [
+    'ZN-GATE/LIB/CLIENT',
+    'Zn-Gate/lib/Client.js',
+    'zn-gate\\lib\\vault\\keychain',
+    'zn-gate/lib/VAULT/KEYCHAIN',
+    'zn-gate/./lib/client',
+    'zn-gate/lib/./vault/client',
+    'zn-gate/././lib/client',
+    'zn-gate\\.\\lib\\client',
+  ]) {
+    assert.ok(policy.bashDenial(wrap(m), OPTS), m);
+  }
+});
+
+test('lookalike commands stay allowed after the case and dot handling', () => {
+  for (const cmd of [
+    "node -e \"require('./lib/./client').analyze(1)\"",
+    'cat ./a/./b/lib/client.js | grep -n -e "import " -e analyze',
+    'cat node_modules/ZN-GATE/LIB/CLIENT.js | head -50',
+  ]) {
+    assert.equal(policy.bashDenial(cmd, OPTS), null, cmd);
+  }
+});
