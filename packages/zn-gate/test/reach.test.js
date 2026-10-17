@@ -233,6 +233,35 @@ test('a .env that is a link is reported, not read', { skip: process.platform ===
   assert.ok(!JSON.stringify(r).includes(FAKES[0]));
 });
 
+test('--sarif: one result per finding that is not info, with no value, and --fail-on sets the exit code', (t) => {
+  const m = machine(t, { found: ['.cursor'] });
+  const env = { ...m.env, ZN_STATS: 'off' };
+  const run = (...a) => spawnSync(process.execPath, [CLI, 'reach', m.root, ...a], { encoding: 'utf8', env, cwd: m.root });
+  const s = run('--sarif');
+  assert.equal(s.status, 0, s.stderr);
+  const sarif = JSON.parse(s.stdout);
+  assert.equal(sarif.version, '2.1.0');
+  const run0 = sarif.runs[0];
+  assert.equal(run0.tool.driver.name, 'zn-gate reach');
+  const ids = run0.results.map((x) => x.ruleId);
+  for (const id of ['ZNR001', 'ZNR002', 'ZNR003', 'ZNR004']) assert.ok(ids.includes(id), id + ' in ' + ids.join(','));
+  for (const x of run0.results) {
+    assert.equal(run0.tool.driver.rules[x.ruleIndex].id, x.ruleId);
+    assert.ok(['error', 'warning', 'note'].includes(x.level));
+  }
+  const env0 = run0.results.find((x) => x.ruleId === 'ZNR002' && x.locations[0].physicalLocation.artifactLocation.uri === '.env');
+  assert.ok(env0, 'the .env result has its file');
+  for (const v of FAKES) assert.ok(!s.stdout.includes(v), 'value in SARIF: ' + v);
+  assert.equal(run('--json', '--fail-on', 'high').status, 1);
+  assert.equal(run('--json', '--fail-on=none').status, 0);
+  assert.equal(run('--json', '--fail-on', 'bogus').status, 2);
+  assert.equal(run('--json', '--sarif').status, 2);
+  // Every agent protected: the secrets are info, so --fail-on low passes.
+  const clean = machine(t, { agents: ['claude-code', 'codex', 'cursor', 'opencode'], secrets: false });
+  const ok = spawnSync(process.execPath, [CLI, 'reach', clean.root, '--json', '--fail-on', 'low'], { encoding: 'utf8', env: { ...clean.env, ZN_STATS: 'off' }, cwd: clean.root });
+  assert.equal(ok.status, 0, ok.stdout);
+});
+
 test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) => {
   const m = machine(t);
   const env = { ...m.env, ZN_STATS: 'off' };

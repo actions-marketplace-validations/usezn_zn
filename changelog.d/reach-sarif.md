@@ -1,0 +1,2 @@
+### Added
+- `zn-gate reach --sarif` writes the report as SARIF 2.1.0 for code scanning: the `zn audit` findings keep their rules, and reach adds four of its own (`ZNR001` agent not protected, `ZNR002` `.env` with secrets an agent can read, `ZNR003` credential files an agent can read, `ZNR004` environment variables with secrets). `--fail-on high|medium|low` exits 1 when a finding at or above that level is found; the default, `none`, keeps reach a report that exits 0.

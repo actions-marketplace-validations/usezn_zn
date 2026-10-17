@@ -245,7 +245,7 @@ const SECTIONS = [
   ['project', 'PROJECT FILES THE AGENT RUNS', 'settings in this folder that an agent loads or runs'],
 ];
 
-/** Plain-language report; returns the exit code (always 0: it is a report, not a gate). */
+/** Plain-language report; returns 0 (the command line turns --fail-on into the exit code). */
 function report(r, write) {
   const w = write || ((s) => process.stdout.write(s));
   w('\nzn-gate reach: what can the coding agents on this machine reach?\n');
@@ -297,4 +297,13 @@ function line(w, f) {
   if (f.fix) w('         Fix: ' + f.fix + '\n');
 }
 
-module.exports = { reach, report, VERSION, _internal: { dotenvFiles, credentialFiles, secretEnvNames, SECRET_ENV_NAME_RE } };
+const FAIL_ON = ['high', 'medium', 'low', 'none'];
+
+/** Whether a finding at or above failOn was found (never for 'none'; info findings never count). */
+function failed(r, failOn) {
+  if (!failOn || failOn === 'none') return false;
+  const limit = SEVERITIES.indexOf(failOn);
+  return r.findings.some((f) => f.severity !== 'info' && SEVERITIES.indexOf(f.severity) <= limit);
+}
+
+module.exports = { reach, report, failed, FAIL_ON, VERSION, _internal: { dotenvFiles, credentialFiles, secretEnvNames, SECRET_ENV_NAME_RE } };
