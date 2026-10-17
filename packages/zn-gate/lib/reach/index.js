@@ -266,7 +266,7 @@ function remember(root, counts, home, env) {
   const was = data[key] || null;
   // Whatever the file holds, only numbers and a YYYY-MM-DD date reach the report.
   const count = (n) => (Number.isSafeInteger(+n) && +n >= 0 ? +n : 0);
-  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(was && was.at)) ? String(was.at) : 'an earlier run';
+  const day = typeof (was && was.at) === 'string' && was.at.length <= 40 && /^\d{4}-\d{2}-\d{2}$/.test(was.at) ? was.at : 'an earlier run';
   const previous = was ? { high: count(was.high), medium: count(was.medium), low: count(was.low), at: day } : null;
   data[key] = { high: counts.high, medium: counts.medium, low: counts.low, at: new Date().toISOString().slice(0, 10) };
   // Up to 200 folders: the oldest go first.
@@ -345,7 +345,7 @@ function report(r, write) {
     w('\n');
   }
   const p = r.previous;
-  const was = p ? ' (last time, ' + p.at + ': ' + p.high + ' high, ' + p.medium + ' medium, ' + p.low + ' low)' : '';
+  const was = p ? ' (last time, ' + safeText(p.at).replace(/[\r\n]+/g, ' ').slice(0, 40) + ': ' + p.high + ' high, ' + p.medium + ' medium, ' + p.low + ' low)' : '';
   w(r.counts.high + ' high, ' + r.counts.medium + ' medium, ' + r.counts.low + ' low' + was + '.\n\n');
   return 0;
 }
