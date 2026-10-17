@@ -593,3 +593,99 @@ test('thousands of cd in one command are followed within the time budget', (t) =
     assert.ok(ms < 5000, unit + ' took ' + ms + ' ms');
   }
 });
+
+/* ------------------- key files: globs, cd, git objects, git wrappers ------------------- */
+
+const FAKE_KEY = '-----BEGIN PRIVATE KEY-----\nZN-TEST-FAKE-KEY\n-----END PRIVATE KEY-----\n';
+const FAKE_CERT = '-----BEGIN CERTIFICATE-----\nZN-TEST-FAKE-CERT\n-----END CERTIFICATE-----\n';
+
+function keyDir(t, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'certs'));
+  fs.writeFileSync(path.join(dir, 'certs', 'server.key'), FAKE_KEY);
+  fs.writeFileSync(path.join(dir, 'certs', 'cert.pem'), FAKE_CERT);
+  fs.writeFileSync(path.join(dir, 'certs', 'ca.crt'), FAKE_CERT);
+  fs.writeFileSync(path.join(dir, 'README.md'), 'hello\n');
+  return { dir, o: { cwd: dir, home: dir, env: {} } };
+}
+
+test('a glob that matches a private key file is refused, one that matches only certificates is allowed', (t) => {
+  const { dir, o } = keyDir(t, 'zn-keyglob-');
+  fs.mkdirSync(path.join(dir, 'pub'));
+  fs.writeFileSync(path.join(dir, 'pub', 'a.pem'), FAKE_CERT);
+  fs.writeFileSync(path.join(dir, 'pub', 'b.key'), FAKE_CERT);
+  for (const cmd of ['cat certs/*.key', 'cat certs/*', 'cat certs/server.*', 'cat certs/*.[pk]*', 'cat certs/{server,x}.key', 'cat "certs/"*.key',
+    'cat ./certs/s?rver.key', 'head -n1 certs/*.key', 'cat certs/*.pem certs/*.key']) {
+    assert.match(policy.bashDenial(cmd, o) || '', /private key file|too broad/, cmd);
+  }
+  for (const cmd of ['cat certs/*.crt', 'cat certs/cert.pem', 'cat pub/*.pem', 'cat pub/*', 'cat pub/*.key', 'cat nothing/*.key']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('a key file read after cd is found in the folder the cd leads to, and an unknown cd refuses the read', (t) => {
+  const { o } = keyDir(t, 'zn-keycd-');
+  for (const cmd of ['cd certs && cat server.key', 'cd certs; cat server.key', 'cd certs && cat *.key', 'pushd certs && cat server.key',
+    '(cd certs && cat server.key)', 'cd $SOMEWHERE && cat server.key', 'cd - && cat server.key', 'cd $(pwd)/certs && cat server.key']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['cd certs && cat cert.pem', 'cd certs && openssl x509 -in cert.pem -noout -text', 'cat certs/cert.pem', 'cd certs && ls']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('a key file or a certificate read from the git repository or its history is refused like a .env', (t) => {
+  const { o } = keyDir(t, 'zn-keygit-');
+  for (const cmd of ['git show HEAD:certs/server.pem', 'git show HEAD:certs/server.key', 'git cat-file -p HEAD:certs/cert.pem', 'git log -p -- server.key',
+    'git diff HEAD~1 -- certs/server.key', 'git checkout HEAD -- certs/server.key', 'git show :0:certs/server.key']) {
+    assert.match(policy.bashDenial(cmd, o) || '', /git/, cmd);
+  }
+  for (const cmd of ['git show HEAD:README.md', 'git log --oneline -- old/gone.key', 'git status', 'git add old/gone.key', 'git check-ignore old/gone.key', 'git rm --cached old/gone.key']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('git behind sudo, env, command, nohup or xargs is read like git, and a git object word is refused anywhere in a command with git', (t) => {
+  const { o } = keyDir(t, 'zn-gitwrap-');
+  for (const cmd of ['sudo git show HEAD:.env', 'sudo -u root git show HEAD:.env', 'env git show HEAD:.env', 'env FOO=1 git show HEAD:.env', 'command git show HEAD:.env',
+    'nohup git show HEAD:.env', 'time git show HEAD:.env', 'xargs git show <<< HEAD:.env', 'echo HEAD:.env | xargs git show', 'echo HEAD:certs/server.key | xargs -n1 git show',
+    'sudo git log -p -- .env', 'env git log -p -- certs/server.key', '/usr/bin/git show HEAD:.env', 'git show HEAD:.env', "sh -c 'git show HEAD:.env'",
+    "git show ':(top).env'", "git show ':/.env'", "git show ':(glob)**/.env'", "git show ':(top,glob)**/.env'", "git log -p -- ':(top).env'"]) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['git show HEAD:README.md', 'sudo apt install git', 'xargs grep x', 'echo HEAD:README.md | xargs git show', 'sudo git status', 'env git log --oneline',
+    'xargs -n1 echo', "git show ':(top)README.md'", 'echo hello: world', 'command -v git', 'git log -p -- README.md']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
+
+test('many distinct key file globs and words after several cd are decided within the time budget', (t) => {
+  const { dir, o } = keyDir(t, 'zn-keybudget-');
+  for (const d of ['a', 'b', 'c', 'd']) fs.mkdirSync(path.join(dir, d));
+  for (const shape of ['glob', 'word']) {
+    let cmd = 'cd a; cd b; cd c; cd d; cat';
+    for (let i = 0; cmd.length < 98000; i++) cmd += shape === 'glob' ? ' x' + i + '/*.key' : ' k' + i + '.key';
+    cmd += '; cat certs/server.key';
+    const t0 = process.hrtime.bigint();
+    const deny = policy.bashDenial(cmd, o);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(deny, shape + ': refused');
+    assert.ok(ms < 5000, shape + ' took ' + ms + ' ms');
+  }
+});
+
+test('git behind wrappers with flags, unknown wrappers or odd chains is still read as git, with the file gone from disk', (t) => {
+  const { o } = keyDir(t, 'zn-gitwrap2-');
+  for (const cmd of ['sudo -n git log -p -- .env', 'sudo -E git log -p -- old/server.key', 'sudo -s git log -p -- .env', 'sudo -En git log -p -- .env',
+    'sudo -u root -E git log -p -- .env', 'sudo -k git log -p -- .env', 'time -p git log -p -- .env', 'nice -n 5 git log -p -- .env',
+    'ionice -c 3 git log -p -- .env', 'stdbuf -o L git log -p -- .env', 'chrt -b 0 git log -p -- .env', 'taskset 0x1 git log -p -- .env',
+    'flock /x.lock git log -p -- .env', 'timeout -s KILL 5 git log -p -- .env', 'env -i git log -p -- .env',
+    'xargs -I{} git show {} <<< HEAD:.env', 'xargs -n 1 git log -p -- .env', 'sudo -n env -i git show HEAD:.env', 'exec -a x git show HEAD:.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['sudo apt-get install git-lfs', 'time npm test', 'xargs grep x', 'sudo -n true', 'sudo -E env', 'ionice -c 3 ls', 'flock /x.lock ls',
+    'sudo -n git status', 'sudo -E git log --oneline -- old/gone.key', 'chrt -b 0 ls', 'taskset 0x1 true', 'time -p ls']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});
