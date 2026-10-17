@@ -110,9 +110,26 @@ test('reach writes nothing, starts no hook and sends nothing', async (t) => {
   const net = ['net', 'http', 'https', 'dns', 'tls'].map((n) => require(n));
   const cp = require('child_process');
   const saved = [];
-  const trap = (obj, name) => { saved.push([obj, name, obj[name]]); obj[name] = () => { throw new Error('reach used ' + name); }; };
-  for (const mod of net) for (const name of ['connect', 'createConnection', 'request', 'get', 'lookup', 'resolve']) if (typeof mod[name] === 'function') trap(mod, name);
-  for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) trap(cp, name);
+  // Every use is recorded, so a caller that catches the error cannot hide it.
+  const hits = [];
+  const trap = (obj, name, label) => {
+    saved.push([obj, name, obj[name]]);
+    obj[name] = () => { hits.push(label + name); throw new Error('reach used ' + name); };
+  };
+  for (const mod of net) for (const name of ['connect', 'createConnection', 'request', 'get', 'lookup', 'resolve']) if (typeof mod[name] === 'function') trap(mod, name, 'net:');
+  for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) trap(cp, name, 'process:');
+  if (typeof globalThis.fetch === 'function') trap(globalThis, 'fetch', 'net:');
+  // Writes anywhere, the temporary folder included (where a live check would make its test folder).
+  for (const name of ['mkdtempSync', 'mkdtemp', 'writeFileSync', 'writeFile', 'appendFileSync', 'renameSync', 'mkdirSync', 'rmSync', 'unlinkSync', 'copyFileSync', 'symlinkSync']) trap(fs, name, 'write:');
+  const openSync = fs.openSync;
+  saved.push([fs, 'openSync', openSync]);
+  fs.openSync = (p, flags, ...rest) => {
+    const c = fs.constants;
+    const writes = typeof flags === 'number' ? (flags & (c.O_WRONLY | c.O_RDWR | c.O_CREAT | c.O_APPEND | c.O_TRUNC)) !== 0
+      : flags !== undefined && !/^rs?$/.test(String(flags));
+    if (writes) { hits.push('write:openSync ' + flags); throw new Error('reach opened a file for writing'); }
+    return openSync(p, flags, ...rest);
+  };
   // check.js and the Claude Code adapter take spawnSync when they load: load them again under the trap.
   const fresh = ['../lib/check', '../lib/agents/claude-code'].map((p) => require.resolve(p));
   const reload = () => { for (const p of fresh) delete require.cache[p]; };
@@ -124,6 +141,7 @@ test('reach writes nothing, starts no hook and sends nothing', async (t) => {
     for (const [obj, name, fn] of saved) obj[name] = fn;
     reload();
   }
+  assert.deepEqual(hits, []);
   assert.equal(snapshot([m.home, m.root]), before);
   const byId = (id) => r.agents.find((a) => a.id === id);
   assert.equal(byId('codex').state, 'protected');
@@ -172,6 +190,47 @@ test('MCP servers and project settings come from zn audit, in their own sections
   assert.ok(mcp.length, JSON.stringify(r.findings));
   assert.ok(mcp.every((f) => /^ZNA00[3-6]$/.test(f.id)));
   assert.match(textOf(r).s, /MCP SERVERS \(extra tools your agent can call\)/);
+});
+
+test('values in MCP and hook command lines are hidden, and names cannot send terminal escapes', async (t) => {
+  const m = machine(t, { secrets: false });
+  const VALUES = ['zn-test-fake-flag-token-0001', '0123456789abcdef0123456789abcdef', 'zn-test-fake-pass-0003',
+    'zn-test-fake-bearer-0004', 'zn-test-fake-header-0005', 'zn-test-fake-name-0006'];
+  fs.writeFileSync(path.join(m.root, '.mcp.json'), JSON.stringify({ mcpServers: {
+    'evil\u001b[2J\u001b]0;pwned\u0007': { command: 'npx', args: ['-y', 'example-mcp-server', '--token=' + VALUES[0], '--api-key', VALUES[1], '--password', VALUES[2], '--from-env', '${EXAMPLE_TOKEN}'] },
+  } }));
+  fs.mkdirSync(path.join(m.root, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(m.root, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command',
+    command: 'curl -H "Authorization: Bearer ' + VALUES[3] + '" -H "x-api-key: ' + VALUES[4] + '" https://example.invalid/x?y=1 && EXAMPLE_API_TOKEN=' + VALUES[5] + ' true' }] }] } }));
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  const json = JSON.stringify(r);
+  const { s } = textOf(r);
+  assert.ok(r.findings.some((f) => f.section === 'mcp'), 'the MCP server is reported');
+  assert.ok(r.findings.some((f) => f.section === 'project'), 'the hook is reported');
+  for (const v of VALUES) {
+    assert.ok(!json.includes(v), 'value in JSON: ' + v);
+    assert.ok(!s.includes(v), 'value in text: ' + v);
+  }
+  assert.match(s, /\$\{EXAMPLE_TOKEN\}/, 'a reference is not a value');
+  assert.doesNotMatch(s, /[\u001b\u0007]/);
+  assert.doesNotMatch(json, /\\u001b|\\u0007/);
+});
+
+test('an incomplete check never says that nothing needs fixing', () => {
+  const { s } = textOf({ agents: [{ id: 'codex', name: 'Codex CLI', found: true, state: 'protected' }], findings: [], counts: { high: 0, medium: 0, low: 0, info: 0 }, truncated: true });
+  assert.doesNotMatch(s, /Nothing to fix/);
+  assert.match(s, /Some files were not checked in time/);
+});
+
+test('a .env that is a link is reported, not read', { skip: process.platform === 'win32' }, async (t) => {
+  const m = machine(t, { secrets: false });
+  const outside = path.join(m.home, 'elsewhere.env');
+  fs.writeFileSync(outside, 'OPENAI_API_KEY=' + FAKES[0] + '\n');
+  fs.symlinkSync(outside, path.join(m.root, '.env'));
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  assert.ok(r.findings.find((f) => f.kind === 'dotenv-link' && f.file === '.env'));
+  assert.ok(!r.findings.some((f) => f.kind === 'dotenv'));
+  assert.ok(!JSON.stringify(r).includes(FAKES[0]));
 });
 
 test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) => {

@@ -44,6 +44,16 @@ const MCP_RULES = new Set(['ZNA003', 'ZNA004', 'ZNA005', 'ZNA006']);
 const DOTENV_RE = /^\.env(\.[A-Za-z0-9_.-]+)?$/;
 const DOTENV_SAFE_RE = /\.(example|sample|template|dist|defaults|schema)$/i;
 
+// Control and bidirectional characters: a file or server name from a repository could otherwise move the
+// cursor, clear the screen or reorder the text in the user's terminal.
+const UNSAFE_CHARS_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g;
+
+/** Text that is safe to show: secret values redacted (as zn audit does), unsafe characters replaced. */
+function safeText(s) {
+  const { redact } = require('../audit');
+  return redact(String(s == null ? '' : s)).replace(UNSAFE_CHARS_RE, '?');
+}
+
 function displayHome(rel) {
   return '~/' + rel.replace(/\\/g, '/');
 }
@@ -62,6 +72,8 @@ function dotenvFiles(root) {
   for (const base of names.sort()) {
     if (!DOTENV_RE.test(base) || DOTENV_SAFE_RE.test(base)) continue;
     const r = readBounded(path.join(root, base), DOTENV_MAX_BYTES, false);
+    // A link is not followed: it could lead anywhere on the machine.
+    if (r.skip === 'symlink') { out.push({ file: base, secrets: [], markers: 0, link: true }); continue; }
     if (r.text === undefined) continue;
     const secrets = [];
     let markers = 0;
@@ -166,6 +178,10 @@ async function reach(opts = {}) {
   }
 
   for (const d of dotenvFiles(root)) {
+    if (d.link) {
+      add({ section: 'reach', kind: 'dotenv-link', severity: 'info', file: d.file, title: d.file + ' in this folder is a link, so zn-gate reach did not read it', detail: 'An agent that follows the link can read the file it points to.', fix: '' });
+      continue;
+    }
     if (!d.secrets.length) continue;
     const shown = d.secrets.slice(0, 5).join(', ') + (d.secrets.length > 5 ? ', ...' : '');
     add({
@@ -194,7 +210,7 @@ async function reach(opts = {}) {
       section: 'reach', kind: 'environment', severity: 'low',
       title: plural(names.length, 'environment variable') + ' with a secret (' + names.slice(0, 5).join(', ') + (names.length > 5 ? ', ...' : '') + ')',
       detail: 'An agent started from this terminal gets their values.',
-      fix: 'keep them in zn\'s vault: `zn secret set NAME` in your own terminal, then use __ZN_NAME__ where the value goes',
+      fix: 'keep them in zn\'s vault: run `npx -y zn-gate secret set NAME` in your own terminal, then use __ZN_NAME__ where the value goes',
       names,
     });
   }
@@ -210,6 +226,10 @@ async function reach(opts = {}) {
     });
   }
 
+  // Every text that reaches the report, whatever its source, goes through the same redaction and cleaning.
+  for (const f of findings) for (const k of ['title', 'detail', 'fix', 'file']) if (f[k] != null) f[k] = safeText(f[k]);
+  for (const f of findings) if (f.files) f.files = f.files.map((c) => ({ path: safeText(c.path), what: safeText(c.what) }));
+  for (const a of agents) { a.problem = safeText(a.problem); a.fix = safeText(a.fix); }
   const rank = (s) => SEVERITIES.indexOf(s);
   findings.sort((a, b) => rank(a.severity) - rank(b.severity));
   const counts = { high: 0, medium: 0, low: 0, info: 0 };
@@ -239,9 +259,12 @@ function report(r, write) {
     w('  ' + a.name.padEnd(12) + ' ' + state + '\n');
   }
   if (!r.findings.some((f) => f.section === 'agents')) w('\n');
+  const truncated = 'Some files were not checked in time; `npx -y zn-gate audit --include-home` checks them all.\n\n';
   const actionable = r.findings.filter((f) => f.severity !== 'info');
   if (!actionable.length) {
-    w(r.agents.some((a) => a.found)
+    // An incomplete check never says that nothing needs fixing.
+    if (r.truncated) w('Nothing found in what was checked. ' + truncated);
+    else w(r.agents.some((a) => a.found)
       ? 'Nothing to fix. Your agents run with zn-gate.\n\n'
       : 'No supported coding agent was found on this machine, and nothing here needs fixing.\n\n');
     return 0;
@@ -254,7 +277,7 @@ function report(r, write) {
     for (const f of list) line(w, f);
     w('\n');
   }
-  if (r.truncated) w('Some files were not checked in time; `zn audit --include-home` checks them all.\n\n');
+  if (r.truncated) w(truncated);
   const next = [];
   if (r.findings.some((f) => f.fix === 'npx -y zn-gate init' && f.severity === 'high')) next.push('npx -y zn-gate init');
   const env = r.findings.find((f) => f.severity === 'high' && f.kind === 'dotenv');
@@ -264,7 +287,7 @@ function report(r, write) {
     next.forEach((c, i) => w('  ' + (i + 1) + '. ' + c + '\n'));
     w('\n');
   }
-  w(r.counts.high + ' high, ' + r.counts.medium + ' medium, ' + r.counts.low + ' low. More: https://usezn.com/docs/reach\n\n');
+  w(r.counts.high + ' high, ' + r.counts.medium + ' medium, ' + r.counts.low + ' low.\n\n');
   return 0;
 }
 

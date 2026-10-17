@@ -69,6 +69,25 @@ function redact(text) {
   // fragments, which often carry keys (?key=..., #access_token=...).
   s = s.replace(/(\b[a-z][a-z0-9+.-]{1,15}:\/\/)[^\s/@'"]{1,256}@/gi, '$1[REDACTED]@');
   s = s.replace(/(\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s?#'"]{1,2048})[?#][^\s'"]{1,4096}/gi, '$1?[REDACTED]');
+  return redactByContext(s);
+}
+
+// Values in an unknown format, found by what precedes them: a credential flag (--token v, --api-key=v),
+// an auth header (Authorization: Bearer v, x-api-key: v), a bearer token, or NAME_TOKEN=v.
+// References ($VAR, ${VAR}, %VAR%), zn markers and values already redacted are kept.
+const SECRET_WORD = '(?:token|secret|passw(?:or)?d|pwd|api[-_]?key|access[-_]?key|private[-_]?key|auth|credentials?)';
+const CONTEXT_RES = [
+  new RegExp('(--?[A-Za-z0-9]{0,40}' + SECRET_WORD + '[A-Za-z0-9-]{0,40}(?:=|\\s{1,8}))("[^"\\n]{1,512}"|\'[^\'\\n]{1,512}\'|[^\\s"\'`]{1,512})', 'gi'),
+  new RegExp('(\\b(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)\\s{0,8}:\\s{0,8}(?:(?:bearer|basic|token)\\s{1,8})?)([^\\s"\'\\\\]{1,512})', 'gi'),
+  new RegExp('(\\bbearer\\s{1,8})([A-Za-z0-9._~+/=-]{8,512})', 'gi'),
+  new RegExp('(\\b[A-Za-z0-9_]{0,60}' + SECRET_WORD + '[A-Za-z0-9_]{0,60}\\s{0,8}[=:]\\s{0,8})("[^"\\n]{1,512}"|\'[^\'\\n]{1,512}\'|[^\\s"\',;`]{1,512})', 'gi'),
+];
+function keepValue(v) {
+  const t = v.replace(/^["']|["']$/g, '');
+  return !t || /^(?:\$\{?[A-Za-z_]|%[A-Za-z_]|\[REDACTED|__ZN_|<)/.test(t);
+}
+function redactByContext(s) {
+  for (const re of CONTEXT_RES) s = s.replace(re, (m, lead, v) => (keepValue(v) ? m : lead + '[REDACTED]'));
   return s;
 }
 
