@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.2';
+const POLICY_RULES_VERSION = '2026-10-17.3';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -511,7 +511,11 @@ function globOnDisk(abs) {
 
 /** A typed word: a path, or a glob that could name one. */
 function classifyWord(text, opts = {}) {
-  return classifyPath(text, opts) || globClass(text, opts);
+  const c = classifyPath(text, opts);
+  // A .env name behind a glob (app*/.env, src/*/.env): the shell expands it to real files, which cannot be read
+  // through the pattern to see whether they hold values, so the glob's own classification decides.
+  if (c && c.kind === 'dotenv' && GLOB_RE.test(String(text))) return globClass(text, opts) || c;
+  return c || globClass(text, opts);
 }
 
 /**
