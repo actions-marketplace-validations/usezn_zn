@@ -7,7 +7,7 @@
  * ZN_HOME with no daemon), so detected values are redacted for good and the
  * numbers do not depend on a background process.
  *
- *   node bench/hook_latency_matrix.js [--runs 20] [--json out.json] [--baseline file] [--max-increase 0.2]
+ *   node bench/hook_latency_matrix.js [--runs 40] [--json out.json] [--baseline file] [--max-increase 0.2]
  *
  * Each case also gets `ratio`: its p95 divided by the p50 start-up time of a
  * bare `node -e ""` measured in the same run. CI compares the ratios with a
@@ -28,7 +28,7 @@ function arg(name, def) {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : def;
 }
-const RUNS = Number(arg('--runs', 20));
+const RUNS = Number(arg('--runs', 40));
 const JSON_OUT = arg('--json', null);
 const BASELINE = arg('--baseline', null);
 const MAX_INCREASE = Number(arg('--max-increase', 0.2));
@@ -79,9 +79,11 @@ function once(agent, event) {
     const t0 = process.hrtime.bigint();
     const child = spawn(process.execPath, [RUNNER, agent], { env: ENV, cwd: HOME, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
+    let err = '';
     child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
     child.on('error', reject);
-    child.on('close', () => resolve({ ms: Number(process.hrtime.bigint() - t0) / 1e6, out }));
+    child.on('close', () => resolve({ ms: Number(process.hrtime.bigint() - t0) / 1e6, out, err }));
     child.stdin.end(JSON.stringify(event));
   });
 }
@@ -93,22 +95,33 @@ function bareNode() {
   });
 }
 
-const pct = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+// Nearest-rank percentile: with 40 samples the p95 is the 38th, not the slowest one.
+const pct = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
+
+/*
+ * The hook must have done its work: no fake value back (stdout or stderr), no "could not check" refusal, and,
+ * when the output holds secrets, a zn marker in place of them. A hook that fails closed is fast but measures
+ * nothing.
+ */
+function checkWork(agent, label, r, withSecrets) {
+  const all = r.out + r.err;
+  if (all.includes(AWS) || all.includes(GHP)) throw new Error('a fake secret came back from the hook: ' + agent + ' ' + label);
+  if (/could not check|output withheld|was hidden/i.test(all)) throw new Error('the hook could not check the output: ' + agent + ' ' + label);
+  if (withSecrets && !all.includes('__ZN_')) throw new Error('the hook did not redact the secrets: ' + agent + ' ' + label);
+}
 
 /* p50 and p95 of one case over `runs` samples, with Node's start-up measured between the samples. */
 async function measure(agent, label, event, runs) {
-  await once(agent, event); // warm the file cache
+  checkWork(agent, label, await once(agent, event), /with 2 secrets/.test(label)); // also warms the file cache
   const times = [];
   const bare = [];
-  let leaked = false;
   for (let i = 0; i < runs; i++) {
     const r = await once(agent, event);
     times.push(r.ms);
-    if (r.out.includes(AWS) || r.out.includes(GHP)) leaked = true;
+    checkWork(agent, label, r, /with 2 secrets/.test(label));
     // Node start-up measured between the samples, so both see the same machine load.
     bare.push(await bareNode());
   }
-  if (leaked) throw new Error('a fake secret came back from the hook: ' + agent + ' ' + label);
   times.sort((a, b) => a - b);
   bare.sort((a, b) => a - b);
   return { agent, case: label, p50: +pct(times, 50).toFixed(1), p95: +pct(times, 95).toFixed(1), bare };
@@ -143,7 +156,8 @@ async function main() {
         const [agent, label, event] = list.find(([a, l]) => a + ' | ' + l === k);
         const again = await measure(agent, label, event, RUNS * 2);
         const i = report.results.findIndex((r) => r.agent + ' | ' + r.case === k);
-        report.results[i] = { agent, case: label, p50: again.p50, p95: again.p95, ratio: +(again.p95 / pct(again.bare, 50)).toFixed(3), remeasured: true };
+        // The same divisor as the first pass, so the ratio means the same thing as in the baseline.
+        report.results[i] = { agent, case: label, p50: again.p50, p95: again.p95, ratio: +(again.p95 / nodeP50).toFixed(3), remeasured: true };
       }
       if (JSON_OUT) fs.writeFileSync(JSON_OUT, JSON.stringify(report, null, 2) + '\n');
     }

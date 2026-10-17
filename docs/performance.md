@@ -14,12 +14,13 @@ exactly as the agent does, and times it until the process exits:
   output; see [compat.md](compat.md)).
 - Outputs of 1 KB, 100 KB (also with two secrets in it) and 1000 KB of source-like text.
 - The vault is locked, so detected values are redacted for good and no background process is involved.
-- Each case runs 20 times after one warm-up run. Fake values are generated for the run; a case fails if one
-  of them comes back from the hook.
+- Each case runs 40 times after one warm-up run; p95 is the 38th of the 40 times (nearest rank).
+- Fake values are generated for the run. A case fails if one of them comes back from the hook, if the hook
+  could not check the output, or if a case with secrets has no zn marker in place of them.
 
 ```bash
 cd packages/zn-gate && npm ci --ignore-scripts && cd ../..
-node bench/hook_latency_matrix.js --runs 20
+node bench/hook_latency_matrix.js --runs 40
 ```
 
 Most of the time is Node.js starting: a bare `node -e ""` is measured between the samples of every case,
@@ -48,7 +49,8 @@ milliseconds; a bare `node -e ""` takes 23.8 ms (p50).
 | Codex CLI | PostToolUse, 1000 KB | 82.3 | 85.3 |
 | Cursor | postToolUse (MCP), 1000 KB | 85.1 | 89.2 |
 
-On a slower machine every number grows by about the same factor as Node's own start-up.
+On another machine the times change with it: dividing by Node's own start-up, as the budget does, removes
+most of that difference, not all of it.
 [`bench/HOOK_LATENCY.md`](../bench/HOOK_LATENCY.md) has earlier measurements with the vault unlocked and a
 breakdown of where the time goes.
 

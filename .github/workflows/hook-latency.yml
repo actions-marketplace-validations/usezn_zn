@@ -10,15 +10,21 @@ on:
     paths:
       - 'packages/zn-gate/lib/**'
       - 'packages/zn-gate/bin/**'
+      - 'packages/zn-gate/package.json'
       - 'packages/zn-gate/package-lock.json'
+      - 'packages/zn-gate/test/fixtures/fake_secrets*'
       - 'bench/hook_latency*'
       - '.github/workflows/hook-latency.yml'
   pull_request:
     branches: [ next, main, 'release/**' ]
+    # ready_for_review: a draft that is marked ready runs the budget without another push.
+    types: [ opened, synchronize, reopened, ready_for_review ]
     paths:
       - 'packages/zn-gate/lib/**'
       - 'packages/zn-gate/bin/**'
+      - 'packages/zn-gate/package.json'
       - 'packages/zn-gate/package-lock.json'
+      - 'packages/zn-gate/test/fixtures/fake_secrets*'
       - 'bench/hook_latency*'
       - '.github/workflows/hook-latency.yml'
   workflow_dispatch:
@@ -56,7 +62,7 @@ jobs:
       - name: Measure (and check the budget when a baseline exists)
         run: |
           set -euo pipefail
-          args=(--runs 20 --json "$RUNNER_TEMP/hook_latency.json")
+          args=(--runs 40 --json "$RUNNER_TEMP/hook_latency.json")
           if [ -f bench/hook_latency_baseline.json ]; then args+=(--baseline bench/hook_latency_baseline.json); else echo "::warning::no bench/hook_latency_baseline.json yet: report only"; fi
           node bench/hook_latency_matrix.js "${args[@]}" | tee "$RUNNER_TEMP/hook_latency.md"
       - name: Summary
