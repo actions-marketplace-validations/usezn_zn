@@ -10,7 +10,11 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('../lib/agents');
-const { guide, plan, fromTemporaryCopy, _internal } = require('../lib/init-guide');
+const { guide: realGuide, plan: realPlan, fromTemporaryCopy, _internal } = require('../lib/init-guide');
+// These tests are about what they say whatever Node.js runs them: the plugin needs 20.12 or later, so one that
+// supports it is injected (the check for older versions is in init_plugin_node.test.js).
+const guide = (opts) => realGuide({ nodeVersion: '22.0.0', ...opts });
+const plan = (opts) => realPlan({ nodeVersion: '22.0.0', ...opts });
 const { AGENT_ENV_VARS } = require('../lib/broker/tty');
 const policy = require('../lib/hooks/policy');
 const { tempDir } = require('./helpers/tmp');
