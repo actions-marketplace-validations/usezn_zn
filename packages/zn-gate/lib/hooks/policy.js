@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.5';
+const POLICY_RULES_VERSION = '2026-10-17.6';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -646,7 +646,7 @@ function allWords(cmd, posix = false) {
       const w = scan.words[k];
       const prev = k > 0 ? scan.words[k - 1].text : '';
       const isRedirTarget = /^[0-9]*>>?$/.test(prev) || /^[0-9]*>>?./.test(w.text);
-      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^</, ''), redirectTarget: isRedirTarget, head });
+      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^[0-9]*</, ''), redirectTarget: isRedirTarget, head });
     }
     rest = rest.slice(scan.end + 1);
   }
@@ -909,6 +909,8 @@ function bashDenialOf(cmd, opts = {}) {
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.
   const words = [...allWords(cmd, false), ...allWords(cmd, true), ...allWords(String(cmd).replace(/`(.)/gs, '$1'), false)];
+  // Bash $'...' quoting spells characters as escapes ($'\x2eenv' is .env): a fourth reading with them decoded.
+  if (String(cmd).includes("$'")) words.push(...allWords(decodeAnsiC(String(cmd)), true));
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   // The same for the code an interpreter runs (python -c "open('.env')"), where a path sits inside quotes and brackets.
@@ -934,6 +936,9 @@ function bashDenialOf(cmd, opts = {}) {
       const eq = text.indexOf('=');
       if (eq < 0) continue;
       text = text.slice(eq + 1);
+    } else if (NAME_VALUE_RE.test(text)) {
+      // name=value carries a path too (dd if=.env, ENV_FILE=.env).
+      text = text.slice(text.indexOf('=') + 1);
     }
     if (!text) continue;
     const writing = !READ_ONLY_CMDS.has(w.head);
@@ -960,6 +965,25 @@ function bashDenialOf(cmd, opts = {}) {
     if (deny) return deny;
   }
   return globDeny;
+}
+
+const NAME_VALUE_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}=/;
+const ANSI_C_SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' };
+
+/* The command with each bash $'...' word decoded and quoted again as a plain '...' word. */
+function decodeAnsiC(cmd) {
+  return cmd.replace(/\$'((?:[^'\\]|\\[\s\S])*)'/g, (m, body) => {
+    const text = body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c[\s\S]|[\s\S])/g, (e, x) => {
+      if (/^[xuU]/.test(x)) {
+        const n = parseInt(x.slice(1), 16);
+        return n <= 0x10ffff ? String.fromCodePoint(n) : '';
+      }
+      if (/^[0-7]/.test(x)) return String.fromCharCode(parseInt(x, 8) & 0xff);
+      if (x[0] === 'c' && x.length === 2) return String.fromCharCode(x.charCodeAt(1) & 0x1f);
+      return Object.prototype.hasOwnProperty.call(ANSI_C_SIMPLE, x) ? ANSI_C_SIMPLE[x] : '\\' + x;
+    });
+    return "'" + text.replace(/'/g, "'\\''") + "'";
+  });
 }
 
 // Commands that change the directory the rest of the command runs in.
@@ -1066,6 +1090,7 @@ module.exports = {
   globClass,
   globRegExp,
   _globClassEnd: globClassEnd,
+  _decodeAnsiC: decodeAnsiC,
   _globClassSource: globClassSource,
   expandBraces,
   readDenial,
