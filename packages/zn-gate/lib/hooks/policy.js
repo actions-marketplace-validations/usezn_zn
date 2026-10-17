@@ -643,12 +643,13 @@ function allWords(cmd, posix = false) {
     const scan = scanFirstCommand(rest, posix);
     const head = commandName(scan.words);
     const sub = isGit(head) ? gitSubcommand(scan.words) : '';
+    const gitArgs = sub ? scan.words.map((x) => x.text) : null;
     for (let k = 0; k < scan.words.length; k++) {
       const w = scan.words[k];
       const prev = k > 0 ? scan.words[k - 1].text : '';
       const isRedirTarget = /^[0-9]*>>?$/.test(prev) || /^[0-9]*>>?./.test(w.text);
       // Input redirections: <file, 0<file, <>file (read and write), {fd}<file.
-      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard, sub });
+      out.push({ text: w.text.replace(/^[0-9]*>>?/, '').replace(/^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>?/, ''), redirectTarget: isRedirTarget, head, seq: guard, sub, gitArgs });
     }
     rest = rest.slice(scan.end + 1);
   }
@@ -959,7 +960,7 @@ function bashDenialOf(cmd, opts = {}) {
       // git show HEAD:.env, git cat-file -p :app/.env: a secret file read from the repository, not from disk.
       const deny = gitObjectDenial(text, opts) ||
         // git log -p -- .env, git checkout HEAD -- .env: its history, also once the file is gone from disk.
-        (c && GIT_READ_SUBCMDS.has(w.sub) ? gitHistoryDenial(text) : null);
+        (c && gitReadsContent(w.sub, w.gitArgs) ? gitHistoryDenial(text) : null);
       if (deny) return deny;
     }
     if (!c) {
@@ -1023,6 +1024,32 @@ function gitSubcommand(words) {
     return t.toLowerCase();
   }
   return '';
+}
+
+// Options after which log, diff and show print names or counts, not content (unless -p asks for it too).
+const GIT_SUMMARY_OPTS = new Set(['--stat', '--shortstat', '--numstat', '--name-only', '--name-status', '--oneline', '--summary', '--dirstat']);
+const GIT_PATCH_OPTS = new Set(['-p', '-u', '--patch', '--cc', '-c', '--full-diff', '-W', '--function-context']);
+
+/* Whether a git command prints or brings back a file's stored content. Steps that only clean up stay allowed:
+   git restore --staged .env, git checkout -- .env (from the index to disk), git stash push -- .env, git log --oneline -- .env. */
+function gitReadsContent(sub, args) {
+  if (!GIT_READ_SUBCMDS.has(sub)) return false;
+  const a = args || [];
+  const at = a.findIndex((x) => x.toLowerCase() === sub);
+  const rest = at >= 0 ? a.slice(at + 1) : a;
+  const dashdash = rest.indexOf('--');
+  const before = dashdash >= 0 ? rest.slice(0, dashdash) : rest;
+  const positional = before.filter((x) => !x.startsWith('-'));
+  if (sub === 'stash') return positional[0] === 'show';
+  if (sub === 'restore') return rest.some((x) => x === '-s' || x.startsWith('--source'));
+  // checkout <rev> -- <file> (or checkout <rev> <file>) brings back a stored copy; checkout -- <file> uses the index.
+  if (sub === 'checkout') return dashdash >= 0 ? positional.length > 0 : positional.length > 1;
+  if (['log', 'diff', 'show', 'whatchanged'].includes(sub)) {
+    const summary = rest.some((x) => GIT_SUMMARY_OPTS.has(x.split('=')[0]));
+    const patch = rest.some((x) => GIT_PATCH_OPTS.has(x) || /^-[A-Za-z]*p/.test(x) && !x.startsWith('--'));
+    if (summary && !patch) return false;
+  }
+  return true;
 }
 
 function gitHistoryDenial(text) {
