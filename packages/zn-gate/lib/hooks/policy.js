@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.7';
+const POLICY_RULES_VERSION = '2026-10-17.8';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -51,6 +51,13 @@ function slash(p) {
 
 const DOTENV_BASENAME_RE = /^\.env(\.[A-Za-z0-9_.-]+)?$/;
 const DOTENV_SAFE_RE = /\.(example|sample|template|dist|defaults|schema)$/i;
+// Private keys kept outside ~/.ssh, for example in a project: an SSH key name is one wherever it is;
+// a key container (.p12, .pfx) holds one; a .pem or .key file may be a public certificate, so its content decides.
+const SSH_KEY_BASENAME_RE = /^id_(?:rsa|dsa|ecdsa|ed25519|xmss)(?:_sk)?$/;
+const KEY_CONTAINER_RE = /\.(?:p12|pfx|jks|keystore|ppk)$/i;
+const KEY_FILE_RE = /\.(?:pem|key|p8)$/i;
+const PRIVATE_KEY_RE = /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY-----|PuTTY-User-Key-File-/;
+const KEY_SCAN_BYTES = 1024 * 1024;
 
 const CREDENTIAL_RES = [
   [/(^|\/)\.aws\/credentials$/, 'AWS credentials file'],
@@ -198,6 +205,9 @@ function classifyResolved(abs, ctx) {
   if (s === h + '/.npmrc' || s === h + '/.pypirc') return { kind: 'credential', reason: 'package registry token' };
   const base = path.basename(abs);
   if (ci(DOTENV_BASENAME_RE).test(base) && !ci(DOTENV_SAFE_RE).test(base)) return { kind: 'dotenv', reason: '.env file' };
+  if (ci(SSH_KEY_BASENAME_RE).test(base)) return { kind: 'credential', reason: 'SSH private key' };
+  if (KEY_CONTAINER_RE.test(base)) return { kind: 'credential', reason: 'key store, which holds private keys' };
+  if (KEY_FILE_RE.test(base)) return { kind: 'keyfile', reason: 'a private key file' };
   return null;
 }
 
@@ -210,7 +220,7 @@ function resolvedOf(p, opts = {}) {
 
 /**
  * Classify a path. Returns null or {kind, reason}:
- *   kind 'credential' | 'dotenv' | 'zn_state' | 'agent_config'
+ *   kind 'credential' | 'dotenv' | 'keyfile' | 'zn_state' | 'agent_config'
  * The path is checked as typed and where it really leads (symlinks resolved),
  * with ~, $HOME, %USERPROFILE%, $env:USERPROFILE and the credential variables
  * expanded, and case-insensitively on Windows and macOS.
@@ -538,7 +548,25 @@ function readDenial(p, opts = {}) {
       znCommand('env shadow ' + path.basename(abs)) + '` in their terminal: it moves the values to the local vault and leaves __ZN_<NAME>__ markers you can read and use.';
   }
   if (c.kind === 'zn_state') return vaultMessage(opts);
+  if (c.kind === 'keyfile') return keyFileDenial(p, c, opts);
   return credentialDenial(p, c);
+}
+
+/* A .pem, .key or .p8 file: refused when it holds a private key, allowed when it is a certificate or a public key. */
+function keyFileDenial(p, c, opts) {
+  let text;
+  try {
+    const fd = fs.openSync(resolvedOf(p, opts), 'r');
+    try {
+      const buf = Buffer.alloc(KEY_SCAN_BYTES);
+      text = buf.toString('latin1', 0, fs.readSync(fd, buf, 0, KEY_SCAN_BYTES, 0));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (_) {
+    return null; // missing file: nothing to protect
+  }
+  return PRIVATE_KEY_RE.test(text) ? credentialDenial(p, c) : null;
 }
 
 /* Reads of credential files: what was refused, why, and how to use a value instead. */
@@ -1209,7 +1237,7 @@ function adminDenial(admin, opts = {}, cmd = '') {
 /** The deny message for a read or write classified by classifyWord. */
 function denialOf(c, text, opts) {
   if (c.kind === 'zn_state') return vaultMessage(opts);
-  if (c.kind === 'dotenv') return readDenial(text, opts);
+  if (c.kind === 'dotenv' || c.kind === 'keyfile') return readDenial(text, opts);
   return credentialDenial(text, c);
 }
 

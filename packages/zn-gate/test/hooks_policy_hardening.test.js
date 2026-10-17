@@ -490,3 +490,25 @@ test('git steps that only clean up a tracked .env stay allowed', (t) => {
     assert.ok(policy.bashDenial(cmd, o), cmd);
   }
 });
+
+test('a private key kept in the project is refused; a certificate or public key is not', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-keys-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'deploy'));
+  // Fake, obviously invalid key material: only the markers matter.
+  const fakeKey = '-----BEGIN PRIVATE KEY-----\nZN-TEST-FAKE-KEY-NOT-REAL\n-----END PRIVATE KEY-----\n';
+  fs.writeFileSync(path.join(dir, 'deploy', 'server.key'), fakeKey);
+  fs.writeFileSync(path.join(dir, 'deploy', 'tls.pem'), fakeKey.replace(/PRIVATE KEY/g, 'RSA PRIVATE KEY'));
+  fs.writeFileSync(path.join(dir, 'deploy', 'cert.pem'), '-----BEGIN CERTIFICATE-----\nZN-TEST-FAKE-CERT\n-----END CERTIFICATE-----\n');
+  fs.writeFileSync(path.join(dir, 'deploy', 'id_ed25519'), 'ZN-TEST-FAKE\n');
+  fs.writeFileSync(path.join(dir, 'deploy', 'id_ed25519.pub'), 'ssh-ed25519 ZN-TEST-FAKE\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['cat deploy/server.key', 'cat deploy/tls.pem', 'cat deploy/id_ed25519', 'base64 deploy/server.key', 'cat deploy/store.p12']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['cat deploy/cert.pem', 'openssl x509 -in deploy/cert.pem -noout -text', 'cat deploy/id_ed25519.pub', 'cat deploy/missing.key']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+  assert.ok(policy.readDenial(path.join(dir, 'deploy', 'server.key'), o));
+  assert.equal(policy.readDenial(path.join(dir, 'deploy', 'cert.pem'), o), null);
+});
