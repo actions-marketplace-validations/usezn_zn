@@ -29,8 +29,8 @@ The project has a single maintainer today (see [MAINTAINERS.md](MAINTAINERS.md))
 
 | Step | Target |
 | --- | --- |
-| Acknowledge your report | within 3 business days |
-| Initial assessment and severity (CVSS) | within 7 days |
+| Acknowledge your report (first human response) | within 24 hours |
+| Initial assessment: validity and severity (CVSS) | within 48 hours |
 | Fix released, critical or high severity | within 30 days |
 | Fix released, medium or low severity | within 90 days |
 

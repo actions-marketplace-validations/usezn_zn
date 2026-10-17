@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.23';
+const POLICY_RULES_VERSION = '2026-10-17.27';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -923,7 +923,7 @@ function hasNetworkSignals(cmd) {
 }
 
 // The program is zn, zn-gate (also with a version: npx -y zn-gate@1.6.0, pnpm dlx zn-gate@latest) or the bin file.
-const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall)|init(?![^\n;&|#`$()'"<>\\]{0,512}[ \t]--(?:wrap-mcp|dry-run|revert|shadow)(?=[ \t\n]|$))|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
+const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|connect|disconnect|hooks\s+(install|uninstall)|init(?![^\n;&|#`$()'"<>\\]{0,512}[ \t]--(?:wrap-mcp|dry-run|revert|shadow)(?=[ \t\n]|$))|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
 
 // `npm exec` (and `npm x`) keeps the options after the package for itself unless a `--` comes first, so
 // `npm exec zn-gate init --dry-run` runs the guided init: the options do not count there. Checked per simple
@@ -1526,10 +1526,18 @@ const KEYCHAIN_MESSAGE = 'zn: this command would read a zn secret (the API key o
 // zn's key code). No wrapper, quoting, interpreter or heredoc has to be understood: the words are enough, and
 // searching for the names with rg, grep or git grep (no keychain word) stays allowed.
 const KEYCHAIN_WORD_RE = /(?:(?<![A-Za-z0-9_.-])(?:security(?:\.exe)?(?=\s)|secret-tool|cmdkey|vaultcmd|Get-StoredCredential|CredRead|CredEnumerate|keyring|keytar|PasswordVault)(?![A-Za-z0-9_-])|(?<![A-Za-z0-9_-])(?:getPassword|get_password)(?![A-Za-z0-9_-])|find-(?:generic|internet)-password)/i;
-const KEYCHAIN_DUMP_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s[^\n]*\bdump-keychain\b/i;
+// The patterns below are matched one at a time, with no gap between parts: `security\s[^\n]*dump-keychain` takes time
+// proportional to length times the number of candidates, and a bounded gap could be padded past its limit.
+const KEYCHAIN_DUMP_RE = /\bdump-keychain\b/i;
+const KEYCHAIN_SECURITY_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s/i;
 // zn's own modules, loaded to read the key.
-const KEYCHAIN_LIB_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)\s*['"]?[^;\n]*(?:cloud-key|vault\/keychain)/;
-const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity)/;
+const KEYCHAIN_LIB_LOAD_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)/;
+// zn-gate's own client modules count only by their full path (node_modules, a global install or packages/zn-gate): a
+// project's own lib/client is no business of ours. A relative ./lib/client inside zn-gate itself is not covered.
+// zn-gate's own client modules count only by their full path (node_modules, a global install or packages/zn-gate): a
+// project's own lib/client is no business of ours. A relative ./lib/client inside zn-gate itself is not covered.
+const KEYCHAIN_LIB_NAME_RE = /(?:cloud-key|vault\/keychain|zn-gate[\\/]+lib[\\/]+(?:vault[\\/]+)?client(?![A-Za-z0-9_-]))/;
+const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity|\banalyze\b|\bisCloudEnabled\b)/;
 
 /*
  * A single simple command that only writes or searches text: `git commit|grep|log|show`, `echo`, `printf`. Such a
@@ -1568,9 +1576,9 @@ function keychainQuery(cmd, env) {
   // Quotes, backslashes and backticks inside a name do not change what the tool sees.
   for (const t of [text, text.replace(/['"`\\^]/g, '')]) {
     // Dumping the keychain would include zn's entries whatever name is given.
-    if (KEYCHAIN_DUMP_RE.test(t)) return true;
+    if (KEYCHAIN_DUMP_RE.test(t) && KEYCHAIN_SECURITY_RE.test(t)) return true;
     if (KEYCHAIN_WORD_RE.test(t) && named(t)) return true;
-    if (KEYCHAIN_LIB_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
+    if (KEYCHAIN_LIB_NAME_RE.test(t) && KEYCHAIN_LIB_LOAD_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
   }
   return false;
 }
@@ -1970,6 +1978,9 @@ function adminDenial(admin, opts = {}, cmd = '') {
   }
   if (/^(un)?lock$/i.test(admin)) {
     return 'zn blocked this: locking or unlocking the secret vault is the user\'s decision, so an agent may not run `' + znCommand(admin, opts) + '`. ' + run(admin);
+  }
+  if (/^(dis)?connect$/i.test(admin)) {
+    return 'zn blocked this: `' + znCommand(admin, opts) + '` turns the optional cloud check on or off and handles your zn API key, which is the user\'s decision. ' + run(admin);
   }
   if (/^stats/i.test(admin)) {
     return 'zn blocked this: only the user can turn on sharing of zn\'s usage statistics. ' + run('stats share on');
