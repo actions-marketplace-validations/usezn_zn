@@ -30,6 +30,16 @@ const FAKE_LINE = 'ZN_CHECK_EXAMPLE_KEY=zn-check-fake-value-not-a-real-key\n';
 const HOOK_TIMEOUT_MS = 15000;
 const PLUGIN_ID = 'zn-gate@usezn';
 
+/* The zn-gate Claude Code plugin needs Node.js 20.12 or later; zn-gate itself runs on 18 and later. */
+function pluginNodeOk(version) {
+  const [major, minor] = String(version || process.versions.node).split('.').map((x) => parseInt(x, 10) || 0);
+  // The loader constant the plugin needs arrives in Node.js 20.12 and in 21.7.
+  return major > 21 || (major === 21 && minor >= 7) || (major === 20 && minor >= 12);
+}
+function pluginNodeMessage(version) {
+  return 'the zn-gate plugin needs Node.js 20.12 or later (you have ' + String(version || process.versions.node) + ')';
+}
+
 const AGENTS = [
   {
     id: 'claude-code', name: 'Claude Code', event: 'PreToolUse', tool: 'Read',
@@ -253,6 +263,12 @@ async function checkAgent(spec, ctx) {
         res.problem = 'the zn-gate plugin is turned off in your Claude Code settings';
         res.fix = 'turn it on: run `claude plugin enable zn-gate@usezn` in your own terminal';
       }
+      if (!plugin.off && !pluginNodeOk(ctx.nodeVersion)) {
+        res.problem = pluginNodeMessage(ctx.nodeVersion);
+        res.fix = 'update Node.js to 20.12 or later, or use zn\'s hooks instead: run `npm install -g zn-gate`, then `zn hooks install claude-code`, and after that turn the plugin off with `claude plugin disable zn-gate@usezn`, all in your own terminal';
+        res.pluginFault = true;
+        res.pluginNode = true;
+      }
       const pre = ctx.live ? spawnHook(process.execPath, [path.join(plugin.root, 'scripts', 'zn-launch.js'), 'check', 'claude-code'], {}, { CLAUDE_PLUGIN_ROOT: plugin.root }, ctx.dir) : { ran: false };
       const sys = pre.ran && /"systemMessage"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(pre.stdout || '');
       // The launcher's own check message is about the plugin itself (for example a Node.js it does not support).
@@ -377,7 +393,7 @@ async function check(opts = {}) {
   const env = opts.env || process.env;
   const cwd = opts.cwd || process.cwd();
   if (opts.live === false) {
-    const ctx = { home, env, cwd, live: false, dir: cwd, codexPolicy: opts.codexPolicy };
+    const ctx = { home, env, cwd, live: false, dir: cwd, codexPolicy: opts.codexPolicy, nodeVersion: opts.nodeVersion };
     const results = [];
     for (const spec of AGENTS) {
       try {
@@ -389,7 +405,7 @@ async function check(opts = {}) {
     return { results, removed: true };
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-check-'));
-  const ctx = { home, env, cwd, live: true, dir, envFile: path.join(dir, '.env'), readme: path.join(dir, 'README.txt'), codexPolicy: opts.codexPolicy };
+  const ctx = { home, env, cwd, live: true, dir, envFile: path.join(dir, '.env'), readme: path.join(dir, 'README.txt'), codexPolicy: opts.codexPolicy, nodeVersion: opts.nodeVersion };
   const results = [];
   try {
     fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n');
@@ -463,4 +479,4 @@ function report({ results, removed }, write) {
   return setUp && !bad ? 0 : 1;
 }
 
-module.exports = { check, report, FAKE_LINE, AGENTS, _internal: { hookEntries, matcherCovers, parseCommand, decisionOf, claudePlugin } };
+module.exports = { check, report, FAKE_LINE, AGENTS, _internal: { pluginNodeOk, pluginNodeMessage, hookEntries, matcherCovers, parseCommand, decisionOf, claudePlugin } };
