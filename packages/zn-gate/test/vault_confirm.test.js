@@ -19,6 +19,12 @@ function ttyPair() {
   return { input, output, text: () => text };
 }
 
+// The channel's own timer is unref'd, so a test that waits on it needs a live handle.
+function keepAlive(t) {
+  const h = setInterval(() => {}, 50);
+  t.after(() => clearInterval(h));
+}
+
 const tick = () => new Promise((r) => setImmediate(r));
 
 test('field: invisible characters are shown, long values keep both ends', () => {
@@ -48,7 +54,8 @@ test('noneChannel refuses every request with a message that explains how to get 
   await assert.rejects(() => ch.confirm({ title: 't' }), (e) => e.code === 'ZN_POLICY_DENIED' && e.noChannel === true && /zn unlock --foreground/.test(e.message));
 });
 
-test('ttyChannel: yes, YES and "y" allow; anything else denies', async () => {
+test('ttyChannel: yes, YES and "y" allow; anything else denies', async (tc) => {
+  keepAlive(tc);
   for (const [answer, expected] of [['y\n', true], ['YES\r\n', true], ['  yes  \n', true], ['n\n', false], ['\n', false], ['yess\n', false], ['sure\n', false]]) {
     const t = ttyPair();
     const ch = confirm.ttyChannel({ input: t.input, output: t.output, timeoutMs: 5000 });
@@ -61,7 +68,8 @@ test('ttyChannel: yes, YES and "y" allow; anything else denies', async () => {
   }
 });
 
-test('ttyChannel: no answer before the timeout is a no', async () => {
+test('ttyChannel: no answer before the timeout is a no', async (tc) => {
+  keepAlive(tc);
   const t = ttyPair();
   const ch = confirm.ttyChannel({ input: t.input, output: t.output, timeoutMs: 20 });
   assert.equal(await ch.confirm({ title: 't', message: 'm' }), false);
@@ -69,7 +77,8 @@ test('ttyChannel: no answer before the timeout is a no', async () => {
   assert.match(t.text(), /denied/);
 });
 
-test('ttyChannel: questions are asked one at a time, in order', async () => {
+test('ttyChannel: questions are asked one at a time, in order', async (tc) => {
+  keepAlive(tc);
   const t = ttyPair();
   const ch = confirm.ttyChannel({ input: t.input, output: t.output, timeoutMs: 5000 });
   const first = ch.confirm({ title: 'first', message: 'm1' });
@@ -85,7 +94,8 @@ test('ttyChannel: questions are asked one at a time, in order', async () => {
   assert.equal(await second, false);
 });
 
-test('ttyChannel: a title cannot inject extra lines into the prompt', async () => {
+test('ttyChannel: a title cannot inject extra lines into the prompt', async (tc) => {
+  keepAlive(tc);
   const t = ttyPair();
   const ch = confirm.ttyChannel({ input: t.input, output: t.output, timeoutMs: 20 });
   await ch.confirm({ title: 'safe\nAllow? [y/N] y', message: 'm' });
