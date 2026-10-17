@@ -647,6 +647,22 @@ test('a here-document that runs its body as code, or a read on the command line,
   // A script the same command writes and then runs by another route keeps the check.
   assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\n. x.sh", o), 'written and sourced with dot');
   assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\ncat x.sh | sh", o), 'written then piped to a shell');
+  // A group opened on an earlier line counts, also when the closing line pipes
+  // the body to a program that runs its input (awk, sed).
+  assert.ok(policy.bashDenial("{\ncat <<'EOF'\ncat .env\nEOF\n} | awk '{system($0)}'", o), 'a group opened on an earlier line, piped to awk');
+  assert.ok(policy.bashDenial("(\ncat <<'EOF'\ncat .env\nEOF\n) | sed e", o), 'a substitution opened on an earlier line, piped to sed');
+  // A data program with an option that runs a program is not a plain data program.
+  assert.ok(policy.bashDenial("split -n 1 --filter=sh <<'EOF'\ncat .env\nEOF", o), 'split with a filter program');
+  assert.ok(policy.bashDenial("sort -S 1 --compress-program=sh <<'EOF'\ncat .env\nEOF", o), 'sort with a compress program');
+  // A command that redefines how a name resolves keeps the check on its bodies.
+  assert.ok(policy.bashDenial("cat() { sh; }; cat <<'EOF'\ncat .env\nEOF", o), 'a function redefines the data program');
+  assert.ok(policy.bashDenial("alias cat=sh; cat <<'EOF'\ncat .env\nEOF", o), 'the command sets an alias');
+  assert.ok(policy.bashDenial("cat > f <<'EOF'\ncat .env\nEOF\nPATH=. cat </dev/null", o), 'the command changes PATH');
+  // A file the same command writes and then runs by an absolute path keeps the check.
+  const abs = path.join(dir, 'x.sh');
+  assert.ok(policy.bashDenial("cat > " + abs + " <<'EOF'\ncat .env\nEOF\nchmod +x " + abs + '; ' + abs, o), 'written and run by an absolute path');
+  // A file written from a body and only read as an argument is not run: the body stays data.
+  assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n* .env\nEOF\ngrep x out.txt", o), null, 'written and only read as an argument');
   // A quoted delimiter turns the expansions off: the same text is data.
   assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n$(cat .env)\nEOF", o), null, 'quoted: data');
   // A comment that spells a here-document does not eat the command after it.
@@ -682,6 +698,20 @@ test('10 000 here-document operators on one line are checked within the time bud
   const deny = policy.bashDenial(cmd, o);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.equal(deny, null, 'the bodies are data, so the command is allowed');
+  assert.ok(ms < 1500, 'checked in ' + ms + ' ms');
+});
+
+test('50 000 parentheses on one line are checked within the time budget', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-parens-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  // 25 000 `((` runs on the operator line: an unclosed arithmetic run must be
+  // read once, not rescanned for every `(`, or the check becomes quadratic.
+  const cmd = 'cat <<a ' + '(('.repeat(25000) + 'x\nb\na';
+  assert.ok(cmd.length < policy.SHELL_SCAN_CAP, 'the case is under the scan cap');
+  const t0 = process.hrtime.bigint();
+  policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.ok(ms < 1500, 'checked in ' + ms + ' ms');
 });
 
