@@ -385,3 +385,61 @@ test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) =
   assert.equal(spawnSync(process.execPath, [CLI, 'reach', '--bogus'], { encoding: 'utf8', env }).status, 2);
   assert.equal(spawnSync(process.execPath, [CLI, 'reach', path.join(m.root, 'missing')], { encoding: 'utf8', env }).status, 2);
 });
+
+test('a name with a newline or invisible characters cannot start a fake line in the report', { skip: process.platform === 'win32' }, async (t) => {
+  const m = machine(t, { secrets: false });
+  const FAKE = '\nHIGH fake finding\r\nNothing to fix.\u2028HIGH other\u200b\u200c\u200d\u2060\u2064\ufeff\u{e0041}\u{e007f}\t.';
+  fs.writeFileSync(path.join(m.root, '.mcp.json'), JSON.stringify({ mcpServers: {
+    ['fake-server' + FAKE]: { command: 'npx', args: ['-y', 'example-mcp-server'] },
+  } }));
+  fs.writeFileSync(path.join(m.root, '.env.fake' + FAKE), 'OPENAI_API_KEY=' + FAKES[0] + '\n');
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  const { s } = textOf(r);
+  assert.ok(r.findings.some((f) => f.section === 'mcp'), 'the MCP server is reported');
+  const INVISIBLE = /[\u200b-\u200d\u2060-\u2064\ufeff\u{e0000}-\u{e007f}\u2028\u2029]/u;
+  assert.doesNotMatch(s, INVISIBLE);
+  assert.doesNotMatch(JSON.stringify(r), INVISIBLE);
+  assert.doesNotMatch(s, /\t/);
+  // No line of the report starts with a severity or a verdict that no finding has.
+  const real = r.findings.filter((f) => f.severity !== 'info').length;
+  const starts = s.split('\n').filter((l) => /^\s*(HIGH|MEDIUM|LOW)\b/.test(l));
+  assert.equal(starts.length, real, starts.join('\n'));
+  assert.ok(!s.split('\n').some((l) => /^\s*Nothing to fix/.test(l)));
+  assert.ok(!s.split('\n').some((l) => /^\s*HIGH (fake|other)/.test(l)), 'a fake line starts a line');
+  // Every text field of every finding is on one line.
+  for (const f of r.findings) {
+    for (const v of [f.title, f.detail, f.fix, f.file, ...(f.names || []), ...(f.files || []).flatMap((c) => [c.path, c.what])]) {
+      if (v != null) assert.doesNotMatch(String(v), /[\r\n\t\u2028\u2029]/);
+    }
+  }
+  // JSON and SARIF carry the same cleaned text.
+  const sarif = require('../lib/reach/sarif');
+  const out = typeof sarif.toSarif === 'function' ? JSON.stringify(sarif.toSarif(r)) : JSON.stringify(sarif);
+  assert.doesNotMatch(out, INVISIBLE);
+});
+
+test('a secret split by invisible characters is still hidden', async (t) => {
+  const m = machine(t, { secrets: false });
+  const split = FAKES[1].slice(0, 12) + '\u200b' + FAKES[1].slice(12);
+  fs.writeFileSync(path.join(m.root, '.mcp.json'), JSON.stringify({ mcpServers: {
+    'example-server': { command: 'npx', args: ['-y', 'example-mcp-server', '--api-key', split] },
+  } }));
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  const flat = (JSON.stringify(r) + textOf(r).s).replace(/[\u200b]/g, '');
+  assert.ok(!flat.includes(FAKES[1].slice(12)), 'part of the value is shown');
+});
+
+test('--remember ignores a memory file bigger than 1 MiB, without failing', async (t) => {
+  const m = machine(t, { found: ['.cursor'] });
+  const env = { ...m.env, ZN_STATS: 'off' };
+  const file = _internal.memoryFile(m.home, env);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const key = require('crypto').createHash('sha256').update(fs.realpathSync(m.root)).digest('hex').slice(0, 32);
+  const big = JSON.stringify({ [key]: { high: 9, medium: 9, low: 9, at: '2026-01-01' }, pad: 'x'.repeat(2 * 1024 * 1024) });
+  fs.writeFileSync(file, big);
+  const run = () => spawnSync(process.execPath, [CLI, 'reach', m.root, '--remember', '--json'], { encoding: 'utf8', env, cwd: m.root });
+  const res = run();
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(JSON.parse(res.stdout).previous, null, 'a file this big is treated as absent');
+  assert.ok(fs.statSync(file).size < 1024 * 1024, 'the file is replaced by a small one');
+});

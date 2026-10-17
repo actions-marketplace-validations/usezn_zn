@@ -46,12 +46,20 @@ const DOTENV_SAFE_RE = /\.(example|sample|template|dist|defaults|schema)$/i;
 
 // Control and bidirectional characters: a file or server name from a repository could otherwise move the
 // cursor, clear the screen or reorder the text in the user's terminal.
-const UNSAFE_CHARS_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g;
+const UNSAFE_CHARS_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+// Characters that end a line or a column: in a one-line field they become a space, so a name cannot start
+// a line of its own in the report.
+const LINE_BREAK_RE = /[\r\n\t\u2028\u2029]+/g;
+// Zero-width, invisible and tag characters: they hide text from the reader and can split a value so that
+// it is not recognised, so they are removed before the value is hidden and again after.
+const INVISIBLE_RE = /[\u200b-\u200d\u2060-\u2064\ufeff\u{e0000}-\u{e007f}]/gu;
 
-/** Text that is safe to show: secret values redacted (as zn audit does), unsafe characters replaced. */
+/** Text that is safe to show on one line: invisible characters removed, secret values redacted (as zn audit
+ * does), line breaks turned into spaces and other unsafe characters replaced. */
 function safeText(s) {
   const { redact } = require('../audit');
-  return redact(String(s == null ? '' : s)).replace(UNSAFE_CHARS_RE, '?');
+  const clean = String(s == null ? '' : s).replace(INVISIBLE_RE, '').replace(LINE_BREAK_RE, ' ');
+  return redact(clean).replace(INVISIBLE_RE, '').replace(LINE_BREAK_RE, ' ').replace(UNSAFE_CHARS_RE, '?');
 }
 
 function displayHome(rel) {
@@ -245,6 +253,8 @@ async function reach(opts = {}) {
  * ~/.zn), so the next run can say "was N". Only counts and a date, under a hash of the folder path: no
  * path, name or value. Without --remember nothing is read or written.
  */
+const MAX_MEMORY_BYTES = 1024 * 1024;
+
 function memoryFile(home, env) {
   return path.join(env.ZN_HOME ? path.resolve(env.ZN_HOME) : path.join(home, '.zn'), 'reach-last.json');
 }
@@ -256,6 +266,8 @@ function remember(root, counts, home, env) {
   // Only well-formed entries are kept: anything else in the file is dropped, never a reason to fail.
   const data = {};
   try {
+    // A memory file is a few hundred bytes: anything over 1 MiB is not ours and is ignored.
+    if (fs.statSync(file).size > MAX_MEMORY_BYTES) throw new Error('too big');
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       for (const [k, e] of Object.entries(parsed)) {
