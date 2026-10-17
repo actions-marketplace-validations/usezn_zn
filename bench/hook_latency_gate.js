@@ -26,7 +26,8 @@ function compare(report, baseline, maxIncrease, log = () => {}) {
     const b = base.get(key(r));
     if (!b) { log('FAIL ' + key(r) + ': not in the baseline (update it with --update-baseline)'); fail = 1; continue; }
     const limit = b.ratio * (1 + maxIncrease);
-    const ok = r.ratio <= limit;
+    // A ratio that is not a positive number (NaN, null, 0) cannot be checked, so it fails.
+    const ok = [r.ratio, b.ratio].every((x) => Number.isFinite(x) && x > 0) && r.ratio <= limit;
     log((ok ? 'ok   ' : 'FAIL ') + key(r) + ': p95 ' + r.p95 + ' ms, ' + r.ratio + 'x node start-up (baseline ' + b.ratio + 'x, limit ' + limit.toFixed(3) + 'x)');
     if (!ok) fail = 1;
   }

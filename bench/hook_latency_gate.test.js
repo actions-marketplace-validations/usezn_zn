@@ -17,3 +17,11 @@ test('a case missing from either side fails', () => {
   assert.equal(compare(report(2, 3, [{ agent: 'claude-code', case: 'new', p95: 1, ratio: 1 }]), base, 0.2), 1);
   assert.equal(compare({ results: [report(2, 3).results[0]] }, base, 0.2), 1);
 });
+
+test('a ratio that is not a positive number fails', () => {
+  assert.equal(compare(report(NaN, 3.0), base, 0.2), 1);
+  assert.equal(compare(report(null, 3.0), base, 0.2), 1);
+  assert.equal(compare(report(0, 3.0), base, 0.2), 1);
+  const badBase = { results: [{ ...base.results[0], ratio: null }, base.results[1]] };
+  assert.equal(compare(report(2, 3.0), badBase, 0.2), 1);
+});
