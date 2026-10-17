@@ -210,7 +210,7 @@ flag off in CI.
 
 ```yaml
 - run: npx -y zn-gate@1.11.0 audit --format sarif --output zn-audit.sarif --fail-on none
-- uses: github/codeql-action/upload-sarif@v3
+- uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
   with:
     sarif_file: zn-audit.sarif
 ```
