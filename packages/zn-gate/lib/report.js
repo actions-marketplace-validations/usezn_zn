@@ -7,10 +7,12 @@
  * zn-gate report --no-team-line   leave out the closing line about zn Team
  *
  * Reads only local files (~/.zn/stats.json and the MCP pins). It writes nothing,
- * opens no network connection and never prints payloads, paths or secret names.
- * This module does not load the network client.
+ * opens no network connection and never prints payloads, paths, arguments or secret names.
+ * Files are read with a size cap and without ever blocking (a pipe or a device is treated as absent),
+ * and every value is checked before use: nothing in those files can crash or hang the report.
  */
 
+const fs = require('fs');
 const path = require('path');
 const stats = require('./stats');
 const pins = require('./mcp-pins');
@@ -18,6 +20,13 @@ const pins = require('./mcp-pins');
 const USAGE = 'Usage: zn-gate report [--since 1d-90d] [--json] [--no-team-line]\n';
 const DEFAULT_DAYS = 7;
 const TEAM_LINE = 'Teams: share these protections across your team with zn Team \u2014 https://usezn.com/team (hide this line with --no-team-line)';
+const STATS_CAP = 4 * 1024 * 1024;
+const PIN_CAP = 256 * 1024;
+const MAX_PIN_FILES = 500;
+const MAX_ENTRIES = 200;
+const MAX_COUNT = 1e9;
+const LAYERS = new Set(['hook', 'shield', 'mcp', 'broker', 'cli']);
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function fmt(n) {
   return Number(n || 0).toLocaleString('en-US');
@@ -43,46 +52,130 @@ function parse(args) {
   return o;
 }
 
-function dayMinus(now, n) {
-  return stats.today(new Date(now.getTime() - n * 86400000));
+/** A regular file of at most `cap` bytes, read without blocking and without following a final symlink; anything else is null. */
+function readSmall(file, cap) {
+  const K = fs.constants;
+  let fd;
+  try {
+    fd = fs.openSync(file, K.O_RDONLY | (K.O_NONBLOCK || 0) | (K.O_NOFOLLOW || 0));
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > cap) return null;
+    const buf = Buffer.alloc(Math.min(st.size, cap) + 1);
+    let n = 0;
+    while (n < buf.length) {
+      const r = fs.readSync(fd, buf, n, buf.length - n, null);
+      if (!r) break;
+      n += r;
+    }
+    return n > cap ? null : buf.toString('utf8', 0, n);
+  } catch (_) {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) { /* closed */ } }
+  }
 }
 
-/** A server command for display: secrets hidden, folders reduced to the file name, at most 80 characters. */
-function safeCommand(cmd) {
-  let s = String(cmd || '');
-  try { s = require('./rules').redactSecrets(s).sanitized; } catch (_) { /* below */ }
-  const fileName = (t) => path.posix.basename(t.split('\\').join('/')) || '...';
-  s = s.split(/\s+/).filter(Boolean).map((t) => (/[\\/]/.test(t) || t.startsWith('~') ? fileName(t) : t)).join(' ');
-  return s.length > 80 ? s.slice(0, 77) + '...' : s;
+function readJson(file, cap) {
+  const s = readSmall(file, cap);
+  if (s === null) return null;
+  try { return JSON.parse(s); } catch (_) { return null; }
+}
+
+const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+/** A finite, non-negative whole number, capped; anything else is 0. */
+const num = (x) => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? Math.min(Math.floor(x), MAX_COUNT) : 0);
+const own = (o) => Object.entries(o).slice(0, MAX_ENTRIES);
+
+const RUNNERS = new Set(['npx', 'bunx', 'uvx', 'pipx', 'node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'py', 'tsx', 'ts-node', 'pnpm', 'yarn', 'npm', 'uv']);
+const SKIP_WORDS = new Set(['run', 'dlx', 'exec', 'x', 'tool']);
+
+/**
+ * How a server is named in the report: the program and the package or script file, with NO arguments
+ * (a command line can hold a token in any form). Folders are dropped; anything odd is left out.
+ */
+function safeName(cmd) {
+  const tokens = String(cmd || '').split(/\s+/).filter(Boolean);
+  const base = (t) => path.posix.basename(t.split('\\').join('/')).replace(/\.exe$/i, '');
+  const ok = (t) => /^[A-Za-z0-9@][A-Za-z0-9@._/+-]{0,59}$/.test(t) && !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(t);
+  let i = 0;
+  while (i < tokens.length && (tokens[i].includes('=') || base(tokens[i]) === 'env' || tokens[i].startsWith('-'))) i++;
+  if (i >= tokens.length) return 'MCP server';
+  const program = base(tokens[i]);
+  if (!ok(program)) return 'MCP server';
+  if (!RUNNERS.has(program)) return program;
+  for (let j = i + 1; j < tokens.length; j++) {
+    const t = tokens[j];
+    if (t.startsWith('-') || t.includes('=') || SKIP_WORDS.has(t)) continue;
+    const isPath = /[\\/]/.test(t) && !t.startsWith('@');
+    const target = isPath ? base(t) : t;
+    return ok(target) ? `${program} ${target}` : program;
+  }
+  return program;
 }
 
 function inTeam() {
   try { return Boolean(require('./team/policy').readTeam()); } catch (_) { return false; }
 }
 
-function collect(days, now) {
-  const from = dayMinus(now, days - 1);
-  const until = stats.today(now);
-  const data = stats.load();
-  const r = { since: from, until, days, checked: 0, blocked: 0, warned: 0, redacted: 0, byAgent: {}, secretTypes: {}, busiest: null };
-  for (const [day, entries] of Object.entries(data.days || {})) {
-    if (day < from || day > until) continue;
+function dayMinus(now, n) {
+  return stats.today(new Date(now.getTime() - n * 86400000));
+}
+
+function readStats(r, from, until) {
+  const data = readJson(stats.statsFile(), STATS_CAP);
+  if (!isObj(data) || !isObj(data.days)) return;
+  for (const [day, entries] of Object.entries(data.days)) {
+    if (!DAY_RE.test(day) || day < from || day > until || !isObj(entries)) continue;
     let dayBlocked = 0;
-    for (const [key, c] of Object.entries(entries || {})) {
-      const agent = String(key).split(':')[1] || 'other';
-      for (const f of ['checked', 'blocked', 'warned', 'redacted']) r[f] += Number(c[f]) || 0;
-      dayBlocked += Number(c.blocked) || 0;
-      if (Number(c.blocked) > 0) r.byAgent[agent] = (r.byAgent[agent] || 0) + Number(c.blocked);
-      for (const [t, n] of Object.entries(c.detections || {})) r.secretTypes[t] = (r.secretTypes[t] || 0) + (Number(n) || 0);
+    for (const [key, c] of own(entries)) {
+      if (!isObj(c)) continue;
+      const [layer, agentRaw] = String(key).split(':');
+      if (!LAYERS.has(layer)) continue;
+      const agent = stats.normName(agentRaw);
+      const blocked = num(c.blocked);
+      r.checked += num(c.checked);
+      r.warned += num(c.warned);
+      r.blocked += blocked;
+      dayBlocked += blocked;
+      if (blocked > 0) r.byAgent[agent] = (r.byAgent[agent] || 0) + blocked;
+      let found = 0;
+      if (isObj(c.detections)) {
+        for (const [t, n] of own(c.detections)) {
+          const k = stats.normType(t);
+          const v = num(n);
+          if (!v) continue;
+          r.secretTypes[k] = (r.secretTypes[k] || 0) + v;
+          found += v;
+        }
+      }
+      // One counter: the total is always the sum of the breakdown; values hidden without a known type count as OTHER.
+      const extra = num(c.redacted) - found;
+      if (extra > 0) r.secretTypes.OTHER = (r.secretTypes.OTHER || 0) + extra;
     }
     if (dayBlocked > 0 && (!r.busiest || dayBlocked > r.busiest.blocked)) r.busiest = { day, blocked: dayBlocked };
   }
-  let servers = [];
-  try { servers = pins.list(); } catch (_) { servers = []; }
-  r.newServers = servers
-    .filter((s) => typeof s.pinnedAt === 'string' && s.pinnedAt.slice(0, 10) >= from && s.pinnedAt.slice(0, 10) <= until)
-    .map((s) => ({ command: safeCommand(s.command), pinned_at: s.pinnedAt }));
-  r.pending = servers.reduce((n, s) => n + (Array.isArray(s.pending) ? s.pending.length : 0), 0);
+}
+
+function readPins(r, from, until) {
+  let names = [];
+  try { names = fs.readdirSync(pins.pinsDir()).filter((n) => /^[0-9a-f]{16}\.json$/.test(n)).slice(0, MAX_PIN_FILES); } catch (_) { return; }
+  for (const n of names) {
+    const s = readJson(path.join(pins.pinsDir(), n), PIN_CAP);
+    if (!isObj(s)) continue;
+    if (isObj(s.pending)) r.pending += Math.min(Object.keys(s.pending).length, MAX_ENTRIES);
+    // Pins written before firstPinnedAt existed are not counted as new: when they were first seen is unknown.
+    const first = typeof s.firstPinnedAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(s.firstPinnedAt) ? s.firstPinnedAt : null;
+    if (first && first.slice(0, 10) >= from && first.slice(0, 10) <= until) r.newServers.push({ name: safeName(s.command), first_pinned_at: first });
+  }
+}
+
+function collect(days, now) {
+  const from = dayMinus(now, days - 1);
+  const until = stats.today(now);
+  const r = { since: from, until, days, checked: 0, blocked: 0, warned: 0, byAgent: {}, secretTypes: {}, busiest: null, newServers: [], pending: 0 };
+  readStats(r, from, until);
+  readPins(r, from, until);
+  r.redacted = Object.values(r.secretTypes).reduce((a, b) => a + b, 0);
   return r;
 }
 
@@ -114,9 +207,10 @@ function run(args, out = (s) => process.stdout.write(s), { now = new Date() } = 
   if (o.json) { out(JSON.stringify(toJson(r), null, 2) + '\n'); return 0; }
 
   const team = o.teamLine && !inTeam() ? TEAM_LINE + '\n' : '';
+  const off = stats.enabled() ? '' : '\nCounting is off on this computer (ZN_STATS=off), so these numbers may be incomplete.\n';
   const title = `zn-gate report: ${r.since} to ${r.until} (this computer only; nothing was sent)\n\n`;
   const empty = !r.checked && !r.blocked && !r.redacted && !r.warned && !r.newServers.length && !r.pending;
-  if (!stats.enabled() && empty) {
+  if (empty && off) {
     out(title + '  Counting is off on this computer (ZN_STATS=off), so there are no numbers to show.\n\n' + team);
     return 0;
   }
@@ -130,14 +224,14 @@ function run(args, out = (s) => process.stdout.write(s), { now = new Date() } = 
   out(`  Blocked actions   : ${fmt(r.blocked)}${agents ? `  (${agents})` : ''}\n`);
   out(`  Secrets hidden    : ${fmt(r.redacted)}${types ? `  (${types})` : ''}\n`);
   if (r.newServers.length) {
-    out(`  New MCP servers   : ${r.newServers.length}  (${r.newServers.slice(0, 5).map((s) => s.command).join('; ')}${r.newServers.length > 5 ? '; ...' : ''})\n`);
+    out(`  New MCP servers   : ${r.newServers.length}  (${r.newServers.slice(0, 5).map((s) => s.name).join('; ')}${r.newServers.length > 5 ? '; ...' : ''})\n`);
   } else {
     out('  New MCP servers   : 0  (only servers wrapped by zn-gate are listed)\n');
   }
   if (r.pending) out(`  Tools changed, waiting for your approval: ${fmt(r.pending)}  (run: zn-gate pins)\n`);
   if (r.busiest) out(`\n  Busiest day: ${r.busiest.day} (${fmt(r.busiest.blocked)} blocked)\n`);
-  out('\nThis report was built from files on your computer. Nothing left it.\n' + team);
+  out(off + '\nThis report was built from files on your computer. Nothing left it.\n' + team);
   return 0;
 }
 
-module.exports = { run, parse, TEAM_LINE, safeCommand };
+module.exports = { run, parse, TEAM_LINE, safeName };

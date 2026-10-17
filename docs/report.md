@@ -41,6 +41,6 @@ If zn-gate has not checked anything yet, it says so and shows no numbers. Counts
 
 ## Your data stays here
 
-The report only reads two things that zn-gate already keeps on your computer: the counts in `~/.zn/stats.json` and the list of protected MCP servers. It writes no files, opens no network connection and needs no account. It never prints prompts, file contents, folder names or the names of your secrets; a server command is shown with secrets hidden and folders shortened to the file name.
+The report only reads two things that zn-gate already keeps on your computer: the counts in `~/.zn/stats.json` and the list of protected MCP servers. It writes no files, opens no network connection and needs no account. It never prints prompts, file contents, folder names or the names of your secrets; a server is shown only by its name (the program and the package or script file), never by its arguments.
 
 Sharing counts with zn is a separate choice that is off unless you turn it on (`zn-gate stats share status`).
