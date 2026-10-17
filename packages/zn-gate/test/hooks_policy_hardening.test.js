@@ -651,6 +651,9 @@ test('a here-document that runs its body as code, or a read on the command line,
   // the body to a program that runs its input (awk, sed).
   assert.ok(policy.bashDenial("{\ncat <<'EOF'\ncat .env\nEOF\n} | awk '{system($0)}'", o), 'a group opened on an earlier line, piped to awk');
   assert.ok(policy.bashDenial("(\ncat <<'EOF'\ncat .env\nEOF\n) | sed e", o), 'a substitution opened on an earlier line, piped to sed');
+  // The `)` of a `case` pattern does not close an open group: the body stays
+  // code when the group is piped to a program that runs its input.
+  assert.ok(policy.bashDenial("{ case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n} | awk '{system($0)}'", o), 'a case-pattern paren inside a group piped to awk');
   // A data program with an option that runs a program is not a plain data program.
   assert.ok(policy.bashDenial("split -n 1 --filter=sh <<'EOF'\ncat .env\nEOF", o), 'split with a filter program');
   assert.ok(policy.bashDenial("sort -S 1 --compress-program=sh <<'EOF'\ncat .env\nEOF", o), 'sort with a compress program');
@@ -661,6 +664,10 @@ test('a here-document that runs its body as code, or a read on the command line,
   // A file the same command writes and then runs by an absolute path keeps the check.
   const abs = path.join(dir, 'x.sh');
   assert.ok(policy.bashDenial("cat > " + abs + " <<'EOF'\ncat .env\nEOF\nchmod +x " + abs + '; ' + abs, o), 'written and run by an absolute path');
+  // Also behind a wrapper: the wrapper is skipped before the command is read.
+  for (const run of ['nohup ' + abs, 'timeout 5 ' + abs, 'exec ' + abs, 'sudo ' + abs]) {
+    assert.ok(policy.bashDenial("cat > " + abs + " <<'EOF'\ncat .env\nEOF\n" + run, o), 'written and run behind a wrapper: ' + run);
+  }
   // A file written from a body and only read as an argument is not run: the body stays data.
   assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n* .env\nEOF\ngrep x out.txt", o), null, 'written and only read as an argument');
   // A quoted delimiter turns the expansions off: the same text is data.

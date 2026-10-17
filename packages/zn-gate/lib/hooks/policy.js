@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.20';
+const POLICY_RULES_VERSION = '2026-10-17.21';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1276,7 +1276,8 @@ function stripHeredocs(cmd, budget) {
   let segProgram; // the program of the segment, computed once
   let segPipe = false;
   let segClose = false;
-  let depth = 0; // groups and substitutions open here; kept across lines
+  let parens = 0; // `(` and `)` open here; a `)` with no `(` is a `case` pattern
+  let braces = 0; // `{` and `}` open here; both are kept across lines
   let hasData = false;
   let tailStart = -1; // output length just before the first data operator
   let i = 0;
@@ -1341,14 +1342,16 @@ function stripHeredocs(cmd, budget) {
       continue;
     }
     // A group or a substitution keeps the check on its bodies. The depth is kept
-    // across lines, so a group opened on an earlier line counts too.
-    if (ch === '{') { depth++; segClose = true; drop(); keep(ch); i++; continue; }
-    if (ch === ')' || ch === '}') { if (depth > 0) depth--; segClose = true; drop(); keep(ch); i++; continue; }
+    // across lines, and each bracket only closes its own kind, so the `)` of a
+    // `case` pattern does not close an open `{` group.
+    if (ch === '{') { braces++; segClose = true; drop(); keep(ch); i++; continue; }
+    if (ch === '}') { if (braces > 0) braces--; segClose = true; drop(); keep(ch); i++; continue; }
+    if (ch === ')') { if (parens > 0) parens--; segClose = true; drop(); keep(ch); i++; continue; }
     if (ch === '<') {
       const h = heredocAt(s, i);
       if (h) {
         if (segProgram === undefined) segProgram = heredocConsumer(s.slice(segStart, Math.min(i, segStart + 512)));
-        if (depth === 0 && !segPipe && !segClose && segProgram && HEREDOC_DATA_CMDS.has(segProgram)) {
+        if (parens === 0 && braces === 0 && !segPipe && !segClose && segProgram && HEREDOC_DATA_CMDS.has(segProgram)) {
           if (tailStart === -1) tailStart = outLen;
           hasData = true;
           pending.push(h.doc);
@@ -1383,7 +1386,7 @@ function stripHeredocs(cmd, budget) {
       drop();
       continue;
     }
-    if (ch === '(') { depth++; segClose = true; drop(); keep(ch); i++; continue; }
+    if (ch === '(') { parens++; segClose = true; drop(); keep(ch); i++; continue; }
     keep(ch);
     i++;
   }
@@ -1467,15 +1470,27 @@ function writtenFiles(text) {
  * here-document a command then runs.
  */
 function runsCodeAfter(text, targets) {
-  let atCommand = true;
-  for (const part of text.split(/([\s;&|(){}<>`"']+)/)) {
-    if (!part) continue;
-    if (/^[\s;&|(){}<>`"']+$/.test(part)) { if (/[;&|(){}\n]/.test(part)) atCommand = true; continue; }
-    const name = programName(part);
+  // Any word that is a shell, an interpreter or a stdin-to-command wrapper keeps
+  // the check, wherever it sits (the safe side).
+  for (const token of text.split(/[\s;&|(){}<>`"']+/)) {
+    if (!token) continue;
+    const name = programName(token);
     if (CODE_CMDS_RE.test(name) || name === 'source' || name === 'eval' || name === '.' || HEREDOC_RUNS_STDIN.has(name)) return true;
-    if (part.startsWith('./') || part.startsWith('../')) return true;
-    if (atCommand && targets && targets.has(part.replace(/^["']+|["']+$/g, ''))) return true;
-    atCommand = false;
+    if (token.startsWith('./') || token.startsWith('../')) return true;
+  }
+  if (!targets || !targets.size) return false;
+  // A file the command writes and then runs is named in command position, also
+  // behind a wrapper (`nohup x.sh`, `timeout 5 x.sh`, `exec x.sh`, `sudo x.sh`).
+  for (const segment of text.split(/[\n;|&(){}<>`"']+/)) {
+    const words = segment.split(/\s+/).filter(Boolean).map((text) => ({ text }));
+    let k = 0;
+    for (let guard = 0; k < words.length && guard < 32; guard++) {
+      if (ASSIGNMENT_RE.test(words[k].text)) { k++; continue; }
+      const name = programName(words[k].text);
+      if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) break;
+      k = skipWrapper(words, k, name);
+    }
+    if (k < words.length && targets.has(words[k].text.replace(/^["']+|["']+$/g, ''))) return true;
   }
   return false;
 }
