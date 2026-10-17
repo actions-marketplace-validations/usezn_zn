@@ -94,7 +94,7 @@ const CONTEXT_RES = [
   new RegExp('(\\b(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)\\s{0,8}:\\s{0,8}(?:(?:bearer|basic|token)\\s{1,8})?)([^\\s"\'\\\\]+)', 'gi'),
   new RegExp('(\\bbearer\\s{1,8})([A-Za-z0-9._~+/=-]{8,})', 'gi'),
   // The flag and its value as two items of a JSON array (MCP server args): "--api-key", "v" (also escaped).
-  new RegExp(String.raw`(\\?"--?[A-Za-z0-9]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\?"\s{0,8},\s{0,8})(` + QUOTED + ')', 'gi'),
+  new RegExp(String.raw`(\\?"--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\?"\s{0,8},\s{0,8})(` + QUOTED + ')', 'gi'),
   new RegExp('(\\b[A-Za-z0-9_]{0,60}' + SECRET_WORD + '(?![A-Za-z0-9])\\\\?["\']?\\s{0,8}[=:]\\s{0,8})(' + QUOTED + '|[^\\s"\'\\\\,;`]+)', 'gi'),
 ];
 function keepValue(v) {

@@ -235,7 +235,9 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
   for (const line of ['{\\"password\\":\\"ab\\\\\\"zn-test-fake-e1\\"}', '{\\"token\\":\\"\\\\\\"zn-test-fake-e2\\"}','PASSWORD: \\"\\\\\\"zn-test-fake-e3\\"',
     '{\\"password\\":\\"ab\\\\\\"zn-test-fake-e4\\",\\"x\\":\\"y\\"}', '{\\"password\\":\\"ab\\\\\\\\zn-test-fake-e5\\"}',
     'curl -u deploy:http://zn-test-fake-e6 x', 'curl --user=deploy:git+ssh://zn-test-fake-e7 x',
-    '"args": ["-y", "example-mcp", "--api-key", "zn-test-fake-e8"]', String.raw`{\"args\":[\"--token\",\"zn-test-fake-e9\"]}`]) {
+    '"args": ["-y", "example-mcp", "--api-key", "zn-test-fake-e8"]', String.raw`{\"args\":[\"--token\",\"zn-test-fake-e9\"]}`,
+    '"args": ["--github-token", "zn-test-fake-e10"]', '"args": ["--openai-api-key", "zn-test-fake-e11", "--client-secret", "zn-test-fake-e12"]',
+    String.raw`{\"args\":[\"--github-token\",\"zn-test-fake-e13\"]}`]) {
     assert.doesNotMatch(redact(line), /zn-test-fake/, line + ' -> ' + redact(line));
   }
   // A value that ends in an escaped backslash still ends at its own closing quote.
