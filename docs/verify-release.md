@@ -24,10 +24,12 @@ attestation for each Python file.
 
 From 1.12.0 on, the files are built, attested and signed by a separate
 reusable workflow, [`build-release.yml`](../.github/workflows/build-release.yml),
-which `release.yml` calls and cannot change while it runs. That makes the
-build provenance SLSA Build Level 3, and `build-release.yml` is the signer in
-steps 2 and 3. Releases up to 1.11.x were built and signed by `release.yml`
-itself (SLSA Build Level 2: built on a GitHub-hosted runner).
+whose build and signing jobs `release.yml` calls but cannot reach. That makes
+the build provenance SLSA Build Level 3, and `build-release.yml` is the signer
+in steps 2 and 3. Releases up to 1.11.x were built and signed by `release.yml`
+itself (SLSA Build Level 2: built on a GitHub-hosted runner). The npm
+provenance (step 4) and the PyPI attestations (step 5) are made when the files
+are published, so for every version they name `release.yml` at the tag.
 
 | Version | Signer workflow |
 | --- | --- |

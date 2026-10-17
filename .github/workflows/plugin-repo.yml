@@ -135,10 +135,10 @@ jobs:
           # The same checks as the plugin repository's Verify workflow, so a pull request
           # that it would refuse is never opened.
           git -C zn merge-base --is-ancestor "refs/tags/v$VERSION" "$SOURCE" || { echo "::error::the pin commit does not contain the release tag"; exit 1; }
-          # zn-gate 1.12.0 and later are attested by the reusable build workflow (SLSA Build Level 3),
+          # A release whose tag has the reusable build workflow is attested by it (SLSA Build Level 3);
           # earlier releases by release.yml itself.
           signer=release.yml
-          if [ "$(printf '%s\n' 1.12.0 "${VERSION%%-*}" | sort -V | head -n 1)" = 1.12.0 ]; then signer=build-release.yml; fi
+          if git -C zn cat-file -e "refs/tags/v$VERSION:.github/workflows/build-release.yml" 2>/dev/null; then signer=build-release.yml; fi
           gh attestation verify "zn-gate-$VERSION.tgz" --repo usezn/zn \
             --signer-workflow "usezn/zn/.github/workflows/$signer" \
             --source-ref "refs/tags/v$VERSION" --format json > attestation.json
