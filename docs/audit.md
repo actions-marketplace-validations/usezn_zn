@@ -215,6 +215,13 @@ flag off in CI.
     sarif_file: zn-audit.sarif
 ```
 
+## If something fails
+
+- **Exit code 2**: the audit did not run. The option is wrong, the path was not found, or the output file cannot be written.
+- **`zn audit log` or `--since` exits with 2**: that log moved. Use `zn vault log`.
+- **Exit code 1**: a finding met `--fail-on`. Read the evidence before you act: documentation that quotes a dangerous command is reported too.
+- **A job fails and you only want a report**: use `--fail-on none`.
+
 ## Limitations
 
 - Passwords written in prose ("with password ...") have no format the

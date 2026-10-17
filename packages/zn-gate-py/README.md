@@ -31,6 +31,14 @@ On Debian and Ubuntu, `python3 -m venv` needs the `python3-venv` package first: 
 
 Inside an environment you already use (your project's virtualenv, Poetry, uv), `pip install zn-gate` is enough. Python 3.10 or later (CI tests 3.10 to 3.13). Zero runtime dependencies.
 
+**If something fails:**
+
+- `externally-managed-environment`: install it in a virtual environment, as shown above.
+- `python3 -m venv` fails on Debian or Ubuntu: run `sudo apt install python3-venv`.
+- Python says it cannot find `zn_gate`: run your script with the Python of that environment (`.venv/bin/python`).
+- Legitimate content is blocked: use `on_block="return"` with a fallback while you evaluate it.
+- You use Claude Code, Codex CLI, Cursor or OpenCode: this package does not protect them. Run `npx -y zn-gate init` instead.
+
 ## Check that it works
 
 ```python
