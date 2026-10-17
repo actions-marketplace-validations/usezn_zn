@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.17';
+const POLICY_RULES_VERSION = '2026-10-17.19';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1135,10 +1135,10 @@ function codesOfCommand(w, out) {
  * secret file.
  *
  * Only the body of a plain data command is dropped: the command that holds the
- * operator must be simple (no pipe, no process substitution, no group around
- * the program), its program must be a known data program (`cat`, `tee`, `dd`,
- * ...), and the command must not run a program after the here-document. Every
- * other body keeps the check it had, which is the safe side.
+ * operator must be a plain simple one (no pipe, no process substitution, no
+ * group closed before it), its program must be a known data program (`cat`,
+ * `tee`, `dd`, ...) and not empty, and the command must not run code after the
+ * here-document. Every other body keeps the check it had, which is the safe side.
  */
 
 // A here-document operator starts a redirect. `<<` glued to the end of a word
@@ -1254,25 +1254,33 @@ function skipHeredocBodies(s, from, pending, keep) {
 
 /**
  * The command with the bodies of its data here-documents removed (see above).
- * A body is kept when its command is not a plain data command, when a pipe or a
- * group follows on the same line, or when the command runs a program after the
- * here-document. `budget` bounds the work; past it the command is left whole.
+ * A body is kept when its command is not a plain simple command with a known
+ * data program, when a pipe, a process substitution or a group closed before it
+ * makes that command not simple, or when the command runs code after it.
+ * `budget` bounds the work; past it the command is left whole.
  */
 function stripHeredocs(cmd, budget) {
   const s = String(cmd);
   if (s.indexOf('<<') === -1) return s;
   const parts = [];
-  const keep = (t) => { if (t) parts.push(t); };
+  let outLen = 0;
+  const keep = (t) => { if (t) { parts.push(t); outLen += t.length; } };
   let quote = null;
   let pending = [];
-  let cmdStart = 0;
-  let groupOpen = false;
-  let program = null;
+  // State of the simple command that holds the operator. A body is data only in
+  // a plain simple command: no pipe or process substitution, no group closed
+  // before it, and a non-empty known data program.
+  let segStart = 0;
+  let segProgram; // the program of the segment, computed once
+  let segPipe = false;
+  let segClose = false;
+  let hasData = false;
+  let tailStart = -1; // output length just before the first data operator
   let i = 0;
   let ticks = 0;
-  // A separator ends the command: the next one starts after it, with no group.
-  const reset = (at) => { cmdStart = at; groupOpen = false; program = null; };
-  // A pipe, a group or a substitution after an operator makes its body code.
+  // A separator ends the command: the next one starts after it, plain again.
+  const reset = (at) => { segStart = at; segProgram = undefined; segPipe = false; segClose = false; };
+  // A pipe, a process substitution or a group after an operator makes its body code.
   const drop = () => { if (pending.length) pending = []; };
   while (i < s.length) {
     if ((++ticks & 4095) === 0 && overBudget(budget, 0)) return s;
@@ -1309,25 +1317,50 @@ function stripHeredocs(cmd, budget) {
     if (ch === '\n') {
       keep('\n');
       i++;
-      if (pending.length) {
-        i = skipHeredocBodies(s, i, pending, keep);
-        pending = [];
-      }
+      if (pending.length) { i = skipHeredocBodies(s, i, pending, keep); pending = []; }
       reset(i);
       continue;
     }
-    if (ch === ';' || ch === '&' || ch === '|') { drop(); keep(ch); i++; reset(i); continue; }
-    if (ch === ')' || ch === '}') { drop(); keep(ch); i++; reset(i); continue; }
-    if (ch === '{') { groupOpen = true; drop(); keep(ch); i++; continue; }
+    if (ch === ';') { keep(ch); i++; reset(i); continue; }
+    if (ch === '&') {
+      // &> and &>> are redirects, as are >& and <& (a file-descriptor copy).
+      if (s[i + 1] === '>' || s[i - 1] === '>' || s[i - 1] === '<') { keep(ch); i++; continue; }
+      keep(ch); i++;
+      if (s[i] === '&') { keep('&'); i++; } // && or the & of |&
+      reset(i);
+      continue;
+    }
+    if (ch === '|') {
+      if (s[i + 1] === '|') { keep('||'); i += 2; reset(i); continue; } // || separates commands
+      segPipe = true; drop(); // | or |&: a pipeline, not a simple command
+      keep(ch); i++;
+      if (s[i] === '&') { keep('&'); i++; }
+      continue;
+    }
+    // A group or a substitution keeps the check on any body of the line: its
+    // output could be run by the group it belongs to.
+    if (ch === ')' || ch === '}' || ch === '{') { segClose = true; drop(); keep(ch); i++; continue; }
     if (ch === '<') {
       const h = heredocAt(s, i);
       if (h) {
-        if (program === null) program = heredocConsumer(s.slice(cmdStart, Math.min(i, cmdStart + 512)));
-        if (!groupOpen && program && HEREDOC_DATA_CMDS.has(program)) pending.push(h.doc);
+        if (segProgram === undefined) segProgram = heredocConsumer(s.slice(segStart, Math.min(i, segStart + 512)));
+        if (!segPipe && !segClose && segProgram && HEREDOC_DATA_CMDS.has(segProgram)) {
+          if (tailStart === -1) tailStart = outLen;
+          hasData = true;
+          pending.push(h.doc);
+        }
         keep(s.slice(i, h.end));
         i = h.end;
         continue;
       }
+      if (s[i + 1] === '(') { segPipe = true; drop(); keep(ch); i++; continue; } // <( process substitution
+      keep(ch); i++;
+      continue;
+    }
+    if (ch === '>') {
+      if (s[i + 1] === '(') { segPipe = true; drop(); keep(ch); i++; continue; } // >( process substitution
+      keep(ch); i++;
+      continue;
     }
     // Arithmetic (`$(( ))`, `(( ))`): a `<<` inside it is a shift, not a here-document.
     if (ch === '(' && s[i + 1] === '(') {
@@ -1339,15 +1372,14 @@ function stripHeredocs(cmd, budget) {
       }
       if (depth === 0 && s[j - 1] === ')') { keep(s.slice(i, j)); i = j; continue; }
     }
-    // Any other `(` is a group or a substitution around the program.
-    if (ch === '(') { groupOpen = true; drop(); keep(ch); i++; continue; }
+    if (ch === '(') { segClose = true; drop(); keep(ch); i++; continue; }
     keep(ch);
     i++;
   }
   const out = parts.join('');
-  // A command that writes a file and then runs a shell or an interpreter keeps
-  // the old check: the body is code the command it writes will run.
-  if (out !== s && runsCodeAfter(out)) return s;
+  // A command that writes a file and then runs it (a shell, an interpreter or
+  // the file itself) keeps the old check: the body is code that command runs.
+  if (hasData && runsCodeAfter(out.slice(tailStart))) return s;
   return out;
 }
 
@@ -1372,7 +1404,11 @@ const HEREDOC_RUNS_STDIN = new Set(['xargs', 'parallel']);
 function heredocConsumer(segment) {
   const words = segment.split(/\s+/).filter(Boolean).map((text) => ({ text }));
   let k = 0;
-  while (k < words.length && (ASSIGNMENT_RE.test(words[k].text) || RESERVED_WORDS.has(words[k].text))) k++;
+  while (k < words.length && (ASSIGNMENT_RE.test(words[k].text) || RESERVED_WORDS.has(words[k].text))) {
+    const name = programName(words[k].text);
+    if (HEREDOC_RUNS_STDIN.has(name)) return name; // xargs turns its input into a command
+    k++;
+  }
   for (let guard = 0; k < words.length && guard < 16; guard++) {
     const name = programName(words[k].text);
     if (HEREDOC_RUNS_STDIN.has(name)) return name;
@@ -1391,7 +1427,7 @@ function runsCodeAfter(text) {
   for (const token of text.split(/[\s;&|(){}<>`"']+/)) {
     if (!token) continue;
     const name = programName(token);
-    if (CODE_CMDS_RE.test(name) || name === 'source' || name === 'eval' || HEREDOC_RUNS_STDIN.has(name)) return true;
+    if (CODE_CMDS_RE.test(name) || name === 'source' || name === 'eval' || name === '.' || HEREDOC_RUNS_STDIN.has(name)) return true;
     if (token.startsWith('./') || token.startsWith('../')) return true;
   }
   return false;

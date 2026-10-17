@@ -601,6 +601,11 @@ test('the body of a here-document a program reads as data is not refused for a g
   assert.equal(policy.bashDenial(cmd("sudo tee /tmp/generated.js <<'EOF'", 'EOF'), o), null, 'behind a wrapper');
   // Two here-documents on one line: each body ends at its own delimiter.
   assert.equal(policy.bashDenial("cat <<'A' <<'B'\n* ? [a-z]\nA\n{ }\nB", o), null, 'two bodies on one line');
+  // A program run before the command does not make the body code: only what runs
+  // after the operator can run it, so a program or a relative path before it is
+  // not a reason to keep the check.
+  assert.equal(policy.bashDenial("python3 build.py && cat > generated.js <<'EOF'\n* .env ~/.aws/credentials\nEOF", o), null, 'a program before the here-document');
+  assert.equal(policy.bashDenial("mkdir -p ./out && tee ./out/generated.js <<'EOF'\n* .env\nEOF", o), null, 'a relative path before the here-document');
 });
 
 test('a here-document that runs its body as code, or a read on the command line, is still refused', (t) => {
@@ -634,6 +639,14 @@ test('a here-document that runs its body as code, or a read on the command line,
   for (const run of ['bash x.sh', 'sh x.sh', 'source x.sh', './x.sh']) {
     assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\n" + run, o), 'written and run: ' + run);
   }
+  // A pipe or a process substitution before the operator makes the command a
+  // pipeline, not a plain simple data command: the body keeps the check.
+  assert.ok(policy.bashDenial("echo hi | cat <<'EOF'\ncat .env\nEOF", o), 'pipe before the here-document');
+  assert.ok(policy.bashDenial("cat <(sh) <<'EOF'\ncat .env\nEOF", o), 'input process substitution before the here-document');
+  assert.ok(policy.bashDenial("tee >(sh) cat <<'EOF'\ncat .env\nEOF", o), 'output process substitution before the program');
+  // A script the same command writes and then runs by another route keeps the check.
+  assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\n. x.sh", o), 'written and sourced with dot');
+  assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\ncat x.sh | sh", o), 'written then piped to a shell');
   // A quoted delimiter turns the expansions off: the same text is data.
   assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n$(cat .env)\nEOF", o), null, 'quoted: data');
   // A comment that spells a here-document does not eat the command after it.
