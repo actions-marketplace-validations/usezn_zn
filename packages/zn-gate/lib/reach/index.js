@@ -229,6 +229,7 @@ async function reach(opts = {}) {
   // Every text that reaches the report, whatever its source, goes through the same redaction and cleaning.
   for (const f of findings) for (const k of ['title', 'detail', 'fix', 'file']) if (f[k] != null) f[k] = safeText(f[k]);
   for (const f of findings) if (f.files) f.files = f.files.map((c) => ({ path: safeText(c.path), what: safeText(c.what) }));
+  for (const f of findings) if (f.names) f.names = f.names.map(safeText);
   for (const a of agents) { a.problem = safeText(a.problem); a.fix = safeText(a.fix); }
   const rank = (s) => SEVERITIES.indexOf(s);
   findings.sort((a, b) => rank(a.severity) - rank(b.severity));
