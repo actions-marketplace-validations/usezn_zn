@@ -11,6 +11,11 @@ name: Release
 # - workflow_dispatch: dry run for an existing tag. It verifies and builds,
 #   uploads the unsigned workflow artifact and stops. It never signs or publishes.
 #
+# From 1.12.0 on (and for any commit that has tag-release.yml), a tag is
+# released only with a valid signature from tag-release.yml, which creates,
+# signs and pushes it; a tag pushed any other way is refused before anything
+# is built.
+#
 # How to verify a release: docs/verify-release.md
 
 on:
@@ -25,14 +30,16 @@ on:
         required: true
         type: string
 
+env:
+  ARTIFACT_NAME: zn-gate-release
+  GITSIGN_VERSION: 0.17.1
+  GITSIGN_SHA256: 69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae
+
 permissions: {}
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
-
-env:
-  ARTIFACT_NAME: zn-gate-release
 
 jobs:
   verify:
@@ -135,6 +142,32 @@ jobs:
             echo "dry_run=$DRY_RUN"
           } >> "$GITHUB_OUTPUT"
           echo "tag=$TAG sha=$sha npm=$npm_version pypi=$py_version prerelease=$prerelease dry_run=$DRY_RUN"
+      # From 1.12.0 on, and for any commit that has tag-release.yml, a release comes only from a tag that
+      # workflow signed: a tag pushed by hand, or by anyone else, is refused before anything is built.
+      # The version rule holds even for a release commit from which tag-release.yml was removed.
+      - name: Check the tag signature
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          set -euo pipefail
+          base="${TAG#v}"; base="${base%%-*}"
+          if ! git cat-file -e "$SHA:.github/workflows/tag-release.yml" 2>/dev/null \
+              && [ "$(printf '%s\n' 1.12.0 "$base" | sort -V | head -n 1)" != 1.12.0 ]; then
+            echo "$TAG predates signed tags (before 1.12.0): its tag is not signed."
+            exit 0
+          fi
+          # The annotated tag object itself, as it is on GitHub, and still on the verified commit.
+          git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git cat-file -t "refs/tags/$TAG")" = tag ] || { echo "::error::$TAG is not an annotated, signed tag"; exit 1; }
+          [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SHA" ] || { echo "::error::$TAG no longer points to $SHA"; exit 1; }
+          url="https://github.com/sigstore/gitsign/releases/download/v${GITSIGN_VERSION}/gitsign_${GITSIGN_VERSION}_linux_amd64"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitsign" "$url"
+          echo "${GITSIGN_SHA256}  $RUNNER_TEMP/gitsign" | sha256sum --strict -c -
+          chmod +x "$RUNNER_TEMP/gitsign"
+          "$RUNNER_TEMP/gitsign" verify-tag "$TAG" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/tag-release.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
   # Build, attestations and signatures run in a reusable workflow, out of reach
   # of this one (SLSA Build Level 3). Its signing job waits for approval on the
