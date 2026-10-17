@@ -264,7 +264,10 @@ function remember(root, counts, home, env) {
     }
   } catch (_) { /* no file, or not JSON: start again */ }
   const was = data[key] || null;
-  const previous = was ? { high: +was.high || 0, medium: +was.medium || 0, low: +was.low || 0, at: String(was.at || '').slice(0, 10) } : null;
+  // Whatever the file holds, only numbers and a YYYY-MM-DD date reach the report.
+  const count = (n) => (Number.isSafeInteger(+n) && +n >= 0 ? +n : 0);
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(was && was.at)) ? String(was.at) : 'an earlier run';
+  const previous = was ? { high: count(was.high), medium: count(was.medium), low: count(was.low), at: day } : null;
   data[key] = { high: counts.high, medium: counts.medium, low: counts.low, at: new Date().toISOString().slice(0, 10) };
   // Up to 200 folders: the oldest go first.
   const keys = Object.keys(data).sort((a, b) => String(data[a].at).localeCompare(String(data[b].at)));

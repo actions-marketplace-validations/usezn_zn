@@ -2,7 +2,7 @@
 
 What the secrets scrubber and broker can do in each agent. It depends on what
 each agent's hooks allow; formats were checked against each agent's official
-documentation on 2026-10-11. End-to-end evidence is in [`bench/e2e/`](../bench/e2e/).
+documentation on 2026-10-11 (Cursor again on 2026-10-17). End-to-end evidence is in [`bench/e2e/`](../bench/e2e/).
 
 | | Claude Code | Codex CLI | Cursor (IDE) | OpenCode |
 |---|---|---|---|---|
@@ -80,7 +80,12 @@ limit applies to a patch (`apply_patch`) in Codex and OpenCode.
     skip Cursor's own confirmations. A Grep without a `path` searches the whole
     workspace, so files that zn would shadow or refuse can be found that way;
     zn does not filter those results.
-  - `postToolUse` can only replace the output of MCP tools.
+  - `postToolUse` can only replace the output of MCP tools. Checked again on
+    2026-10-17: no Cursor hook can change shell or file output before the model
+    sees it. `afterShellExecution` receives the output but returns nothing,
+    there is no hook after a file read (`beforeReadFile` can only allow or deny),
+    and `additional_context` from `postToolUse` is added after a result instead
+    of replacing it.
   - `preToolUse` rewrites only together with `allow`, and does not enforce `ask`.
   - Not covered: a secret written inside inline code (for example
     `python -c "open(...)"`) is checked only where zn can read the path as a word.
