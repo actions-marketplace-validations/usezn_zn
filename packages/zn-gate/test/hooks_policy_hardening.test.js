@@ -341,3 +341,19 @@ test('after a glob word, a command with many more words is still refused', (t) =
   // Within the first words the literal file is still the one named.
   assert.match(policy.bashDenial('cat .e* notes.txt .env', { cwd: dir, home: dir }), /\.env/);
 });
+
+test('a glob that names a .env file in a subfolder is refused, as the plain path is', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-globenv-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'app1', 'inner'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', 'notes.txt'), 'hello\n');
+  const o = { cwd: dir, home: dir };
+  assert.ok(policy.bashDenial('cat app1/inner/.env', o), 'plain path');
+  for (const cmd of ['cat app*/inner/.env', 'cat app1/*/.env', 'cat */inner/.env', 'cat a?p1/inner/.env', 'cat {app1,app2}/inner/.env', 'head -n 1 ./app1/*/.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  // An ordinary file reached the same way is still allowed.
+  assert.equal(policy.bashDenial('cat app*/inner/notes.txt', o), null);
+  assert.equal(policy.classifyWord('app*/inner/.env', o).kind, 'credential');
+});
