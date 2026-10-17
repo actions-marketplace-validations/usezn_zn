@@ -61,5 +61,5 @@ OpenCode is not in the table: its zn plugin runs inside the OpenCode process, so
 The `Hook latency` workflow runs this benchmark on every pull request that changes the hook code. It fails
 when a case's p95, divided by Node's start-up in the same run, is more than 20 % above
 `bench/hook_latency_baseline.json`. A case over the limit is measured again with twice the samples first,
-so one slow sample does not fail it. A deliberate change of the baseline is a commit of its own:
+so one slow sample does not fail it. The run fails too when the baseline file is missing. A deliberate change of the baseline is a commit of its own:
 `node bench/hook_latency_gate.js report.json --update-baseline`.

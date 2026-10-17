@@ -59,11 +59,13 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Budget check tests
         run: node --test bench/hook_latency_gate.test.js
-      - name: Measure (and check the budget when a baseline exists)
+      - name: Measure and check the budget
         run: |
           set -euo pipefail
           args=(--runs 40 --json "$RUNNER_TEMP/hook_latency.json")
-          if [ -f bench/hook_latency_baseline.json ]; then args+=(--baseline bench/hook_latency_baseline.json); else echo "::warning::no bench/hook_latency_baseline.json yet: report only"; fi
+          # Without the baseline there is no budget to check, so the run fails instead of only reporting.
+          if [ ! -f bench/hook_latency_baseline.json ]; then echo "::error::bench/hook_latency_baseline.json is missing; restore it or create it with --update-baseline"; exit 1; fi
+          args+=(--baseline bench/hook_latency_baseline.json)
           node bench/hook_latency_matrix.js "${args[@]}" | tee "$RUNNER_TEMP/hook_latency.md"
       - name: Summary
         if: always()
