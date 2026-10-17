@@ -62,13 +62,15 @@ function toSarif(r, meta = {}) {
   for (const f of r.findings) {
     if (!LEVEL[f.severity]) continue;
     const text = f.title + (f.detail ? ': ' + f.detail : '') + (f.fix ? ' Fix: ' + f.fix : '');
-    if (!f.file || String(f.file).startsWith('~/')) {
+    // Also an absolute path (a configuration folder outside home, another drive): code scanning cannot resolve it.
+    if (!f.file || /^(?:~\/|\/|[A-Za-z]:[\\/]|\\\\)/.test(String(f.file))) {
       notifications.push({ level: LEVEL[f.severity], message: { text }, properties: { severity: f.severity, section: f.section } });
       continue;
     }
     const ri = ruleOf(ruleKey(f));
     if (ri === null) continue;
-    const base = [used[ri].id, f.section, f.file, f.title].join('\u0000');
+    // The title of a reach finding counts its secrets: only an audit finding's title names the finding itself.
+    const base = [used[ri].id, f.section, f.file, f.kind === 'audit' ? f.title : ''].join('\u0000');
     const n = (ordinals.get(base) || 0) + 1;
     ordinals.set(base, n);
     results.push({

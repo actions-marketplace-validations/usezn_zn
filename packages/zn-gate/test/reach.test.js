@@ -286,6 +286,11 @@ test('--sarif: one result per finding that is not info, with no value, and --fai
   const env0 = run0.results.find((x) => x.ruleId === 'ZNR002' && x.locations[0].physicalLocation.artifactLocation.uri === '.env');
   assert.ok(env0, 'the .env result has its file');
   for (const v of FAKES) assert.ok(!s.stdout.includes(v), 'value in SARIF: ' + v);
+  // One more secret in the .env does not change the fingerprint of its result.
+  const fp = (out) => JSON.parse(out).runs[0].results.find((x) => x.ruleId === 'ZNR002' && x.locations[0].physicalLocation.artifactLocation.uri === '.env').partialFingerprints['znReach/v1'];
+  const before = fp(s.stdout);
+  fs.appendFileSync(path.join(m.root, '.env'), 'EXTRA_TOKEN=zn-test-fake-extra-0001\n');
+  assert.equal(fp(run('--sarif').stdout), before);
   assert.equal(run('--json', '--fail-on', 'high').status, 1);
   assert.equal(run('--json', '--fail-on=none').status, 0);
   assert.equal(run('--json', '--fail-on', 'bogus').status, 2);
@@ -314,6 +319,12 @@ test('--remember keeps only counts, and only when asked; the next run shows them
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   const second = run('--remember');
   assert.match(second.stdout, /\(last time, \d{4}-\d{2}-\d{2}: \d+ high, \d+ medium, \d+ low\)/);
+  // A file with entries that are not counts is tolerated, and cleaned.
+  fs.writeFileSync(file, JSON.stringify({ a: null, b: {}, ['0'.repeat(32)]: [1] }));
+  const third = run('--remember');
+  assert.equal(third.status, 0, third.stderr);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8'))).length, 1);
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n.endsWith('.tmp')), []);
 });
 
 test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) => {

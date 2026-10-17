@@ -251,24 +251,43 @@ function memoryFile(home, env) {
 
 function remember(root, counts, home, env) {
   const file = memoryFile(home, env);
-  const key = require('crypto').createHash('sha256').update(root).digest('hex').slice(0, 32);
-  let data = {};
+  const crypto = require('crypto');
+  const key = crypto.createHash('sha256').update(root).digest('hex').slice(0, 32);
+  // Only well-formed entries are kept: anything else in the file is dropped, never a reason to fail.
+  const data = {};
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed;
-  } catch (_) { data = {}; }
-  const was = data[key] && typeof data[key] === 'object' ? data[key] : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [k, e] of Object.entries(parsed)) {
+        if (/^[0-9a-f]{32}$/.test(k) && e && typeof e === 'object' && !Array.isArray(e)) data[k] = e;
+      }
+    }
+  } catch (_) { /* no file, or not JSON: start again */ }
+  const was = data[key] || null;
   const previous = was ? { high: +was.high || 0, medium: +was.medium || 0, low: +was.low || 0, at: String(was.at || '').slice(0, 10) } : null;
   data[key] = { high: counts.high, medium: counts.medium, low: counts.low, at: new Date().toISOString().slice(0, 10) };
   // Up to 200 folders: the oldest go first.
   const keys = Object.keys(data).sort((a, b) => String(data[a].at).localeCompare(String(data[b].at)));
   while (keys.length > 200) delete data[keys.shift()];
+  // A new temporary file with a random name, created exclusively (never through a planted link), then renamed
+  // over the old one. Two runs at the same time: the last one to finish wins; the file is never half written.
+  let fd = null;
+  let tmp = null;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const tmp = file + '.' + process.pid + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+    tmp = file + '.' + crypto.randomBytes(8).toString('hex') + '.tmp';
+    fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    fs.writeSync(fd, JSON.stringify(data));
+    fs.closeSync(fd);
+    fd = null;
     fs.renameSync(tmp, file);
-  } catch (_) { /* a report that cannot remember is still a report */ }
+    tmp = null;
+  } catch (_) {
+    /* a report that cannot remember is still a report */
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) { /* closed */ }
+    if (tmp !== null) try { fs.unlinkSync(tmp); } catch (_) { /* gone */ }
+  }
   return previous;
 }
 
