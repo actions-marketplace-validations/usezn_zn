@@ -93,10 +93,13 @@ const CONTEXT_RES = [
   new RegExp('((?:^|\\s)-u["\']?[^\\s:"\']{1,128}:)(?!//|[A-Za-z][A-Za-z0-9+.-]{0,15}://)([^\\s"\'@]+)', 'g'),
   new RegExp('(\\b(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)\\s{0,8}:\\s{0,8}(?:(?:bearer|basic|token)\\s{1,8})?)([^\\s"\'\\\\]+)', 'gi'),
   new RegExp('(\\bbearer\\s{1,8})([A-Za-z0-9._~+/=-]{8,})', 'gi'),
-  // The flag and its value as two items of a JSON array (MCP server args): "--api-key", "v" (also escaped).
-  new RegExp(String.raw`(\\?"--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\?"\s{0,8},\s{0,8})(` + QUOTED + ')', 'gi'),
+  // The flag and its value as two items of a JSON or TOML array (MCP server args): "--api-key", "v" (also
+  // escaped, single-quoted, or with the value on the next line).
+  new RegExp(String.raw`(\\?["']--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\?["']\s{0,8},\s{0,64})(` + QUOTED + ')', 'gi'),
   new RegExp('(\\b[A-Za-z0-9_]{0,60}' + SECRET_WORD + '(?![A-Za-z0-9])\\\\?["\']?\\s{0,8}[=:]\\s{0,8})(' + QUOTED + '|[^\\s"\'\\\\,;`]+)', 'gi'),
 ];
+// A line that ends with a quoted flag item and a comma: the value is on the next line.
+const FLAG_ITEM_END = new RegExp(String.raw`\\?["']--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\?["']\s{0,8},?\s{0,8}$`, 'i');
 function keepValue(v) {
   const t = v.replace(/^\\?["']|\\?["']$/g, '');
   return !t || /^(?:\$\{?[A-Za-z_]|%[A-Za-z_]|\[REDACTED|__ZN_|<)/.test(t);
@@ -143,7 +146,22 @@ class FileCtx {
 
   redactedLine(ln) {
     // Only the start of a long line is ever shown, so only that much is redacted (well past what is shown).
-    if (!this.redacted.has(ln)) this.redacted.set(ln, redact(redactSpan(this.lines[ln - 1] || '')));
+    if (!this.redacted.has(ln)) {
+      const cur = redactSpan(this.lines[ln - 1] || '');
+      // A pretty-printed array puts a credential flag and its value on two lines: when the closest line
+      // above ends with a quoted flag item, redact both together and keep the second.
+      let prev = '';
+      for (let i = ln - 2; i >= Math.max(0, ln - 4); i--) {
+        if (this.lines[i].trim()) { prev = this.lines[i]; break; }
+      }
+      if (prev && prev.length <= 512 && FLAG_ITEM_END.test(prev)) {
+        const joined = redact(prev + '\n' + cur);
+        const at = joined.lastIndexOf('\n');
+        this.redacted.set(ln, at >= 0 ? joined.slice(at + 1) : redact(cur));
+      } else {
+        this.redacted.set(ln, redact(cur));
+      }
+    }
     return this.redacted.get(ln);
   }
 

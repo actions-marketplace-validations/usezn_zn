@@ -18,7 +18,7 @@
 
 ## Install
 
-Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it.
+Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it. The Claude Code plugin needs Node.js 20.12 or later.
 
 **Getting started: four steps, one command each.** Run them in your own terminal.
 
@@ -33,7 +33,7 @@ Everything runs on your machine; no account or API key is needed. You need Node.
 npx -y zn-gate init
 ```
 
-It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal: when an AI agent or a script runs it, it only prints the steps.
+It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, or zn's hooks when your Node.js is older than 20.12; zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal: when an AI agent or a script runs it, it only prints the steps.
 
 > **Windows PowerShell:** `npm` and `npx` can fail with "running scripts is disabled on this system", because the default execution policy blocks `npm.ps1`. Use `npm.cmd`, `npx.cmd` and `zn.cmd` instead (for example `npm.cmd install -g zn-gate`), run the commands from Command Prompt, or allow local scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
@@ -53,7 +53,7 @@ Five-minute walkthrough: [docs/secrets.md](https://github.com/usezn/zn/blob/main
 
 **One agent at a time** (the same steps `init` runs):
 
-**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later.
+**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later. The plugin needs Node.js 20.12 or later. With an older Node.js, `npx -y zn-gate init` skips the plugin and sets up zn's hooks for Claude Code instead (`zn-gate check` says so if the plugin is installed); update Node.js to use the plugin.
 
 ```bash
 claude plugin marketplace add usezn/zn
@@ -185,7 +185,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"c
 | Counts of what zn-gate did (`zn-gate stats`: checks, blocks, secrets replaced, per secret type) | Written locally to `~/.zn/stats.json` | **Never**, unless you turn on `zn-gate stats share on`: then one report a day with a random installation id, the day, the zn-gate, OS and Node.js versions, the agent and part of zn-gate used most, and the number of secrets found per built-in type (never values, prompts, variable or secret names, paths, hosts or emails). `zn-gate stats share show` shows it first. |
 | Prompts (`analyze_prompt`, `zn-gate analyze`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. Secrets are redacted locally before sending. |
 
-`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1`. `npx -y zn-gate status` prints what your configuration sends. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
+`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` (or `--local-only`) overrides `ZN_CLOUD=1`. `npx -y zn-gate status` shows the active detection engine and whether the optional cloud check is on. Sharing of usage statistics is off by default and has its own status: `npx -y zn-gate stats share status`. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
 
 > **1.4.0 and earlier:** with `ZN_API_KEY` set, tool output and tool-call arguments not blocked locally were sent to `api.usezn.com` without redaction. 1.4.1 removes that path. See the [CHANGELOG](https://github.com/usezn/zn/blob/main/CHANGELOG.md).
 
