@@ -378,7 +378,7 @@ test('effectiveList applies deny, warn and narrowing, and marks hosts that wait 
   const m = await joined();
   cloud.publishPolicy({ rules: [
     { secret: 'PROD_*', agents: ['*'], deny: true, reason: 'No production secrets' },
-    { secret: 'STAGING_KEY', agents: ['*'], warn: true, reason: 'Staging​ is monitored' },
+    { secret: 'STAGING_KEY', agents: ['*'], warn: true, reason: 'Staging\u200b is monitored' },
     { secret: 'API_KEY', agents: ['claude-code'], allowHosts: ['api.example.com', 'new.example.com'], mode: 'proxy' },
   ] });
   await m.o.teamSync({ upload: false });
@@ -390,7 +390,7 @@ test('effectiveList applies deny, warn and narrowing, and marks hosts that wait 
   ], 'claude-code', true);
   assert.strictEqual(list[0].deny, true);
   assert.strictEqual(list[1].warn, true);
-  assert.ok(list[1].warnReason && !list[1].warnReason.includes('​'));
+  assert.ok(list[1].warnReason && !list[1].warnReason.includes('\u200b'));
   assert.deepStrictEqual(list[2].allowHosts, ['api.example.com']);
   assert.strictEqual(list[2].mode, 'proxy');
   assert.deepStrictEqual(list[2].orgPending, [{ kind: 'host', value: 'new.example.com' }]);
