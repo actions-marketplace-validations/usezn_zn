@@ -692,11 +692,13 @@ function scanFirstCommand(cmd, posix = false) {
 }
 
 /** Every word of the whole command (rough), with a flag for > / >> targets and the command name of its segment. */
+// Enough simple commands for any command under SHELL_SCAN_CAP (each takes at least two characters).
+const SIMPLE_COMMANDS_MAX = 50000;
 function allWords(cmd, posix = false) {
   const out = [];
   let rest = String(cmd);
   let guard = 0;
-  while (rest.length && guard++ < 1000) {
+  while (rest.length && guard++ < SIMPLE_COMMANDS_MAX) {
     const scan = scanFirstCommand(rest, posix);
     const head = commandName(scan.words);
     const sub = isGit(head) ? gitSubcommand(scan.words) : '';
@@ -927,7 +929,7 @@ const TOO_LONG_MESSAGE = 'zn: this command is too long for zn to check (over 100
 // The agent runs a command unchecked when the hook times out (15 s in Claude Code), so checking a command has its
 // own limits, well below that: a time budget and a number of looks on disk. Past either, the command is refused.
 const CHECK_BUDGET_MS = 3000;
-const TOO_MANY_MESSAGE = 'zn: this command chains more than 1000 commands, more than zn checks at once, so it was blocked. Next step: run it as several shorter commands, or tell the user.';
+const TOO_MANY_MESSAGE = 'zn: this command chains more commands than zn checks at once, so it was blocked. Next step: run it as several shorter commands, or tell the user.';
 const CHECK_BUDGET_DISK = 20000;
 const TOO_SLOW_MESSAGE = 'zn: this command has too many paths for zn to check in time, so it was blocked. Next step: run it as several shorter commands, or tell the user.';
 
@@ -980,7 +982,7 @@ function bashDenialOf(cmd, opts = {}) {
   // Bash $'...' quoting spells characters as escapes ($'\x2eenv' is .env), and $"..." is a plain "...":
   // a fourth reading with them decoded.
   if (/\$['"]/.test(String(cmd))) readings.push(allWords(decodeAnsiC(String(cmd)), true));
-  // Each reading splits at most 1000 simple commands; a longer chain is refused, not checked in part.
+  // A reading that could not be split to the end is refused, not checked in part.
   if (readings.some((r) => r.truncated)) return TOO_MANY_MESSAGE;
   const words = readings.flat();
   // Inside $( ) or backticks the text is not split into simple commands, so

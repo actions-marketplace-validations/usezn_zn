@@ -565,15 +565,16 @@ test('a Python virtualenv named .env is a folder, not a secret file', (t) => {
   assert.equal(policy.readDenial(path.join(dir, '.env'), o), null);
 });
 
-test('a read placed after more than 1000 chained commands is refused, not skipped', (t) => {
+test('a read placed after thousands of chained commands is still found, and a long heredoc is fine', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-chain-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.mkdirSync(path.join(dir, '.aws'));
   fs.writeFileSync(path.join(dir, '.aws', 'credentials'), '[default]\n');
   const o = { cwd: dir, home: dir, env: {} };
-  for (const n of [999, 1001, 5000]) {
+  for (const n of [999, 1001, 5000, 16000]) {
     assert.ok(policy.bashDenial('true; '.repeat(n) + 'cat ~/.aws/credentials', o), String(n));
   }
-  assert.match(policy.bashDenial('true; '.repeat(1500) + 'ls', o), /more than 1000 commands/);
-  assert.equal(policy.bashDenial('true; '.repeat(900) + 'ls', o), null);
+  assert.equal(policy.bashDenial('true; '.repeat(1500) + 'ls', o), null);
+  const heredoc = "cat > out.py <<'EOF'\n" + Array.from({ length: 1200 }, (_, i) => 'x' + i + ' = ' + i).join('\n') + '\nEOF';
+  assert.equal(policy.bashDenial(heredoc, o), null, 'a 1200-line heredoc writing a file');
 });
