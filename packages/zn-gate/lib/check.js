@@ -223,11 +223,14 @@ async function checkAgent(spec, ctx) {
   const res = { id: spec.id, name: spec.name, fix: spec.fix, state: 'not-set-up', problem: '', message: '', notes: [] };
   const userFile = spec.file(adapter, { home: ctx.home, env: ctx.env });
 
-  // zn's own decision for the two requests (no hook involved).
-  const secret = await runner.handle(adapter, spec.request(ctx.dir, ctx.envFile), { home: ctx.home });
-  const control = await runner.handle(adapter, spec.request(ctx.dir, ctx.readme), { home: ctx.home });
-  res.message = oneLine(secret.decision && secret.decision.message, 300);
-  const rulesOk = secret.decision && secret.decision.decision === 'deny' && !(control.decision && control.decision.decision === 'deny');
+  // zn's own decision for the two requests (no hook involved). Without live checks only the setup is read.
+  let rulesOk = true;
+  if (ctx.live) {
+    const secret = await runner.handle(adapter, spec.request(ctx.dir, ctx.envFile), { home: ctx.home });
+    const control = await runner.handle(adapter, spec.request(ctx.dir, ctx.readme), { home: ctx.home });
+    res.message = oneLine(secret.decision && secret.decision.message, 300);
+    rulesOk = secret.decision && secret.decision.decision === 'deny' && !(control.decision && control.decision.decision === 'deny');
+  }
 
   // What is installed for this user.
   let live = null;      // {file, args, env} to run, or {why} when it cannot start
@@ -250,7 +253,7 @@ async function checkAgent(spec, ctx) {
         res.problem = 'the zn-gate plugin is turned off in your Claude Code settings';
         res.fix = 'turn it on: run `claude plugin enable zn-gate@usezn` in your own terminal';
       }
-      const pre = spawnHook(process.execPath, [path.join(plugin.root, 'scripts', 'zn-launch.js'), 'check', 'claude-code'], {}, { CLAUDE_PLUGIN_ROOT: plugin.root }, ctx.dir);
+      const pre = ctx.live ? spawnHook(process.execPath, [path.join(plugin.root, 'scripts', 'zn-launch.js'), 'check', 'claude-code'], {}, { CLAUDE_PLUGIN_ROOT: plugin.root }, ctx.dir) : { ran: false };
       const sys = pre.ran && /"systemMessage"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(pre.stdout || '');
       // The launcher's own check message is about the plugin itself (for example a Node.js it does not support).
       if (!res.problem && sys) { res.problem = bare(oneLine(JSON.parse('"' + sys[1] + '"'), 300)); res.pluginFault = true; }
@@ -307,7 +310,7 @@ async function checkAgent(spec, ctx) {
     res.fix = RULES_FIX;
     res.rulesFault = true;
   }
-  if (!res.problem && live) {
+  if (!res.problem && live && ctx.live) {
     res.problem = runLive(spec, ctx, live);
     if (res.problem && live.plugin) res.pluginFault = true;
     else if (!res.problem) res.verified = true;
@@ -351,13 +354,28 @@ async function checkAgent(spec, ctx) {
 }
 
 /**
- * check({home, env, cwd}) -> {results, removed}. Never throws for one agent.
+ * check({home, env, cwd, live}) -> {results, removed}. Never throws for one agent.
+ * With live: false only the setup is read: no test folder, no rules run, no hook started
+ * (each result then has checked: false, and "protected" means set up with no problem found).
  */
 async function check(opts = {}) {
   const home = opts.home || os.homedir();
   const env = opts.env || process.env;
+  const cwd = opts.cwd || process.cwd();
+  if (opts.live === false) {
+    const ctx = { home, env, cwd, live: false, dir: cwd };
+    const results = [];
+    for (const spec of AGENTS) {
+      try {
+        results.push({ ...(await checkAgent(spec, ctx)), checked: false });
+      } catch (err) {
+        results.push({ id: spec.id, name: spec.name, fix: spec.fix, state: 'not-protected', problem: 'zn could not read its setup: ' + oneLine(err && err.message, 200), notes: [], checked: false });
+      }
+    }
+    return { results, removed: true };
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-check-'));
-  const ctx = { home, env, cwd: opts.cwd || process.cwd(), dir, envFile: path.join(dir, '.env'), readme: path.join(dir, 'README.txt') };
+  const ctx = { home, env, cwd, live: true, dir, envFile: path.join(dir, '.env'), readme: path.join(dir, 'README.txt') };
   const results = [];
   try {
     fs.writeFileSync(path.join(dir, '.gitignore'), '.env\n');

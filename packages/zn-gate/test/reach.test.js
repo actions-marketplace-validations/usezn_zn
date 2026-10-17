@@ -1,0 +1,190 @@
+'use strict';
+
+// zn-gate reach: a read-only report of what the agents on this machine can reach.
+// It names secrets and credential files, never shows a value, writes nothing,
+// sends nothing and starts no hook.
+
+process.env.ZN_STATS = 'off';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const { getAdapter } = require('../lib/agents');
+const { reach, report, _internal } = require('../lib/reach');
+const { tempDir } = require('./helpers/tmp');
+
+const CLI = path.join(__dirname, '..', 'bin', 'cli.js');
+const RUNNER = path.join(__dirname, '..', 'lib', 'hooks', 'runner.js');
+
+// 30 obviously fake secret values, spread over a project .env, a second .env,
+// credential files and environment variables.
+const FAKES = Array.from({ length: 30 }, (_, i) => 'zn-test-fake-value-' + String(i).padStart(4, '0') + '-not-real');
+
+function machine(t, opts = {}) {
+  const home = tempDir(t, 'zn-reach-home-');
+  const root = tempDir(t, 'zn-reach-proj-');
+  // Only Node.js on PATH, so an agent installed on this computer is not found by the test.
+  const env = { HOME: home, USERPROFILE: home, PATH: path.dirname(process.execPath) };
+  for (const dir of opts.found || []) fs.mkdirSync(path.join(home, dir), { recursive: true });
+  for (const id of opts.agents || []) {
+    getAdapter(id).install({ scope: 'user', home, env, nodePath: process.execPath, runnerPath: RUNNER, mcp: false });
+  }
+  if (opts.secrets !== false) {
+    fs.writeFileSync(path.join(root, '.env'), [
+      'OPENAI_API_KEY=' + FAKES[0],
+      'DATABASE_URL=postgres://app:' + FAKES[1] + '@db.example.invalid/app',
+      'STRIPE_SECRET=' + FAKES[2],
+      'GITHUB_TOKEN="' + FAKES[3] + '"',
+      'export AWS_SECRET_ACCESS_KEY=' + FAKES[4],
+      'SHADOWED_TOKEN=__ZN_SHADOWED_TOKEN__',
+      'APP_NAME=example',
+      'API_URL=https://api.example.invalid',
+      ...FAKES.slice(5, 15).map((v, i) => 'SERVICE_' + i + '_KEY=' + v),
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(root, '.env.local'), FAKES.slice(15, 20).map((v, i) => 'LOCAL_' + i + '_PASSWORD=' + v).join('\n') + '\n');
+    fs.writeFileSync(path.join(root, '.env.example'), 'OPENAI_API_KEY=your-key-here-please\n');
+    fs.mkdirSync(path.join(home, '.aws'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.aws', 'credentials'), '[default]\naws_secret_access_key = ' + FAKES[20] + '\n');
+    fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.ssh', 'id_ed25519'), 'FAKE KEY ' + FAKES[21] + '\n');
+    fs.writeFileSync(path.join(home, '.ssh', 'id_ed25519.pub'), 'ssh-ed25519 FAKEPUBLIC\n');
+    fs.writeFileSync(path.join(home, '.ssh', 'deploy_key'), 'FAKE KEY ' + FAKES[22] + '\n');
+    fs.writeFileSync(path.join(home, '.npmrc'), '//registry.npmjs.org/:_authToken=' + FAKES[23] + '\n');
+    FAKES.slice(24, 30).forEach((v, i) => { env['EXAMPLE_' + i + '_TOKEN'] = v; });
+  }
+  return { home, root, env };
+}
+
+function snapshot(dirs) {
+  const out = [];
+  for (const d of dirs) {
+    (function walk(dir) {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        const st = fs.lstatSync(p);
+        out.push(p + ' ' + st.size + ' ' + st.mtimeMs);
+        if (e.isDirectory()) walk(p);
+      }
+    })(d);
+  }
+  return out.sort().join('\n');
+}
+
+function textOf(r) {
+  let s = '';
+  const code = report(r, (x) => { s += x; });
+  return { s, code };
+}
+
+test('reach names secrets and credential files but never shows a value', async (t) => {
+  const m = machine(t, { found: ['.cursor'] });
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  const json = JSON.stringify(r);
+  const { s, code } = textOf(r);
+  assert.equal(code, 0);
+  for (const v of FAKES) {
+    assert.ok(!json.includes(v), 'value in JSON: ' + v);
+    assert.ok(!s.includes(v), 'value in text: ' + v);
+  }
+  const env = r.findings.find((f) => f.kind === 'dotenv' && f.file === '.env');
+  assert.ok(env, 'the .env finding');
+  assert.equal(env.severity, 'high');
+  assert.match(env.title, /has 15 secrets \(OPENAI_API_KEY, DATABASE_URL, STRIPE_SECRET, GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, \.\.\.\)/);
+  assert.equal(env.fix, 'npx -y zn-gate env shadow .env');
+  assert.ok(r.findings.find((f) => f.kind === 'dotenv' && f.file === '.env.local'));
+  assert.ok(!r.findings.find((f) => f.kind === 'dotenv' && f.file === '.env.example'), 'an example file is not a secret file');
+  const creds = r.findings.find((f) => f.kind === 'credential-files');
+  assert.deepEqual(creds.files.map((c) => c.path), ['~/.aws/credentials', '~/.npmrc', '~/.ssh/deploy_key', '~/.ssh/id_ed25519']);
+  const names = r.findings.find((f) => f.kind === 'environment');
+  assert.deepEqual(names.names, FAKES.slice(24, 30).map((_, i) => 'EXAMPLE_' + i + '_TOKEN'));
+  assert.match(env.detail, /^Cursor can read them today\.$/);
+  assert.ok(r.findings.find((f) => f.section === 'agents' && /^Cursor is on this machine and zn does not protect it$/.test(f.title)));
+  assert.match(s, /WHAT THEY CAN REACH/);
+  assert.match(s, /NEXT: fix the high ones\n {2}1\. npx -y zn-gate init\n {2}2\. npx -y zn-gate env shadow \.env/);
+});
+
+test('reach writes nothing, starts no hook and sends nothing', async (t) => {
+  const m = machine(t, { agents: ['codex', 'cursor'] });
+  const before = snapshot([m.home, m.root]);
+  const net = ['net', 'http', 'https', 'dns', 'tls'].map((n) => require(n));
+  const cp = require('child_process');
+  const saved = [];
+  const trap = (obj, name) => { saved.push([obj, name, obj[name]]); obj[name] = () => { throw new Error('reach used ' + name); }; };
+  for (const mod of net) for (const name of ['connect', 'createConnection', 'request', 'get', 'lookup', 'resolve']) if (typeof mod[name] === 'function') trap(mod, name);
+  for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) trap(cp, name);
+  // check.js and the Claude Code adapter take spawnSync when they load: load them again under the trap.
+  const fresh = ['../lib/check', '../lib/agents/claude-code'].map((p) => require.resolve(p));
+  const reload = () => { for (const p of fresh) delete require.cache[p]; };
+  reload();
+  let r;
+  try {
+    r = await reach({ root: m.root, home: m.home, env: m.env });
+  } finally {
+    for (const [obj, name, fn] of saved) obj[name] = fn;
+    reload();
+  }
+  assert.equal(snapshot([m.home, m.root]), before);
+  const byId = (id) => r.agents.find((a) => a.id === id);
+  assert.equal(byId('codex').state, 'protected');
+  assert.equal(byId('cursor').state, 'protected');
+});
+
+test('reach with zn set up for every agent found reports the secrets as info only', async (t) => {
+  const m = machine(t, { agents: ['claude-code', 'codex', 'cursor', 'opencode'] });
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  assert.equal(r.findings.find((f) => f.kind === 'dotenv' && f.file === '.env').severity, 'info');
+  assert.equal(r.findings.find((f) => f.kind === 'credential-files').severity, 'info');
+  assert.ok(!r.findings.some((f) => f.section === 'agents'), JSON.stringify(r.findings.filter((f) => f.section === 'agents')));
+});
+
+test('without any agent on this machine, secrets are low findings and nothing is called unprotected', async (t) => {
+  const m = machine(t);
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  const env = r.findings.find((f) => f.kind === 'dotenv' && f.file === '.env');
+  assert.equal(env.severity, 'low');
+  assert.match(env.detail, /No coding agent was found here yet/);
+  assert.ok(!r.findings.some((f) => f.section === 'agents'));
+});
+
+test('a clean machine has nothing to fix', async (t) => {
+  const m = machine(t, { secrets: false });
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  const { s } = textOf(r);
+  assert.equal(r.counts.high + r.counts.medium + r.counts.low, 0, JSON.stringify(r.findings));
+  assert.match(s, /No supported coding agent was found on this machine, and nothing here needs fixing/);
+});
+
+test('environment variable names: only names that end like a secret, with a value that could be one', () => {
+  const names = _internal.secretEnvNames({
+    GITHUB_TOKEN: 'zn-test-fake-value-x1', OPENAI_API_KEY: 'zn-test-fake-value-x2', DB_PASSWORD: 'zn-test-fake-value-x3',
+    TOKEN_LIMIT: 'abcdefghijkl', AWS_ACCESS_KEY_ID: 'AKIAEXAMPLEEXAMPLE0', SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
+    MAX_TOKEN: '4096', SHORT_TOKEN: 'abc', MARKED_TOKEN: '__ZN_MARKED_TOKEN__', FLAG_SECRET: 'true', HOME: '/home/example',
+  });
+  assert.deepEqual(names, ['DB_PASSWORD', 'GITHUB_TOKEN', 'OPENAI_API_KEY']);
+});
+
+test('MCP servers and project settings come from zn audit, in their own sections', async (t) => {
+  const m = machine(t, { secrets: false });
+  fs.writeFileSync(path.join(m.root, '.mcp.json'), JSON.stringify({ mcpServers: { files: { command: 'npx', args: ['-y', 'example-mcp-server'] } } }));
+  const r = await reach({ root: m.root, home: m.home, env: m.env });
+  const mcp = r.findings.filter((f) => f.section === 'mcp');
+  assert.ok(mcp.length, JSON.stringify(r.findings));
+  assert.ok(mcp.every((f) => /^ZNA00[3-6]$/.test(f.id)));
+  assert.match(textOf(r).s, /MCP SERVERS \(extra tools your agent can call\)/);
+});
+
+test('zn-gate reach on the command line: --json, and usage errors exit 2', (t) => {
+  const m = machine(t);
+  const env = { ...m.env, ZN_STATS: 'off' };
+  const ok = spawnSync(process.execPath, [CLI, 'reach', m.root, '--json'], { encoding: 'utf8', env, cwd: m.root });
+  assert.equal(ok.status, 0, ok.stderr);
+  const r = JSON.parse(ok.stdout);
+  assert.equal(r.tool, 'zn-gate reach');
+  for (const v of FAKES) assert.ok(!ok.stdout.includes(v));
+  const text = spawnSync(process.execPath, [CLI, 'reach'], { encoding: 'utf8', env, cwd: m.root });
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /zn-gate reach: what can the coding agents on this machine reach\?/);
+  assert.equal(spawnSync(process.execPath, [CLI, 'reach', '--bogus'], { encoding: 'utf8', env }).status, 2);
+  assert.equal(spawnSync(process.execPath, [CLI, 'reach', path.join(m.root, 'missing')], { encoding: 'utf8', env }).status, 2);
+});
