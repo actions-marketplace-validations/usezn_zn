@@ -226,6 +226,11 @@ test('values in MCP and hook command lines are hidden, and names cannot send ter
     const out = redact(line);
     assert.doesNotMatch(out, /zn-test-fake/, line.slice(0, 60) + ' -> ' + out.slice(0, 120));
   }
+  // Only the value is hidden: the next field of escaped JSON, and a URL after a flag that starts with -u, stay.
+  const escaped = redact('-d "{\\"password\\":\\"zn-test-fake-r1\\",\\"user\\":\\"example-user\\"}"');
+  assert.doesNotMatch(escaped, /zn-test-fake/);
+  assert.match(escaped, /example-user/, escaped);
+  assert.equal(redact('tool -url:https://example.invalid/path'), 'tool -url:https://example.invalid/path');
   assert.doesNotMatch(s, /[\u001b\u0007]/);
   assert.doesNotMatch(json, /\\u001b|\\u0007/);
 });
