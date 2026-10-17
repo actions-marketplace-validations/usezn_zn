@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.19';
+const POLICY_RULES_VERSION = '2026-10-17.20';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1139,9 +1139,35 @@ const KEYCHAIN_DUMP_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s[^\n]*\bdump-ke
 const KEYCHAIN_LIB_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)\s*['"]?[^;\n]*(?:cloud-key|vault\/keychain)/;
 const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity)/;
 
+/*
+ * A single simple command that only writes or searches text: `git commit|grep|log|show`, `echo`, `printf`. Such a
+ * command never reads the keychain, so a commit message or a search pattern may name zn's entries. Anything with a
+ * second command, a pipe, a substitution or a newline is not exempt (the words are then checked as usual), and
+ * neither is a git command that can run another program (-c, aliases, --open-files-in-pager, --exec).
+ */
+const TEXT_ONLY_GIT = new Set(['commit', 'grep', 'log', 'show']);
+function textOnlyCommand(text) {
+  if (/[;&|\n\r`]|\$\(|<\(|>\(/.test(text)) return false;
+  const toks = text.trim().split(/\s+/).map((x) => x.replace(/^['"]+|['"]+$/g, ''));
+  let i = 0;
+  while (i < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]) || ['env', 'command', 'nohup', 'time'].includes(programBase(toks[i])))) i++;
+  const prog = programBase(toks[i]);
+  if (prog === 'echo' || prog === 'printf') return true;
+  if (prog !== 'git') return false;
+  i++;
+  while (i < toks.length && (toks[i] === '--no-pager' || (toks[i] === '-C' && toks[i + 1] !== undefined))) i += toks[i] === '-C' ? 2 : 1;
+  if (!TEXT_ONLY_GIT.has(toks[i])) return false;
+  return !toks.slice(i + 1).some((x) => /^(?:-O|--open-files-in-pager|--exec|--ext-diff|--textconv|-c)(?:=|$)/.test(x) || /^-O./.test(x));
+}
+
+function programBase(word) {
+  return String(word || '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+}
+
 function keychainQuery(cmd, env) {
   const text = String(cmd || '');
   if (text.length > SHELL_SCAN_CAP) return false;
+  if (textOnlyCommand(text)) return false;
   // zn's entries can be picked by service, account or label.
   const names = ['zn-vault', 'zn-cloud', 'cloud-api-key', 'age-identity', 'zn-gate-cloud-api-key', 'zn-vault-identity', 'zn vault identity', 'zn-gate cloud API key'];
   const custom = env && env.ZN_KEYCHAIN_SERVICE;

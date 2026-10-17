@@ -41,10 +41,35 @@ function tlsRefusal(env = process.env) {
   for (const name of ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']) {
     if (env[name]) return name + ' is set, so zn-gate will not send the saved key: the connection could trust other certificate authorities';
   }
-  if (/(?:^|\s)(?:--require|--import|--use-openssl-ca|-r)(?:[=\s]|$)/.test(env.NODE_OPTIONS || '')) {
-    return 'NODE_OPTIONS loads code or changes the certificate authorities, so zn-gate will not send the saved key';
+  if (env.OPENSSL_CONF) return 'OPENSSL_CONF is set, so zn-gate will not send the saved key: the TLS settings could be changed';
+  if (nodeOptionsList(env.NODE_OPTIONS).some((t) => RISKY_NODE_OPTION.test(t))) {
+    return 'NODE_OPTIONS loads code or changes the TLS settings, so zn-gate will not send the saved key';
   }
   return null;
+}
+
+// Options that load code or change the certificates or TLS settings Node uses.
+const RISKY_NODE_OPTION = /^(?:-r|--require|--import|--loader|--experimental-loader|--use-openssl-ca|--openssl-config)(?:=|$)/;
+
+/** NODE_OPTIONS split the way Node does: on spaces outside quotes, quotes removed (a backslash escapes inside double quotes). */
+function nodeOptionsList(value) {
+  const out = [];
+  let cur = '';
+  let inQuote = null;
+  let has = false;
+  const s = String(value || '');
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQuote) {
+      if (ch === '\\' && inQuote === '"' && i + 1 < s.length) { cur += s[++i]; continue; }
+      if (ch === inQuote) { inQuote = null; continue; }
+      cur += ch;
+    } else if (ch === '"' || ch === "'") { inQuote = ch; has = true; }
+    else if (/\s/.test(ch)) { if (has || cur) out.push(cur); cur = ''; has = false; }
+    else { cur += ch; has = true; }
+  }
+  if (has || cur) out.push(cur);
+  return out;
 }
 
 /**
