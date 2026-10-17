@@ -18,7 +18,7 @@
 
 ## Install
 
-Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it.
+Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it. The Claude Code plugin needs Node.js 20.12 or later.
 
 **Getting started: four steps, one command each.** Run them in your own terminal.
 
