@@ -4,7 +4,7 @@
  *
  *   reach({ root, home, env }) -> { tool, version, root, agents, findings, counts, truncated }
  *
- * Read only, no network, nothing written. It puts together what zn already
+ * Read only, no network, nothing written (with --remember, only its counts). It puts together what zn already
  * knows: which agents are set up (zn-gate check, setup only: no hook is
  * started), the .env files of the folder (names of their secrets), the
  * credential files of the user (whether they exist: they are never opened),
@@ -235,7 +235,60 @@ async function reach(opts = {}) {
   findings.sort((a, b) => rank(a.severity) - rank(b.severity));
   const counts = { high: 0, medium: 0, low: 0, info: 0 };
   for (const f of findings) counts[f.severity] = (counts[f.severity] || 0) + 1;
-  return { tool: 'zn-gate reach', version: VERSION, root, agents, findings, counts, truncated: au.truncated };
+  const r = { tool: 'zn-gate reach', version: VERSION, root, agents, findings, counts, truncated: au.truncated };
+  if (opts.remember) r.previous = remember(root, counts, home, env);
+  return r;
+}
+
+/*
+ * --remember: the counts of the last run for this folder, kept in ~/.zn/reach-last.json (ZN_HOME overrides
+ * ~/.zn), so the next run can say "was N". Only counts and a date, under a hash of the folder path: no
+ * path, name or value. Without --remember nothing is read or written.
+ */
+function memoryFile(home, env) {
+  return path.join(env.ZN_HOME ? path.resolve(env.ZN_HOME) : path.join(home, '.zn'), 'reach-last.json');
+}
+
+function remember(root, counts, home, env) {
+  const file = memoryFile(home, env);
+  const crypto = require('crypto');
+  const key = crypto.createHash('sha256').update(root).digest('hex').slice(0, 32);
+  // Only well-formed entries are kept: anything else in the file is dropped, never a reason to fail.
+  const data = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [k, e] of Object.entries(parsed)) {
+        if (/^[0-9a-f]{32}$/.test(k) && e && typeof e === 'object' && !Array.isArray(e)) data[k] = e;
+      }
+    }
+  } catch (_) { /* no file, or not JSON: start again */ }
+  const was = data[key] || null;
+  const previous = was ? { high: +was.high || 0, medium: +was.medium || 0, low: +was.low || 0, at: String(was.at || '').slice(0, 10) } : null;
+  data[key] = { high: counts.high, medium: counts.medium, low: counts.low, at: new Date().toISOString().slice(0, 10) };
+  // Up to 200 folders: the oldest go first.
+  const keys = Object.keys(data).sort((a, b) => String(data[a].at).localeCompare(String(data[b].at)));
+  while (keys.length > 200) delete data[keys.shift()];
+  // A new temporary file with a random name, created exclusively (never through a planted link), then renamed
+  // over the old one. Two runs at the same time: the last one to finish wins; the file is never half written.
+  let fd = null;
+  let tmp = null;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    tmp = file + '.' + crypto.randomBytes(8).toString('hex') + '.tmp';
+    fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    fs.writeSync(fd, JSON.stringify(data));
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmp, file);
+    tmp = null;
+  } catch (_) {
+    /* a report that cannot remember is still a report */
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) { /* closed */ }
+    if (tmp !== null) try { fs.unlinkSync(tmp); } catch (_) { /* gone */ }
+  }
+  return previous;
 }
 
 const SECTIONS = [
@@ -246,7 +299,7 @@ const SECTIONS = [
   ['project', 'PROJECT FILES THE AGENT RUNS', 'settings in this folder that an agent loads or runs'],
 ];
 
-/** Plain-language report; returns the exit code (always 0: it is a report, not a gate). */
+/** Plain-language report; returns 0 (the command line turns --fail-on into the exit code). */
 function report(r, write) {
   const w = write || ((s) => process.stdout.write(s));
   w('\nzn-gate reach: what can the coding agents on this machine reach?\n');
@@ -288,7 +341,9 @@ function report(r, write) {
     next.forEach((c, i) => w('  ' + (i + 1) + '. ' + c + '\n'));
     w('\n');
   }
-  w(r.counts.high + ' high, ' + r.counts.medium + ' medium, ' + r.counts.low + ' low.\n\n');
+  const p = r.previous;
+  const was = p ? ' (last time, ' + p.at + ': ' + p.high + ' high, ' + p.medium + ' medium, ' + p.low + ' low)' : '';
+  w(r.counts.high + ' high, ' + r.counts.medium + ' medium, ' + r.counts.low + ' low' + was + '.\n\n');
   return 0;
 }
 
@@ -298,4 +353,13 @@ function line(w, f) {
   if (f.fix) w('         Fix: ' + f.fix + '\n');
 }
 
-module.exports = { reach, report, VERSION, _internal: { dotenvFiles, credentialFiles, secretEnvNames, SECRET_ENV_NAME_RE } };
+const FAIL_ON = ['high', 'medium', 'low', 'none'];
+
+/** Whether a finding at or above failOn was found (never for 'none'; info findings never count). */
+function failed(r, failOn) {
+  if (!failOn || failOn === 'none') return false;
+  const limit = SEVERITIES.indexOf(failOn);
+  return r.findings.some((f) => f.severity !== 'info' && SEVERITIES.indexOf(f.severity) <= limit);
+}
+
+module.exports = { reach, report, failed, FAIL_ON, VERSION, _internal: { dotenvFiles, credentialFiles, secretEnvNames, SECRET_ENV_NAME_RE, memoryFile } };
