@@ -725,3 +725,31 @@ test('many nested shell code strings are decided within the time budget', (t) =>
   assert.ok(ms < 3500, 'took ' + ms + ' ms');
   assert.ok(deny === null || /too many|nests/.test(deny), String(deny));
 });
+
+test('code run behind more wrappers, shell options and PowerShell forms is read, for a .env with values and for history', (t) => {
+  const { dir, o } = keyDir(t, 'zn-launcher-');
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  const enc = Buffer.from('cat .env', 'utf16le').toString('base64');
+  // A .env with values on disk is read.
+  for (const cmd of ['chrt 1 sh -c "cat .env"', 'strace -f sh -c "cat .env"', 'strace -o /x/log -f bash -c "cat .env"', 'iex "Get-Content .env"', 'Invoke-Expression "Get-Content .env"',
+    'taskset 0x1 sh -c "cat .env"', 'taskset -c 0 sh -c "cat .env"', 'runuser -u app -- sh -c "cat .env"', 'runuser -l app -c "cat .env"', 'chroot / sh -c "cat .env"',
+    'unbuffer sh -c "cat .env"', 'script -qc "cat .env" /dev/null', 'ltrace -f sh -c "cat .env"', 'nsenter -t 1 -m sh -c "cat .env"',
+    'bash -O extglob -c "cat .env"', 'bash --rcfile /x/rc -c "cat .env"', 'bash --init-file /x/rc -c "cat .env"', 'bash +O extglob -o pipefail -c "cat .env"',
+    'fish -C "cat .env"', 'fish -c "cat .env"', 'pwsh -en ' + enc, 'pwsh -encodedc ' + enc, 'pwsh -EncodedCom ' + enc, 'pwsh /Command "cat .env"', 'pwsh /c "cat .env"',
+    'pwsh -com "cat .env"', 'powershell "cat .env"', 'powershell -NoProfile "cat .env"', 'powershell -ExecutionPolicy Bypass "cat .env"', 'pwsh -File x.ps1 "cat .env"',
+    'weirdwrap --flag sh -c "cat .env"', 'weirdwrap -x pwsh -c "cat .env"']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  // The same for history, with the file absent.
+  const { o: o2 } = keyDir(t, 'zn-launcher2-');
+  for (const cmd of ['chrt 1 sh -c "git log -p -- .env"', 'taskset -c 0 bash -c "git log -p -- .env"', 'runuser -u app -- git log -p -- .env', 'chroot / git log -p -- .env',
+    'unbuffer git log -p -- .env', 'script -qc "git log -p -- .env" /dev/null', 'strace -f git log -p -- .env', 'bash -O extglob -c "git log -p -- .env"',
+    'iex "git log -p -- .env"', 'powershell "git log -p -- .env"', 'nsenter -t 1 git log -p -- .env', 'flock x.lock git log -p -- .env', 'chrt -f 1 git log -p -- .env']) {
+    assert.ok(policy.bashDenial(cmd, o2), cmd);
+  }
+  for (const cmd of ['chrt -p 1234', 'strace -c ls', 'taskset -c 0 npm test', 'script -q out.log', 'powershell Get-Date', 'iex (Get-Date)', 'strace -f -o log ls',
+    'taskset 0x1 true', 'runuser -u app -- ls', 'chroot / ls', 'bash -O extglob -c "ls"', 'fish -c "ls"', 'pwsh -File x.ps1', 'pwsh -NoProfile -c "Get-Date"', 'unbuffer ls',
+    'flock x.lock ls', 'chrt 1 sh -c "echo hi"', 'psql -c "select * from t"']) {
+    assert.equal(policy.bashDenial(cmd, o2), null, cmd);
+  }
+});
