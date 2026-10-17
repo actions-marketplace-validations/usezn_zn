@@ -38,7 +38,7 @@ A saved key is only ever sent to https://api.usezn.com. `--url` and `ZN_API_URL`
 
 - `zn-gate status` shows whether a key is connected and where it comes from (`ZN_API_KEY`, `--key`, the keychain or the vault), never the key.
 - `zn-gate connect --reconnect` replaces the saved key.
-- `zn-gate disconnect` removes the key from this computer and turns the cloud check off. It makes no network call. The key itself keeps working until you revoke it at https://usezn.com/api-keys, where the CLI key is the one created via cli with scope analyze. Revoking needs your signed-in dashboard session, which is why the command cannot do it.
+- `zn-gate disconnect` removes the key from this computer and turns the cloud check off. It makes no network call. The key itself keeps working until you revoke it at https://usezn.com/api-keys, where the key zn-gate uses is the analysis-only one created from the connect page. Revoking needs your signed-in dashboard session, which is why the command cannot do it.
 - A key in `--key` or `ZN_API_KEY` is used instead of the saved one. `ZN_LOCAL_ONLY=true` or `--local-only` turns the cloud check off even when connected.
 
 ## What is sent

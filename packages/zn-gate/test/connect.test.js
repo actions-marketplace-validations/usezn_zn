@@ -434,7 +434,7 @@ test('disconnect removes the local copy and the marker, makes no network call an
     assert.equal(cloudKey.readMarker(), null);
     assert.equal(h.h.calls.length, 0, 'disconnect never contacts the network');
     assert.equal(h.t.calls.confirm.length, 0, 'nothing to confirm: no revoke call is offered');
-    assert.match(h.out.join(''), /still works until you revoke it\. Revoke it at https:\/\/usezn\.com\/api-keys: the CLI key is the one created via cli with scope analyze/);
+    assert.match(h.out.join(''), /still works until you revoke it\. Revoke it at https:\/\/usezn\.com\/api-keys: the key zn-gate uses is the analysis-only one created from the connect page/);
     assert.ok(!h.text().includes(key));
     assert.equal(client.isCloudEnabled(), false);
   } finally { cleanup(home); }

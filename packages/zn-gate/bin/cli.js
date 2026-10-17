@@ -261,7 +261,7 @@ SECRETS (values stay on this machine; agents only see __ZN_<NAME>__ markers):
   connect             Optional: turn on the cloud check for analyze_prompt. Opens usezn.com,
                       you paste an API key at a hidden prompt; it is kept in your system
                       keychain or the zn vault, never in a file. Your own terminal only
-  disconnect          Remove that key from this computer (and, if you say so, revoke it)
+  disconnect          Remove that key from this computer (revoke it at usezn.com/api-keys)
   reach [path]        Show what your coding agents can reach: secrets (names only),
                       credential files, MCP servers [--json | --sarif]
                       [--fail-on high|medium|low|none] [--remember]. Read only, nothing is sent

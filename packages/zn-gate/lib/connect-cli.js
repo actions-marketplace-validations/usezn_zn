@@ -174,7 +174,7 @@ async function connect(args, io) {
 
   c.out('\nOpening ' + CONNECT_URL + ' in your browser...\n');
   if (!c.openBrowser(CONNECT_URL)) c.out('Could not open a browser. Open this address yourself:\n  ' + CONNECT_URL + '\n');
-  c.out('Create a free account (or log in), create an API key, and paste it here.\n');
+  c.out('Create a free account (or log in), create an analysis-only API key, and paste it here.\n');
 
   let key;
   try { key = (await c.tty.readHidden('API key (hidden): ', c.ttyIo)).trim(); } catch (e) {
@@ -232,7 +232,7 @@ async function disconnect(args, io) {
     return 1;
   }
   c.out('Removed the saved key from ' + STORE_WORDS[del.store] + '. The cloud check is off; zn-gate runs only on your computer.\n');
-  c.out('The key itself still works until you revoke it. Revoke it at https://usezn.com/api-keys: the CLI key is the one created via cli with scope analyze.\n');
+  c.out('The key itself still works until you revoke it. Revoke it at https://usezn.com/api-keys: the key zn-gate uses is the analysis-only one created from the connect page.\n');
   return 0;
 }
 
