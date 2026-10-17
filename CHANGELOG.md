@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-17
+
+zn-gate 1.12.0 adds `zn-gate reach`, a read-only report of what the coding agents on this machine can reach (secret names, credential files, MCP servers and agent settings) with the command that fixes each finding, also as SARIF for code scanning. Releases are now built and signed in a separate workflow (SLSA Build Level 3), and release tags are signed by a workflow with gitsign. `zn audit` stops showing secret values it did not recognise in the commands it quotes, and the agent hooks refuse long shell patches quickly again. Update with `npm install -g zn-gate@1.12.0` and `pip install -U zn-gate`.
+
+**If you verify releases:** from 1.12.0 on, the signer workflow of the GitHub attestations and Sigstore signatures is `build-release.yml`, not `release.yml`; `docs/verify-release.md` has both and the tag check.
+
+### Added
+- `zn-gate reach [path]` shows, in one screen, what the coding agents on this machine can reach: which agents are found and whether zn protects them, the `.env` files of the folder with the names of their secrets, the credential files in your home folder (`~/.aws/credentials`, SSH keys, `~/.npmrc` and others: checked only for whether they exist, never opened), the names of environment variables that hold a secret, and what `zn audit` finds in the MCP servers and agent settings of the folder and of your user. Each finding has the command that fixes it. It is read only: no value is ever shown, nothing is sent, no hook is started, and nothing is written unless you ask for it with `--remember`. `--json` gives the same report as JSON.
+- `zn-gate reach --sarif` writes the report as SARIF 2.1.0 for code scanning. Findings about a file of the checked folder are results: the `zn audit` findings keep their rules, and a `.env` with secrets an agent can read is `ZNR002`. What belongs to the machine (agents not protected, credential files, environment variables with secrets) and files in the home folder are notifications of the run. `--fail-on high|medium|low` exits 1 when a finding at or above that level is found; the default, `none`, keeps reach a report that exits 0. A usage error or a failure exits 2.
+- `zn-gate reach --remember` keeps the counts of the run (high, medium, low and the date, nothing else) in `~/.zn/reach-last.json`, so the next run with `--remember` shows what they were last time. Without it, reach writes nothing.
+
+### Fixed
+- The agent hooks: a long patch sent as a shell command (`apply_patch` in Codex) is refused in a fraction of a second again. To name a secret file in the message, zn now checks only the first 32 files of the patch (and, in other refused commands, the next 32 words after a wildcard) instead of every one on disk, which took several seconds for a patch near the 100 KB limit and could reach the agent's time limit for the hook on a slow machine. The decision does not change. `POLICY_RULES_VERSION` is `2026-10-17.2`.
+
+### Security
+- `zn audit` no longer shows secret values in a format it does not know when they follow a credential flag (`--token`, `--api-key`, `--password`), an auth header (`Authorization: Bearer ...`, `x-api-key: ...`) or a name such as `API_TOKEN=`, in the command lines and hook commands it quotes. Earlier versions could quote such a value in a finding; rotate any that a finding showed. References such as `$TOKEN` or `${API_KEY}` are kept.
+- Releases are built, attested and signed by a separate reusable workflow, `build-release.yml`, whose build and signing jobs the release workflow calls but cannot reach. That makes the build provenance of the npm and Python packages SLSA Build Level 3. To verify a release from 1.12.0 on, the signer workflow of the GitHub attestations and Sigstore signatures is `usezn/zn/.github/workflows/build-release.yml` (earlier releases: `release.yml`; npm provenance and PyPI attestations still name `release.yml`); see `docs/verify-release.md`. The agent plugin's checks pick the signer workflow from the release's own tag.
+- Release tags are created and signed by a workflow, `tag-release.yml`, with gitsign (Sigstore keyless signing), so the signature names that workflow and no person's identity. It runs only from `main`, checks that the commit is the head of its release branch, that every version matches and that every check passed, and waits for approval before it signs. From 1.12.0 on, the release workflow refuses to publish a tag unless it carries a valid signature from `tag-release.yml`. How to check a tag: `docs/verify-release.md`.
+
 ## [1.11.0] - 2026-10-17
 
 zn-gate 1.11.0 finds more kinds of secrets with `zn-gate scan`, the agent hooks and the Python package (Square and Discord bot tokens, and 24 provider token formats taken from gitleaks), makes `zn-gate check` and `zn-gate init` clearer the first time you run them, and on Windows starts the system PowerShell in a way an AI agent cannot redirect. Update with `npm install -g zn-gate@1.11.0` and `pip install -U zn-gate`.
@@ -503,7 +522,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.11.0...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.12.0...next
+[1.12.0]: https://github.com/usezn/zn/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/usezn/zn/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/usezn/zn/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/usezn/zn/compare/v1.9.0...v1.9.1
