@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.16';
+const POLICY_RULES_VERSION = '2026-10-17.17';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1127,20 +1127,27 @@ function codesOfCommand(w, out) {
  * The body of a here-document (`cat > f <<'EOF' ... EOF`) is data the shell
  * writes to a file or feeds to a program that reads it as data, not words of
  * the command line: a `*` in it names no file and a path in it is not read.
- * Its body is dropped before the command is read, which also keeps a 100 KB
+ * Such a body is dropped before the command is read, which also keeps a 100 KB
  * write cheap to check. A quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`)
  * turns the expansions off, so the body is dropped whole. A bare delimiter
  * (`<<EOF`) still expands the body first, so its `$( )`, backticks and `$VAR`
  * are put back as words; dropping them would hide a substitution that reads a
- * secret file. A body a program runs as code (see HEREDOC_DATA_CMDS) is not
- * dropped: it keeps the check it had.
+ * secret file.
+ *
+ * Only the body of a plain data command is dropped: the command that holds the
+ * operator must be simple (no pipe, no process substitution, no group around
+ * the program), its program must be a known data program (`cat`, `tee`, `dd`,
+ * ...), and the command must not run a program after the here-document. Every
+ * other body keeps the check it had, which is the safe side.
  */
 
 // A here-document operator starts a redirect. `<<` glued to the end of a word
 // (`x<<y`, an arithmetic shift) is left alone: missing one only means its body
 // is checked as if it were code, which is the safe side.
 const HEREDOC_START_RE = /[\s;&|(\n]/;
-const HEREDOC_SPECIAL_RE = /[<>('"\\#\n]/g;
+// Characters that end a run and are read by stripHeredocs: quotes, escapes, a
+// comment, a line break, and every separator or group bracket of the command.
+const HEREDOC_SPECIAL_RE = /[<>(){};&|`'"\\#\n]/g;
 
 /** The here-document operator at `from` (`<<`, `<<-`) with its delimiter, or null. */
 function heredocAt(s, from) {
@@ -1246,19 +1253,29 @@ function skipHeredocBodies(s, from, pending, keep) {
 }
 
 /**
- * The command with the bodies of its here-documents removed (see above). The
- * operator and its delimiter stay in place; a comment runs to the end of its
- * line, and a `<<` inside a quote or in arithmetic is not an operator.
+ * The command with the bodies of its data here-documents removed (see above).
+ * A body is kept when its command is not a plain data command, when a pipe or a
+ * group follows on the same line, or when the command runs a program after the
+ * here-document. `budget` bounds the work; past it the command is left whole.
  */
-function stripHeredocs(cmd) {
+function stripHeredocs(cmd, budget) {
   const s = String(cmd);
   if (s.indexOf('<<') === -1) return s;
   const parts = [];
   const keep = (t) => { if (t) parts.push(t); };
   let quote = null;
   let pending = [];
+  let cmdStart = 0;
+  let groupOpen = false;
+  let program = null;
   let i = 0;
+  let ticks = 0;
+  // A separator ends the command: the next one starts after it, with no group.
+  const reset = (at) => { cmdStart = at; groupOpen = false; program = null; };
+  // A pipe, a group or a substitution after an operator makes its body code.
+  const drop = () => { if (pending.length) pending = []; };
   while (i < s.length) {
+    if ((++ticks & 4095) === 0 && overBudget(budget, 0)) return s;
     if (quote === "'") {
       const end = s.indexOf("'", i + 1);
       keep(s.slice(i, end === -1 ? s.length : end + 1));
@@ -1296,12 +1313,17 @@ function stripHeredocs(cmd) {
         i = skipHeredocBodies(s, i, pending, keep);
         pending = [];
       }
+      reset(i);
       continue;
     }
+    if (ch === ';' || ch === '&' || ch === '|') { drop(); keep(ch); i++; reset(i); continue; }
+    if (ch === ')' || ch === '}') { drop(); keep(ch); i++; reset(i); continue; }
+    if (ch === '{') { groupOpen = true; drop(); keep(ch); i++; continue; }
     if (ch === '<') {
       const h = heredocAt(s, i);
       if (h) {
-        if (heredocIsData(s, i)) pending.push(h.doc);
+        if (program === null) program = heredocConsumer(s.slice(cmdStart, Math.min(i, cmdStart + 512)));
+        if (!groupOpen && program && HEREDOC_DATA_CMDS.has(program)) pending.push(h.doc);
         keep(s.slice(i, h.end));
         i = h.end;
         continue;
@@ -1317,10 +1339,16 @@ function stripHeredocs(cmd) {
       }
       if (depth === 0 && s[j - 1] === ')') { keep(s.slice(i, j)); i = j; continue; }
     }
+    // Any other `(` is a group or a substitution around the program.
+    if (ch === '(') { groupOpen = true; drop(); keep(ch); i++; continue; }
     keep(ch);
     i++;
   }
-  return parts.join('');
+  const out = parts.join('');
+  // A command that writes a file and then runs a shell or an interpreter keeps
+  // the old check: the body is code the command it writes will run.
+  if (out !== s && runsCodeAfter(out)) return s;
+  return out;
 }
 
 /*
@@ -1336,6 +1364,10 @@ const HEREDOC_DATA_CMDS = new Set(['cat', 'tac', 'tee', 'dd', 'tr', 'sort', 'uni
   'sha256sum', 'sha1sum', 'sha512sum', 'md5sum', 'shasum', 'cksum', 'gzip', 'gunzip', 'zcat', 'bzip2', 'bunzip2',
   'xz', 'unxz', 'zstd', 'split', 'fold', 'expand', 'unexpand', 'fmt', 'column', 'rev']);
 
+// Wrappers that turn their input into arguments or commands: their body is code,
+// not data, so they are not read through like `sudo` or `env`.
+const HEREDOC_RUNS_STDIN = new Set(['xargs', 'parallel']);
+
 /** The program a here-document feeds, read through assignments, reserved words and wrappers (`sudo cat`). */
 function heredocConsumer(segment) {
   const words = segment.split(/\s+/).filter(Boolean).map((text) => ({ text }));
@@ -1343,27 +1375,26 @@ function heredocConsumer(segment) {
   while (k < words.length && (ASSIGNMENT_RE.test(words[k].text) || RESERVED_WORDS.has(words[k].text))) k++;
   for (let guard = 0; k < words.length && guard < 16; guard++) {
     const name = programName(words[k].text);
+    if (HEREDOC_RUNS_STDIN.has(name)) return name;
     if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) return name;
     k = skipWrapper(words, k, name);
   }
   return k < words.length ? programName(words[k].text) : '';
 }
 
-/** Start of the simple command that holds the operator at `i`: the last separator before it. */
-function heredocCommandStart(s, i) {
-  let start = i;
-  while (start > 0) {
-    const c = s[start - 1];
-    if (c === '\n' || c === ';' || c === '&' || c === '|' || c === '(' || c === ')' || c === '{' || c === '}' || c === '`') break;
-    start--;
+/**
+ * Whether the command runs code: a shell, an interpreter, `source`, a program
+ * that turns its input into a command, or a path run directly (`./x.sh`). Used
+ * to keep the body of a here-document a command then runs.
+ */
+function runsCodeAfter(text) {
+  for (const token of text.split(/[\s;&|(){}<>`"']+/)) {
+    if (!token) continue;
+    const name = programName(token);
+    if (CODE_CMDS_RE.test(name) || name === 'source' || name === 'eval' || HEREDOC_RUNS_STDIN.has(name)) return true;
+    if (token.startsWith('./') || token.startsWith('../')) return true;
   }
-  return start;
-}
-
-/** Whether the body of the here-document at `i` is read as plain data, so it can be dropped. */
-function heredocIsData(s, i) {
-  const program = heredocConsumer(s.slice(heredocCommandStart(s, i), i));
-  return program === '' || HEREDOC_DATA_CMDS.has(program);
+  return false;
 }
 
 function bashDenial(cmd, opts = {}) {
@@ -1379,8 +1410,8 @@ function bashDenialOf(cmd, opts = {}) {
   // The code of a shell inside the command (sh -c "...") is checked as a command of its own, with the same budget.
   const depth = opts.depth || 0;
   if (!depth || !opts.budget) opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
-  // The bodies of the here-documents are data, not command-line words, and are dropped first.
-  const text = stripHeredocs(cmd);
+  // The bodies of the here-documents read as data are data, not command-line words, and are dropped first.
+  const text = stripHeredocs(cmd, opts.budget);
   // The command is read three times: a backslash before a letter is a Windows
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.

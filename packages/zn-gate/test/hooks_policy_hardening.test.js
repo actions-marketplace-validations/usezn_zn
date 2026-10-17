@@ -622,6 +622,18 @@ test('a here-document that runs its body as code, or a read on the command line,
   assert.ok(policy.bashDenial("bash <<'EOF'\ncat .env\nEOF", o), 'bash reads code from stdin');
   assert.ok(policy.bashDenial("sudo bash <<EOF\ncat .aws/credentials\nEOF", o), 'bash behind a wrapper');
   assert.ok(policy.bashDenial("python3 - <<'PY'\nopen('.env').read()\nPY", o), 'python reads code from stdin');
+  // A body the command pipes somewhere, groups, or feeds to xargs is not data either.
+  assert.ok(policy.bashDenial("cat <<'EOF' | sh\ncat .env\nEOF", o), 'piped to a shell');
+  assert.ok(policy.bashDenial("dd <<'EOF' | sh\ncat .env\nEOF", o), 'piped to a shell after dd');
+  assert.ok(policy.bashDenial("tee >(sh) <<'EOF'\ncat .env\nEOF", o), 'process substitution');
+  assert.ok(policy.bashDenial('( sh ) <<EOF\ncat .env\nEOF', o), 'group close before the operator');
+  assert.ok(policy.bashDenial('{ sh; } <<EOF\ncat .env\nEOF', o), 'brace group before the operator');
+  assert.ok(policy.bashDenial('<<EOF sh\ncat .env\nEOF', o), 'operator before the program');
+  assert.ok(policy.bashDenial("xargs cat <<'EOF'\n.env\nEOF", o), 'xargs turns its input into a command');
+  // A command that writes a script and then runs it keeps the old check.
+  for (const run of ['bash x.sh', 'sh x.sh', 'source x.sh', './x.sh']) {
+    assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\n" + run, o), 'written and run: ' + run);
+  }
   // A quoted delimiter turns the expansions off: the same text is data.
   assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n$(cat .env)\nEOF", o), null, 'quoted: data');
   // A comment that spells a here-document does not eat the command after it.
@@ -645,6 +657,19 @@ test('a 100 KB here-document read as data is checked in milliseconds', (t) => {
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.equal(deny, null, 'the body is data, so the command is allowed');
   assert.ok(ms < 25, 'checked in ' + ms + ' ms');
+});
+
+test('10 000 here-document operators on one line are checked within the time budget', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-many-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  const cmd = 'cat ' + "<<'D' ".repeat(10000);
+  assert.ok(cmd.length < policy.SHELL_SCAN_CAP, 'the case is under the scan cap');
+  const t0 = process.hrtime.bigint();
+  const deny = policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.equal(deny, null, 'the bodies are data, so the command is allowed');
+  assert.ok(ms < 1500, 'checked in ' + ms + ' ms');
 });
 
 test('thousands of cd in one command are followed within the time budget', (t) => {
