@@ -95,19 +95,32 @@ const CONTEXT_RES = [
   new RegExp('(\\bbearer\\s{1,8})([A-Za-z0-9._~+/=-]{8,})', 'gi'),
   // The flag and its value as two items of a JSON or TOML array (MCP server args): "--api-key", "v" (also
   // escaped, single-quoted, or with the value on the next line).
-  new RegExp(String.raw`(\\{0,3}["']--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\{0,3}["']\s{0,8},\s{0,64})(` + String.raw`\\{2,3}"[^"\\\n]+(?:\\{1,3}")?|` + QUOTED + ')', 'gi'),
+  new RegExp(String.raw`(\\{0,7}["']--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\{0,7}["']\s{0,8},(?:\s|\\{1,3}[nrt]){0,128})(` + String.raw`\\{2,7}"(?:[^"\\\n]|\\{1,7}(?!"))+(?:\\{1,7}")?|` + QUOTED + ')', 'gi'),
   new RegExp('(\\b[A-Za-z0-9_]{0,60}' + SECRET_WORD + '(?![A-Za-z0-9])\\\\?["\']?\\s{0,8}[=:]\\s{0,8})(' + QUOTED + '|[^\\s"\'\\\\,;`]+)', 'gi'),
 ];
 // A line that ends with a quoted flag item and a comma: the value is on the next line.
-// A comment (// or #) may follow it on the same line; group 1 is the flag item without that comment.
-const FLAG_ITEM_END = new RegExp(String.raw`(\\{0,3}["']--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\{0,3}["']\s{0,8},?)\s{0,8}(?:(?:#|//)[^\n]{0,1024})?$`, 'i');
+// Group 1 is the flag item; the line is tested after its trailing comment has been removed (stripComment).
+const FLAG_ITEM_END = new RegExp(String.raw`(\\{0,7}["']--?[A-Za-z0-9-]{0,40}(?:` + SECRET_WORD + String.raw`|pat|key)(?![a-z])[A-Za-z0-9-]{0,40}\\{0,7}["']\s{0,8},?)$`, 'i');
+// The line without its trailing comment (#, // or /*), found in one pass that knows about quoted strings.
+function stripComment(l) {
+  let q = '';
+  for (let i = 0; i < l.length; i++) {
+    const c = l[i];
+    if (q) {
+      if (c === '\\' && q === '"') i++;
+      else if (c === q) q = '';
+    } else if (c === '"' || c === "'") q = c;
+    else if (c === '#' || (c === '/' && (l[i + 1] === '/' || l[i + 1] === '*'))) return l.slice(0, i);
+  }
+  return l;
+}
 const COMMENT_ONLY = /^\s*(?:#|\/\/|\/\*)/;
 // How many blank or comment-only lines may sit between a flag and its value, and how much of the flag line
 // (its end) is examined.
 const GAP_LINES = 8;
 const FLAG_LINE_TAIL = 512;
 function keepValue(v) {
-  const t = v.replace(/^\\?["']|\\?["']$/g, '');
+  const t = v.replace(/^\\{0,7}["']|\\{0,7}["']$/g, '');
   return !t || /^(?:\$\{?[A-Za-z_]|%[A-Za-z_]|\[REDACTED|__ZN_|<)/.test(t);
 }
 function redactByContext(s) {
@@ -159,10 +172,21 @@ class FileCtx {
       // redact both together and keep the second.
       let flag = null;
       for (let i = ln - 2, n = 0; i >= 0 && n < GAP_LINES + 1; i--, n++) {
-        const l = this.lines[i];
+        let l = this.lines[i];
         if (!l.trim() || COMMENT_ONLY.test(l)) continue;
-        const m = FLAG_ITEM_END.exec(l.length > FLAG_LINE_TAIL + 1024 ? l.slice(-(FLAG_LINE_TAIL + 1024)) : l);
-        if (m) flag = m[1].slice(-FLAG_LINE_TAIL);
+        const t = l.trimEnd();
+        if (t.endsWith('*/') && !t.includes('/*')) {
+          // The end of a block comment that opened on an earlier line: skip it, up to its first line.
+          let j = i - 1;
+          while (j >= 0 && n < GAP_LINES && !this.lines[j].includes('/*')) { j--; n++; }
+          if (j < 0 || n >= GAP_LINES) break;
+          i = j;
+          n++;
+          l = this.lines[j];
+          if (!l.slice(0, l.indexOf('/*')).trim()) continue;
+        }
+        const m = FLAG_ITEM_END.exec(stripComment(l).trimEnd().slice(-FLAG_LINE_TAIL));
+        if (m) flag = m[1];
         break;
       }
       if (flag) {
