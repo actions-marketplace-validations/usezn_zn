@@ -85,7 +85,7 @@ const LINK = /https:\/\/usezn\.com\/api-keys/;
 
 function assertClean(r) {
   assert.ok(!r.all.includes(r.key), 'the key is never printed');
-  assert.ok(!r.all.includes(r.key.slice(8, 20)), 'nothing of the key beyond its first 8 characters');
+  assert.ok(!r.all.includes(r.key.slice(12, 24)), 'nothing of the key beyond its first 12 characters');
 }
 
 test('yes + 200: one DELETE to the fixed host, the key is revoked, the local copy is gone', async () => {
@@ -101,11 +101,11 @@ test('yes + 200: one DELETE to the fixed host, the key is revoked, the local cop
     assert.equal(o.path, '/prod/keys/self');
     assert.equal(o.rejectUnauthorized, true);
     assert.equal(o.headers.Authorization, 'Bearer ' + r.key);
-    assert.match(r.out, /Revoked key zn_[0-9a-f]{5}\.\.\. on usezn\.com/);
+    assert.match(r.out, /Revoked key zn_[0-9a-f]{9}\.\.\. on usezn\.com/);
     assert.equal(r.kc.get(), null);
     assert.equal(cloudKey.readMarker(), null);
     assert.equal(r.t.calls.confirm.length, 1);
-    assert.ok(r.t.calls.confirm[0].includes(r.key.slice(0, 8) + '...'), 'the question names the key by the prefix the dashboard shows');
+    assert.ok(r.t.calls.confirm[0].includes(r.key.slice(0, 12) + '...'), 'the question names the key by the prefix the dashboard shows');
     assertClean(r);
   } finally { cleanup(home); }
 });
@@ -154,7 +154,7 @@ test('the user says no: no request, local copy deleted, how to revoke is shown',
     assert.equal(r.kc.get(), null);
     assert.equal(cloudKey.readMarker(), null);
     assert.match(r.out, LINK);
-    assert.match(r.out, /listed as zn_[0-9a-f]{5}\.\.\./);
+    assert.match(r.out, /listed as zn_[0-9a-f]{9}\.\.\./);
     assert.doesNotMatch(r.out, /next time|--revoke/, 'no advice that cannot work: the local copy is gone');
     assert.equal(r.t.calls.confirm.length, 1);
     assertClean(r);
@@ -259,7 +259,7 @@ test('--revoke when the local copy cannot be deleted: the key is still revoked, 
     assert.equal(code, 1);
     assert.equal(h.calls.length, 1);
     assert.match(err.join(''), /Could not remove the saved key/);
-    assert.match(out.join(''), /Revoked key zn_[0-9a-f]{5}\.\.\./);
+    assert.match(out.join(''), /Revoked key zn_[0-9a-f]{9}\.\.\./);
     assert.ok(!(out.join('') + err.join('')).includes(key));
   } finally { cleanup(home); }
 });

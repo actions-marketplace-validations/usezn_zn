@@ -234,8 +234,8 @@ async function revokeKey(h, key) {
   return { state: 'failed', detail: 'HTTP ' + r.status };
 }
 
-// The dashboard lists a key by its first 8 characters ("zn_" and 5 more), so that is how it is named here.
-function shown(key) { return key.slice(0, 8) + '...'; }
+// A key is named by its first 12 characters ("zn_" and 9 more), the same prefix the keys page on usezn.com shows.
+function shown(key) { return key.slice(0, 12) + '...'; }
 
 function revokeLine(res, key) {
   const k = shown(key);
