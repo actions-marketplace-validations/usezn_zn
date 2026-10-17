@@ -74,6 +74,7 @@ function scrub(text, key) {
  */
 function request(h, method, path, key) {
   return new Promise((resolve) => {
+    if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') { resolve({ error: cloudKey.TLS_REFUSAL }); return; }
     let done = false;
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
     let req;

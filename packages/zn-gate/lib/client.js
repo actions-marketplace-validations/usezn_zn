@@ -104,6 +104,8 @@ function analyzeCloud(input, apiKey, endpointUrl, timeoutMs = 4000, extra = {}) 
           'User-Agent': `zn-gate/${PKG_VERSION} (mcp-client)`,
         },
         timeout: timeoutMs,
+        // Always verify the certificate: NODE_TLS_REJECT_UNAUTHORIZED=0 must not let the key travel unverified.
+        ...(isHttps ? { rejectUnauthorized: true } : {}),
       },
       (res) => {
         let body = '';
@@ -176,6 +178,10 @@ async function analyze(input, options = {}) {
   const apiKey = found.key;
   const { sanitized, detections } = redactSecrets(typeof input === 'string' ? input : String(input ?? ''));
   const storedKey = found.source === 'keychain' || found.source === 'vault';
+  if (storedKey && process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    // The saved key is never sent over a connection whose certificate is not checked.
+    return { ...local, mode: 'oss-local', fallback: true, cloud_error: cloudKey.TLS_REFUSAL };
+  }
   const endpoint = resolveEndpoint(options, { stored: storedKey });
   const urlIgnored = storedKey && Boolean(options.apiUrl || process.env.ZN_API_URL);
   const windows = longInputMode(options) === 'windows' && sanitized.length > LONG_INPUT_MIN_CHARS;

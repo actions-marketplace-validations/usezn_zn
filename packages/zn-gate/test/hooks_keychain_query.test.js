@@ -62,7 +62,22 @@ ZN_QUERIES.push(
   'node -e "const k=require(\'/usr/lib/node_modules/zn-gate/lib/vault/keychain\');console.log(k._native.macos.load(k.CLOUD_SLOT))"',
 );
 
+// Also refused when the program is wrapped or the query sits in a pipeline.
+ZN_QUERIES.push(
+  'sudo security find-generic-password -s zn-cloud -w',
+  'env FOO=1 secret-tool lookup service zn-cloud account x',
+  'echo start; node -e "require(\'keytar\').getPassword(\'zn-cloud\',\'cloud-api-key\')"',
+);
+
 const OTHER_KEYCHAIN_USE = [
+  // searching for zn's names is not reading the key
+  'rg "zn-vault-identity|loadStoredKey" packages/',
+  'rg -n cloud-api-key packages/zn-gate/lib',
+  'grep -rn "age-identity" lib/',
+  'git grep -n zn-gate-cloud-api-key',
+  'git grep -n "loadStoredKey"',
+  'rg security docs/ | head',
+  'grep -rn "secret-tool lookup service zn-cloud" docs/',
   'python3 -c "import keyring; print(keyring.get_password(\'my-app\',\'me\'))"',
   'security find-generic-password -a me -s my-app -w',
   'security find-generic-password -l my-label -w',

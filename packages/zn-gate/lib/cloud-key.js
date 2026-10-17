@@ -28,6 +28,7 @@ const path = require('path');
 const KEY_RE = /^[A-Za-z0-9._-]{16,256}$/;
 const VAULT_SECRET = 'ZN_CLOUD_API_KEY';
 const STORES = ['keychain', 'vault'];
+const TLS_REFUSAL = 'NODE_TLS_REJECT_UNAUTHORIZED=0 is set, so zn-gate will not send the saved key over a connection whose certificate is not checked';
 
 /**
  * A usable API key, or null. zn keys and tokens are letters, digits, `_`,
@@ -237,6 +238,7 @@ module.exports = {
   deleteKey,
   resolveApiKey,
   NoSecureStore,
+  TLS_REFUSAL,
   VAULT_SECRET,
   _use,
 };
