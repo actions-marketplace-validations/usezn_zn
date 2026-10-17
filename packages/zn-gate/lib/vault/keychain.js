@@ -354,17 +354,27 @@ async function initIdentity(opts) {
   return { backend, recipient, identity };
 }
 
-/** Remove the identity from its backend (the vault becomes unreadable). */
+/**
+ * Remove the identity from its backend (the vault becomes unreadable).
+ * Safe default: the OS keychain slot does not depend on ZN_HOME, so it may
+ * belong to another vault. Without keychain.json for this home and without an
+ * explicit backend, nothing is deleted.
+ * Returns {deleted, backend} or {deleted: false, reason}.
+ */
 async function deleteIdentity(opts) {
   const o = opts || {};
   const meta = readMeta(o);
-  const backend = o.backend || (meta && meta.backend) || detectBackend();
+  const backend = o.backend || (meta && meta.backend);
+  if (!backend) {
+    return { deleted: false, reason: 'no keychain.json in this vault and no backend given, so nothing was deleted (the keychain slot may belong to another vault). Next step: pass the backend explicitly.' };
+  }
   if (backend === 'passphrase') {
     try { fs.unlinkSync(store.paths(o).identityFile); } catch (err) { /* ignore */ }
   } else {
     NATIVE[backend].remove();
   }
   try { fs.unlinkSync(store.paths(o).metaFile); } catch (err) { /* ignore */ }
+  return { deleted: true, backend };
 }
 
 module.exports = {
