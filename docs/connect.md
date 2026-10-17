@@ -14,7 +14,11 @@ zn-gate works fully on your computer, needs no account and sends nothing. This c
 2. It tells you what will change and asks you to confirm.
 3. It opens https://usezn.com/connect in your browser. Create a free account (or log in) and create an analysis-only API key there (the connect page does this for you).
 4. Back in the terminal, paste the key at the hidden prompt. Nothing you type is shown, and the key is never taken from the command line or an environment variable.
-5. It checks the key once with https://api.usezn.com (only the key is sent, as a request header, to that one address, over a verified TLS connection). It accepts only a key limited to analyzing text: such a key cannot read your usage, list, create or revoke keys, or use the dashboard, so a leaked copy can do little. A full-access key is refused with a pointer to the connect page, and so is a key the server rejects, or one that could not be checked (no answer, an error): nothing is saved in those cases.
+5. It checks the key once with https://api.usezn.com. Only the key is sent, as a request header, to that one address, over a verified TLS connection.
+   - It accepts only a key limited to analyzing text. Such a key cannot read your usage, list, create or revoke keys, or use the dashboard, so a leaked copy can do little.
+   - A full-access key is refused, with a pointer to the connect page.
+   - A key the server rejects, or one that could not be checked (no answer, an error), is refused too.
+   - In all of these cases nothing is saved.
 6. It saves the key, and prints the last four characters so you can recognise it.
 
 ## Where the key is kept
@@ -40,6 +44,14 @@ A saved key is only ever sent to https://api.usezn.com. `--url` and `ZN_API_URL`
 - `zn-gate connect --reconnect` replaces the saved key.
 - `zn-gate disconnect` removes the key from this computer and turns the cloud check off. If a key is saved, it then asks whether to also revoke it on usezn.com, so it stops working everywhere; the default is no, and only an explicit yes sends anything (one request to https://api.usezn.com with the key, over the same checked connection `connect` uses). The local copy is removed in every case, even if the request fails. If it fails, the command says so and points you to https://usezn.com/api-keys, where you can revoke the key yourself. `zn-gate disconnect --revoke` skips the question and `--no-revoke` never revokes and makes no network call. Like `connect`, the command only runs in your own terminal: with no terminal, or from an AI agent, it refuses and changes nothing, so nothing is revoked.
 - A key in `--key` or `ZN_API_KEY` is used instead of the saved one. `ZN_LOCAL_ONLY=true` or `--local-only` turns the cloud check off even when connected.
+
+## If something fails
+
+- **It refuses to run**: it only runs in a terminal you type in. Open your own terminal and run it there, not through an AI agent or a script.
+- **The key is refused**: use the connect page to create an analysis-only key, then run `zn-gate connect` again.
+- **The key could not be checked** (no answer, an error): check your connection and try again.
+- **It says nothing was saved because there is no keychain**: unlock the vault with `zn unlock` and run `zn-gate connect` again, or set `ZN_CLOUD=1` and `ZN_API_KEY` in your shell yourself.
+- **You want to stop**: run `zn-gate disconnect`.
 
 ## What is sent
 
