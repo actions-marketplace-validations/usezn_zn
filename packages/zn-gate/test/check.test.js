@@ -156,6 +156,25 @@ test('check: a Claude Code prompt hook without onFailure "block" gets a note', a
   assert.ok(r.notes.some((n) => /prompt hook lets prompts through when it cannot run/.test(n)));
 });
 
+test('check: hooks without the prompt-expansion entry get a note, new installs and the plugin do not', async (t) => {
+  const ctx = homeWithHooks(t, ['claude-code']);
+  const file = getAdapter('claude-code').settingsFile(ctx);
+  const fresh = byId(await check(ctx), 'claude-code');
+  assert.ok(!fresh.notes.some((n) => /prompt-expansion/.test(n)));
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const old = JSON.parse(JSON.stringify(settings));
+  delete old.hooks.UserPromptExpansion;
+  fs.writeFileSync(file, JSON.stringify(old));
+  const r = byId(await check(ctx), 'claude-code');
+  assert.equal(r.state, 'protected');
+  assert.ok(r.notes.some((n) => /newer prompt-expansion check.*`zn hooks install claude-code` again/.test(n)));
+  // Plugin only: the plugin ships its own hooks, so there is nothing to add.
+  const home2 = tempDir(t, 'zn-check-home-');
+  fakePlugin(home2, launcher());
+  const p = byId(await check({ home: home2, env: { HOME: home2, PATH: process.env.PATH }, cwd: tempDir(t, 'zn-check-cwd-') }), 'claude-code');
+  assert.ok(!p.notes.some((n) => /prompt-expansion/.test(n)));
+});
+
 test('check: zn hooks without the read hook are not protected', async (t) => {
   const ctx = homeWithHooks(t, ['codex']);
   const file = getAdapter('codex').hooksFile(ctx);

@@ -291,6 +291,10 @@ async function checkAgent(spec, ctx) {
     // Without onFailure "block", a prompt hook that cannot run lets every prompt through (Claude Code 2.1.295 and later read it).
     const prompt = hookEntries(readJson(userFile)).find((e) => e.event === 'UserPromptSubmit' && parseCommand(e.command, spec.id));
     if (prompt && prompt.onFailure !== 'block') res.notes.push('its prompt hook lets prompts through when it cannot run; run `zn hooks install claude-code` again to have them blocked instead');
+    // Hooks written by an older zn-gate have no hook for typed skills and commands. The Claude Code version is not
+    // known here, so the note is harmless on a version without that event.
+    const hasExpansion = hookEntries(readJson(userFile)).some((e) => e.event === 'UserPromptExpansion' && parseCommand(e.command, spec.id));
+    if (!hasExpansion) res.notes.push('its hooks lack the newer prompt-expansion check (for typed skills and commands); run `zn hooks install claude-code` again to add it');
   }
   if (spec.id === 'claude-code' && installed && (!res.problem || res.pluginFault)) {
     const p = claudePolicy(ctx.home, ctx.env);
