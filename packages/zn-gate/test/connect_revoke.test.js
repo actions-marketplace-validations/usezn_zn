@@ -85,7 +85,7 @@ const LINK = /https:\/\/usezn\.com\/api-keys/;
 
 function assertClean(r) {
   assert.ok(!r.all.includes(r.key), 'the key is never printed');
-  assert.ok(!r.all.includes(r.key.slice(3, 20)), 'nothing of the key beyond its last 4 characters');
+  assert.ok(!r.all.includes(r.key.slice(8, 20)), 'nothing of the key beyond its first 8 characters');
 }
 
 test('yes + 200: one DELETE to the fixed host, the key is revoked, the local copy is gone', async () => {
@@ -101,10 +101,11 @@ test('yes + 200: one DELETE to the fixed host, the key is revoked, the local cop
     assert.equal(o.path, '/prod/keys/self');
     assert.equal(o.rejectUnauthorized, true);
     assert.equal(o.headers.Authorization, 'Bearer ' + r.key);
-    assert.match(r.out, /Revoked key \.\.\.[0-9a-f]{4} on usezn\.com/);
+    assert.match(r.out, /Revoked key zn_[0-9a-f]{5}\.\.\. on usezn\.com/);
     assert.equal(r.kc.get(), null);
     assert.equal(cloudKey.readMarker(), null);
     assert.equal(r.t.calls.confirm.length, 1);
+    assert.ok(r.t.calls.confirm[0].includes(r.key.slice(0, 8) + '...'), 'the question names the key by the prefix the dashboard shows');
     assertClean(r);
   } finally { cleanup(home); }
 });
@@ -153,6 +154,8 @@ test('the user says no: no request, local copy deleted, how to revoke is shown',
     assert.equal(r.kc.get(), null);
     assert.equal(cloudKey.readMarker(), null);
     assert.match(r.out, LINK);
+    assert.match(r.out, /listed as zn_[0-9a-f]{5}\.\.\./);
+    assert.doesNotMatch(r.out, /next time|--revoke/, 'no advice that cannot work: the local copy is gone');
     assert.equal(r.t.calls.confirm.length, 1);
     assertClean(r);
   } finally { cleanup(home); }
@@ -213,5 +216,76 @@ test('TLS environment refusal: no request is sent, the local copy is still delet
     assert.equal(r.kc.get(), null);
     assert.equal(cloudKey.readMarker(), null);
     assertClean(r);
+  } finally { cleanup(home); }
+});
+
+test('marker but the key cannot be read: nothing is removed, revoked or asked, the dashboard is linked', async () => {
+  const home = tmpHome();
+  try {
+    const key = freshKey();
+    const kc = memKeychain();
+    cloudKey._use(kc.deps);
+    await cloudKey.saveKey(key, kc.deps);
+    const broken = { native: { ...kc.deps.native, impl: { ...kc.deps.native.impl, load: () => null } }, vault: kc.deps.vault };
+    const out = []; const err = [];
+    const t = fakeTty({ confirms: [true] });
+    const h = fakeHttps({ status: 200 });
+    const code = await connectCli.disconnect(['--revoke'], { out: (s) => out.push(s), err: (s) => err.push(s), tty: t, https: h, deps: broken });
+    assert.equal(code, 1);
+    assert.equal(h.calls.length, 0);
+    assert.equal(t.calls.confirm.length, 0);
+    assert.match(err.join(''), /Could not read the saved key/);
+    assert.match(err.join(''), LINK);
+    assert.ok(cloudKey.readMarker(), 'the marker stays');
+    assert.equal(kc.get(), key, 'the stored key is untouched');
+    // --no-revoke is the explicit way to only remove the local copy
+    const code2 = await connectCli.disconnect(['--no-revoke'], { out: () => {}, err: () => {}, tty: fakeTty(), https: h, deps: kc.deps });
+    assert.equal(code2, 0);
+    assert.equal(cloudKey.readMarker(), null);
+  } finally { cleanup(home); }
+});
+
+test('--revoke when the local copy cannot be deleted: the key is still revoked, both outcomes are reported, exit 1', async () => {
+  const home = tmpHome();
+  try {
+    const key = freshKey();
+    const kc = memKeychain();
+    cloudKey._use(kc.deps);
+    await cloudKey.saveKey(key, kc.deps);
+    const stuck = { native: { ...kc.deps.native, impl: { ...kc.deps.native.impl, remove: () => false } }, vault: kc.deps.vault };
+    const out = []; const err = [];
+    const h = fakeHttps({ status: 200 });
+    const code = await connectCli.disconnect(['--revoke'], { out: (s) => out.push(s), err: (s) => err.push(s), tty: fakeTty(), https: h, deps: stuck });
+    assert.equal(code, 1);
+    assert.equal(h.calls.length, 1);
+    assert.match(err.join(''), /Could not remove the saved key/);
+    assert.match(out.join(''), /Revoked key zn_[0-9a-f]{5}\.\.\./);
+    assert.ok(!(out.join('') + err.join('')).includes(key));
+  } finally { cleanup(home); }
+});
+
+test('an AI agent detected through its environment variable: nothing is read, removed or sent, even with --revoke', async () => {
+  const home = tmpHome();
+  try {
+    const key = freshKey();
+    const kc = memKeychain();
+    cloudKey._use(kc.deps);
+    await cloudKey.saveKey(key, kc.deps);
+    let loads = 0;
+    const spy = { native: { ...kc.deps.native, impl: { ...kc.deps.native.impl, load: (s) => { loads++; return kc.deps.native.impl.load(s); } } }, vault: kc.deps.vault };
+    const out = []; const err = [];
+    const h = fakeHttps({ status: 200 });
+    const code = await connectCli.disconnect(['--revoke'], {
+      out: (s) => out.push(s), err: (s) => err.push(s), https: h, deps: spy,
+      ttyIo: { env: { CLAUDECODE: '1' }, stdin: { isTTY: true }, ancestry: () => null },
+    });
+    assert.equal(code, 1);
+    assert.match(err.join(''), /not by an AI agent/);
+    assert.match(err.join(''), LINK);
+    assert.equal(loads, 0, 'the key was never read');
+    assert.equal(h.calls.length, 0);
+    assert.equal(kc.get(), key);
+    assert.ok(cloudKey.readMarker());
+    assert.ok(!(out.join('') + err.join('')).includes(key));
   } finally { cleanup(home); }
 });
