@@ -122,7 +122,8 @@ test('secrets_request: invalid names are refused and a reason is cut and cleaned
   assert.ok(!/[\u0000-\u001f]/.test(rec.reason));
 });
 
-test('secrets_render_file: a directory that cannot be created is refused and nothing is written', async (t) => {
+test('secrets_render_file: an out path that runs through a regular file is refused before anything is written', async (t) => {
+  // The refusal comes from the earlier lstat check (ENOTDIR); the mkdir failure branch of openRenderTarget stays uncovered on purpose.
   const dir = tempDir(t, 'zn-render-dir-');
   spawnSync('git', ['init', '-q'], { cwd: dir });
   fs.writeFileSync(path.join(dir, '.gitignore'), 'blocker/\n');
