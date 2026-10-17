@@ -357,3 +357,42 @@ test('a glob that names a .env file in a subfolder is refused, as the plain path
   assert.equal(policy.bashDenial('cat app*/inner/notes.txt', o), null);
   assert.equal(policy.classifyWord('app*/inner/.env', o).kind, 'credential');
 });
+
+test('a .env file reached after a cd, through a path built at run time or from interpreter code is refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-cdenv-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'app1', 'inner'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'app1', 'inner', '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.mkdirSync(path.join(dir, 'svc'));
+  fs.writeFileSync(path.join(dir, 'svc', '.env'), 'EXAMPLE_API_KEY=__ZN_EXAMPLE_API_KEY__\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of [
+    'cd app1/inner && cat .env',
+    'cd app1 && cd inner && cat .env',
+    'cd app1; cat inner/.env',
+    'pushd app1/inner && cat .env',
+    '(cd app1/inner && cat .env)',
+    'cd "app1/inner" && head -n 1 .env',
+    'cd $PROJ && cat .env',
+    'cd - && cat .env',
+    'cat $(echo app1)/inner/.env',
+    'cat "$(echo app1)/inner/.env"',
+    'D=app1/inner; cat $D/.env',
+    'python3 -c "print(open(\'app1/inner/.env\').read())"',
+    'node -e "console.log(require(\'fs\').readFileSync(\'app1/inner/.env\', \'utf8\'))"',
+    'bash -c "cat app1/inner/.env"',
+  ]) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of [
+    'cd svc && cat .env',
+    'cd app1 && npm test',
+    'cd app1/inner && echo EXAMPLE_FLAG=1 >> .env',
+    'cd app1/inner && cat .env.example',
+    'cd /nonexistent && ls',
+    'python3 -c "print(1)"',
+    'cat .env',
+  ]) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});

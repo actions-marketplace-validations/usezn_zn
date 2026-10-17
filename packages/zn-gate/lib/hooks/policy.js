@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.4';
+const POLICY_RULES_VERSION = '2026-10-17.5';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -911,9 +911,14 @@ function bashDenialOf(cmd, opts = {}) {
   const words = [...allWords(cmd, false), ...allWords(cmd, true), ...allWords(String(cmd).replace(/`(.)/gs, '$1'), false)];
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
-  if (/\$\(|`/.test(String(cmd))) {
+  // The same for the code an interpreter runs (python -c "open('.env')"), where a path sits inside quotes and brackets.
+  if (/\$\(|`/.test(String(cmd)) || words.some((w) => CODE_CMDS_RE.test(bareHead(w.head)))) {
     for (const t of String(cmd).split(/[\s'"`$(){};|&<>=,]+/)) if (t) words.push({ text: t, redirectTarget: false, head: '' });
   }
+  // Where a relative .env path may be read from once the command has changed directory (cd app && cat .env).
+  opts.cdBases = cdBasesOf(words, opts);
+  // With $( ) or backticks, part of a path may be the output of another command.
+  opts.substitution = /\$\(|`/.test(String(cmd));
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
   const classified = new Map();
@@ -949,11 +954,65 @@ function bashDenialOf(cmd, opts = {}) {
       continue; // reading the settings is allowed
     }
     if (w.redirectTarget) continue; // appending to .env is a write, not a read
-    const deny = denialOf(c, text, opts);
+    let deny = denialOf(c, text, opts);
+    if (!deny && c.kind === 'dotenv') deny = dotenvElsewhereDenial(text, opts);
     if (deny && /[*?[]/.test(text)) { globDeny = globDeny || deny; continue; }
     if (deny) return deny;
   }
   return globDeny;
+}
+
+// Commands that change the directory the rest of the command runs in.
+const CD_CMDS = new Set(['cd', 'chdir', 'pushd', 'sl', 'set-location', 'push-location']);
+// Interpreters and shells whose code argument can name a file inside quotes or brackets.
+const CODE_CMDS_RE = /^(?:python[0-9.]*|py|node|nodejs|deno|bun|ruby|perl|php|lua|osascript|pwsh|powershell|bash|sh|zsh|dash|ksh|fish|cmd)(?:\.exe)?$/;
+const CD_BASES_MAX = 16;
+
+function bareHead(h) {
+  return String(h || '').replace(/^\(+/, '');
+}
+
+/* The directories a relative path in the command may be read from: the working directory and every place a cd in it
+   leads to. `unknown` is set when a cd goes somewhere zn cannot follow (cd -, cd $DIR, cd $(...)). */
+function cdBasesOf(words, opts) {
+  const home = opts.home || os.homedir();
+  const bases = new Set([path.resolve(opts.cwd || process.cwd())]);
+  let unknown = false;
+  for (const w of words) {
+    const head = bareHead(w.head);
+    if (!CD_CMDS.has(head)) continue;
+    const t = w.text.replace(/^\(+/, '').replace(/^["']|["']$/g, '');
+    if (!t || t.toLowerCase() === head || (t.startsWith('-') && t !== '-')) continue;
+    if (t === '-' || /[$`*?[{]/.test(t)) { unknown = true; continue; }
+    for (const b of [...bases]) {
+      if (bases.size >= CD_BASES_MAX) { unknown = true; break; }
+      bases.add(path.resolve(b, expandHome(t, home)));
+    }
+  }
+  return { dirs: [...bases], unknown };
+}
+
+/* A .env path that is not at the working directory: it may be built when the command runs ($DIR/.env, $(...)/.env),
+   or be read after a cd. Refused when zn cannot rule out that it reaches a .env file with values. */
+function dotenvElsewhereDenial(text, opts) {
+  const home = opts.home || os.homedir();
+  const expanded = expandEnv(expandHome(text, home), opts.env || process.env).text;
+  const missing = !fs.existsSync(resolvedOf(text, opts));
+  if (/[$`]/.test(expanded) || (missing && opts.substitution)) {
+    return 'zn: this command builds the path of a .env file while it runs (' + text + '), so zn cannot check whether it holds secrets. ' +
+      'Name the file directly, for example `cat app/.env`; if it holds values, ask the user to run `' + znCommand('env shadow .env', opts) + '` in that folder.';
+  }
+  if (path.isAbsolute(expanded) || !missing) return null;
+  const bases = opts.cdBases || { dirs: [], unknown: false };
+  for (const dir of bases.dirs) {
+    const deny = readDenial(text, { ...opts, cwd: dir });
+    if (deny) return deny;
+  }
+  if (bases.unknown) {
+    return 'zn: this command changes to a folder zn cannot follow and then reads ' + text + ', so zn cannot check whether it holds secrets. ' +
+      'Give the path from the current folder instead, for example `cat app/.env`.';
+  }
+  return null;
 }
 
 /* zn commands only the user may run: what the command does, why an agent may not, and the next step. */
