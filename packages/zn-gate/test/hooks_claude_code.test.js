@@ -240,6 +240,49 @@ test('UserPromptSubmit blocks a pasted secret and suggests zn secret set', async
   assert.equal(ok.output, null);
 });
 
+function expansion(text, cwd) {
+  return { session_id: 'abc123', cwd, permission_mode: 'default', hook_event_name: 'UserPromptExpansion', expansion_type: 'slash_command', command_name: 'deploy', command_args: '', command_source: 'project', prompt: text };
+}
+
+test('UserPromptExpansion blocks an expanded skill that carries a secret value, a private key or .env lines', async () => {
+  assert.equal(adapter.normalize(expansion('x', '/')).event, 'prompt_expansion');
+  const res = await run(expansion('Deploy with this key ' + AWS + ' now', '/'));
+  assert.equal(res.output.decision, 'block');
+  assert.match(res.output.reason, /was not run/);
+  assert.match(res.output.reason, /secret set AWS_KEY/);
+  assert.ok(!res.output.reason.includes(AWS));
+  const env = await run(expansion('Contents of .env:\nDB_PASSWORD=sunshine2024\nMODE=dev\n', '/'));
+  assert.equal(env.output.decision, 'block');
+  const pem = await run(expansion('Use this:\n-----BEGIN ' + 'RSA PRIVATE KEY-----\nZmFrZQ==\n-----END RSA PRIVATE KEY-----\n', '/'));
+  assert.equal(pem.output.decision, 'block');
+  assert.match(pem.output.reason, /private key/);
+  const big = await run(expansion('a '.repeat(600000), '/'));
+  assert.equal(big.output.decision, 'block');
+  assert.match(big.output.reason, /too long/);
+});
+
+test('UserPromptExpansion lets a clean expansion through, and fails closed on an error', async () => {
+  const ok = await run(expansion('Run the tests and list the failing ones, use __ZN_AWS_KEY__ if needed', '/'));
+  assert.equal(ok.output, null);
+  const broken = { scan() { throw new Error('boom'); }, async prepare(c) { return c; } };
+  const res = await runner.handle(adapter, expansion('Deploy with the usual settings please', '/'), { engine: broken, vault: createFakeVault(), failMode: 'open' });
+  assert.equal(res.output.decision, 'block');
+});
+
+test('install registers UserPromptExpansion with onFailure block, and uninstall removes it', (t) => {
+  const home = tempDir(t, 'zn-upe-');
+  const env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
+  const opts = { scope: 'user', home, env, mcp: false, nodePath: '/usr/bin/node', cliPath: '/opt/zn-gate/bin/cli.js', runnerPath: '/opt/zn/lib/hooks/runner.js' };
+  const read = () => JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).hooks || {};
+  adapter.install(opts);
+  adapter.install(opts);
+  assert.equal(read().UserPromptExpansion.length, 1);
+  assert.equal(read().UserPromptExpansion[0].hooks[0].onFailure, 'block');
+  assert.equal(read().UserPromptExpansion[0].matcher, undefined);
+  adapter.uninstall({ scope: 'user', home, env, mcp: false });
+  assert.equal(read().UserPromptExpansion, undefined);
+});
+
 test('every error fails closed, a missing engine too unless the user allows it', async (t) => {
   const missing = Object.assign(new Error('scrubber engine is not installed'), { code: 'ZN_UNAVAILABLE' });
   const absent = { scan() { throw missing; }, async tokenize() { throw missing; }, async detokenize() { throw missing; } };
