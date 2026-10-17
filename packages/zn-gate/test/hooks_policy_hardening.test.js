@@ -445,3 +445,17 @@ test('after a cd, only the folders the command can reach are checked, also when 
     assert.equal(policy.bashDenial(cmd, o), null, cmd);
   }
 });
+
+test('a .env or credential file read from the git repository is refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-gitobj-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  for (const cmd of ['git show HEAD:.env', 'git show :.env', 'git show :0:.env', 'git cat-file -p HEAD:.env', 'git -C app1 show HEAD:.env',
+    'git show HEAD~1:app1/inner/.env', 'git show main:./.env.local', 'git show HEAD:.aws/credentials', 'git cat-file blob v1.0:config/.env']) {
+    assert.ok(policy.bashDenial(cmd, o), cmd);
+  }
+  for (const cmd of ['git show HEAD:README.md', 'git show HEAD:.env.example', 'git log --oneline', 'git show HEAD',
+    'git push origin main:main', 'git fetch https://example.com/repo.git', 'git diff HEAD:src/a.js HEAD~1:src/a.js']) {
+    assert.equal(policy.bashDenial(cmd, o), null, cmd);
+  }
+});

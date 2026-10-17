@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.6';
+const POLICY_RULES_VERSION = '2026-10-17.7';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -954,6 +954,11 @@ function bashDenialOf(cmd, opts = {}) {
       classified.set(text, classifyWord(text, opts));
     }
     const c = classified.get(text);
+    // git show HEAD:.env, git cat-file -p :app/.env: a secret file read from the repository, not from disk.
+    if ((!c || c.kind === 'dotenv') && w.head === 'git') {
+      const deny = gitObjectDenial(text, opts);
+      if (deny) return deny;
+    }
     if (!c) {
       if (writing && AGENT_CONFIG_MENTION_RE.test(slash(text))) {
         return 'zn: this command would change agent hook or plugin settings, which is protected. Ask the user to make this change.';
@@ -992,6 +997,21 @@ function decodeAnsiC(cmd) {
     // Bash ends the string at the first NUL character.
     return "'" + text.split('\0')[0].replace(/'/g, "'\\''") + "'";
   }).replace(/\$"/g, '"');
+}
+
+// <rev>:<path> and :<path> name a file as git stores it (HEAD:.env, main~2:app/.env, :0:.env).
+const GIT_OBJECT_RE = /^[^\s:]{0,256}:(?:[0-3]:)?([^:\s][^\s]{0,1024})$/;
+
+/* A git object word whose path is a .env or credential file. The stored copy cannot be checked for values without
+   running git, and a .env kept in the repository with values is the case to stop, so it is refused. */
+function gitObjectDenial(text, opts) {
+  const m = GIT_OBJECT_RE.exec(text);
+  if (!m || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
+  const file = m[1].replace(/^\.\//, '');
+  const c = classifyPath(file, opts) || classifyPath(path.basename(file), opts);
+  if (!c || c.kind === 'agent_config') return null;
+  return 'zn: ' + text + ' reads ' + path.basename(file) + ' from the git repository, and zn treats that file as holding secrets, ' +
+    'so it was not read. If the repository holds real values in it, tell the user: they should be rotated and removed from the history.';
 }
 
 // Commands that change the directory the rest of the command runs in.
