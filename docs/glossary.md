@@ -4,9 +4,9 @@ Short meanings of words used in the zn-gate docs.
 
 **Coding agent**: a program such as Claude Code, Codex CLI, Cursor or OpenCode that reads your files and runs commands for you.
 
-**Terminal**: the window where you type commands. Run zn-gate commands in your own terminal, not through an agent.
+**Terminal**: the window where you type commands. Run zn-gate's setup commands in your own terminal, not through an agent.
 
-**Node.js**: the program that runs zn-gate's commands. `npx` comes with it. You can get it at [nodejs.org](https://nodejs.org/).
+**Node.js**: the program that runs zn-gate's npm commands. `npx` comes with it. You can get it at [nodejs.org](https://nodejs.org/).
 
 **Secret**: a value that gives access to something, such as an API key, a token or a password.
 
@@ -18,11 +18,11 @@ Short meanings of words used in the zn-gate docs.
 
 **Redact**: replace a secret in some text with a marker or a label, so nobody who reads the text sees the value.
 
-**Shadow** (`env shadow`): move the values of a `.env` file into the vault and leave markers in the file.
+**Shadow** (`env shadow`): move the secret values of a `.env` file into the vault and leave markers in their place.
 
 **Hook**: a small check that your agent runs before or after it reads a file, runs a command or gets your prompt. zn-gate uses hooks to block or redact.
 
-**Plugin**: the zn-gate add-on for Claude Code. It does the same job as hooks.
+**Plugin**: the zn-gate add-on for Claude Code. It sets up zn-gate's hooks and its MCP servers in one step.
 
 **MCP server**: a tool your agent can call. MCP is the standard way agents connect to tools. zn-gate can also run as one.
 

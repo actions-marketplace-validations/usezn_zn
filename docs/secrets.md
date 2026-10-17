@@ -151,7 +151,7 @@ you to run `zn unlock`.
 - **You updated zn-gate and secrets still show as markers in the hooks**: the vault is still the old version. Run `zn vault status`, then `zn unlock`, which restarts it.
 - **Codex does not run the hooks**: open Codex and approve them with `/hooks`.
 - **Claude Code ignores the hooks on a computer managed by an organization**: `zn hooks install claude-code` and `zn-gate status` say when a managed setting stops them. Ask your administrator to add zn to the managed settings.
-- **You want your old `.env` back**: run `zn env unshadow`.
+- **You want your old `.env` back**: run the restore command that `zn env shadow` printed, for example `zn env unshadow .env --backup <name>`, in your own terminal.
 - **Not sure what is protected**: run `npx -y zn-gate check`.
 
 Words you do not know? See the [glossary](glossary.md).
