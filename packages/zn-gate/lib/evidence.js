@@ -44,23 +44,66 @@ function appendLedgerLine(filePath, line) {
   }
 }
 
+class EvidenceLedgerError extends Error {}
+
+let warnedCorrupt = false;
+
 /**
- * Reads the last record's hash from the ledger.
+ * Reads the ledger as raw bytes and decodes it line by line. Returns the non-empty
+ * lines (undecodable bytes replaced) and `bad`, a Map from a 0-based line index to the
+ * reason that line is not valid UTF-8. Throws EvidenceLedgerError if the file cannot be read.
+ */
+function readLedger(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath);
+  } catch (e) {
+    throw new EvidenceLedgerError(`Cannot read the evidence log: ${e.code || e.message}`);
+  }
+  const strict = new TextDecoder('utf-8', { fatal: true });
+  const lenient = new TextDecoder('utf-8');
+  const lines = [];
+  const bad = new Map();
+  let start = 0;
+  for (let end = 0; end <= raw.length; end++) {
+    if (end !== raw.length && raw[end] !== 0x0a) continue;
+    const chunk = raw.subarray(start, end);
+    start = end + 1;
+    let text;
+    try {
+      text = strict.decode(chunk).trim();
+    } catch {
+      text = lenient.decode(chunk).trim();
+      if (text) bad.set(lines.length, `Invalid UTF-8 bytes at line ${lines.length + 1}: the log was corrupted or modified.`);
+    }
+    if (text) lines.push(text);
+  }
+  return { lines, bad };
+}
+
+/**
+ * Reads the last record's hash from the ledger. A missing or empty file is the start of
+ * a new chain (genesis). A log that exists but cannot be read or trusted throws
+ * EvidenceLedgerError: it never falls back to genesis, which would silently restart the chain.
  */
 function getLastHash(filePath = EVIDENCE_FILE) {
   if (!fs.existsSync(filePath)) {
     return GENESIS_HASH;
   }
+  const { lines, bad } = readLedger(filePath);
+  if (bad.size > 0) throw new EvidenceLedgerError(bad.values().next().value);
+  if (lines.length === 0) return GENESIS_HASH;
+  let parsed;
   try {
-    const data = fs.readFileSync(filePath, 'utf8').trim();
-    if (!data) return GENESIS_HASH;
-    const lines = data.split('\n');
-    const lastLine = lines[lines.length - 1];
-    const parsed = JSON.parse(lastLine);
-    return parsed.record_hash || GENESIS_HASH;
-  } catch {
-    return GENESIS_HASH;
+    parsed = JSON.parse(lines[lines.length - 1]);
+  } catch (e) {
+    throw new EvidenceLedgerError(`Malformed JSON at line ${lines.length}: ${e.message}`);
   }
+  const hash = parsed && typeof parsed === 'object' ? parsed.record_hash : undefined;
+  if (typeof hash !== 'string' || hash.length !== 64) {
+    throw new EvidenceLedgerError(`Last record (line ${lines.length}) has no valid record_hash.`);
+  }
+  return hash;
 }
 
 /**
@@ -68,7 +111,9 @@ function getLastHash(filePath = EVIDENCE_FILE) {
  *
  * @param {object} event - Event details (agent, phase, tool_name, payload, verdict, rule, reason, latency_us, engine)
  * @param {string} [filePath] - Optional ledger path
- * @returns {object} The recorded evidence record
+ * @returns {object|null} The recorded evidence record, or null when the existing ledger is
+ *   damaged: nothing is appended (the chain is never restarted), one warning is printed to
+ *   stderr per process, and the caller carries on.
  */
 function logEvidence(event, filePath = EVIDENCE_FILE) {
   ensureZnDir(filePath);
@@ -79,7 +124,17 @@ function logEvidence(event, filePath = EVIDENCE_FILE) {
     });
   }
 
-  const prevHash = getLastHash(filePath);
+  let prevHash;
+  try {
+    prevHash = getLastHash(filePath);
+  } catch (e) {
+    if (!(e instanceof EvidenceLedgerError)) throw e;
+    if (!warnedCorrupt) {
+      warnedCorrupt = true;
+      process.stderr.write(`zn-gate: the evidence log ${filePath} is damaged (${e.message}) This event was not recorded. Run 'zn-gate evidence --verify' for details.\n`);
+    }
+    return null;
+  }
   const timestamp = new Date().toISOString();
   const id = 'ev_' + Date.now().toString(36) + '_' + crypto.randomBytes(4).toString('hex');
   
@@ -127,15 +182,27 @@ function verifyEvidenceLedger(filePath = EVIDENCE_FILE) {
     return { valid: true, total: 0, verified: 0, broken_index: null, error: null };
   }
 
-  const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n').filter(Boolean);
+  let lines;
+  let bad;
+  try {
+    ({ lines, bad } = readLedger(filePath));
+  } catch (e) {
+    return { valid: false, total: 0, verified: 0, broken_index: 0, error: e.message };
+  }
   let expectedPrevHash = GENESIS_HASH;
 
   for (let i = 0; i < lines.length; i++) {
+    if (bad.has(i)) {
+      return { valid: false, total: lines.length, verified: i, broken_index: i, error: bad.get(i) };
+    }
     let rec;
     try {
       rec = JSON.parse(lines[i]);
     } catch (e) {
       return { valid: false, total: lines.length, verified: i, broken_index: i, error: `Malformed JSON at line ${i + 1}: ${e.message}` };
+    }
+    if (rec === null || typeof rec !== 'object' || Array.isArray(rec)) {
+      return { valid: false, total: lines.length, verified: i, broken_index: i, error: `Malformed record at line ${i + 1}: not a JSON object.` };
     }
 
     if (rec.prev_hash !== expectedPrevHash) {
@@ -188,7 +255,12 @@ function getEvidenceStats(filePathOrLimit = EVIDENCE_FILE, maybeLimit = 50) {
     return { total: 0, blocks: 0, blocked: 0, allows: 0, allowed: 0, shadows: 0, valid: true, top_rules: {}, top_tools: {}, recent: [] };
   }
 
-  const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n').filter(Boolean);
+  let lines;
+  try {
+    ({ lines } = readLedger(filePath));
+  } catch (e) {
+    return { total: 0, blocks: 0, blocked: 0, allows: 0, allowed: 0, shadows: 0, valid: false, error: e.message, top_rules: {}, top_tools: {}, recent: [] };
+  }
   let blocked = 0;
   let allowed = 0;
   let shadows = 0;
@@ -199,6 +271,7 @@ function getEvidenceStats(filePathOrLimit = EVIDENCE_FILE, maybeLimit = 50) {
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
       const rec = JSON.parse(lines[i]);
+      if (rec === null || typeof rec !== 'object') continue;
       if (rec.verdict === 'shadow') {
         shadows++;
       } else if (rec.verdict === 'block') {
@@ -224,6 +297,7 @@ function getEvidenceStats(filePathOrLimit = EVIDENCE_FILE, maybeLimit = 50) {
     allowed,
     shadows,
     valid: check.valid,
+    error: check.error,
     top_rules: topRules,
     top_tools: topTools,
     recent,
@@ -251,9 +325,15 @@ function exportEvidenceLedger(filePath = EVIDENCE_FILE, format = 'jsonl') {
     };
   }
 
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
   const verifyResult = verifyEvidenceLedger(filePath);
+  let raw = '';
+  let lines = [];
+  try {
+    raw = new TextDecoder('utf-8').decode(fs.readFileSync(filePath));
+    lines = readLedger(filePath).lines;
+  } catch {
+    // Unreadable: verifyResult already carries the reason.
+  }
 
   let tipHash = GENESIS_HASH;
   if (lines.length > 0) {
@@ -292,6 +372,7 @@ function exportEvidenceLedger(filePath = EVIDENCE_FILE, format = 'jsonl') {
       content: rows.join('\n') + '\n',
       format: 'csv',
       valid: verifyResult.valid,
+      error: verifyResult.error,
       tip_hash: tipHash,
       total: lines.length,
     };
@@ -301,6 +382,7 @@ function exportEvidenceLedger(filePath = EVIDENCE_FILE, format = 'jsonl') {
     content: raw.endsWith('\n') ? raw : raw + '\n',
     format: 'jsonl',
     valid: verifyResult.valid,
+    error: verifyResult.error,
     tip_hash: tipHash,
     total: lines.length,
   };
@@ -564,6 +646,7 @@ Press Ctrl+C to stop dashboard.
 
 module.exports = {
   logEvidence,
+  EvidenceLedgerError,
   verifyEvidenceLedger,
   getEvidenceStats,
   exportEvidenceLedger,

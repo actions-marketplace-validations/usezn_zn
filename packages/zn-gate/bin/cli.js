@@ -909,6 +909,7 @@ async function main() {
     if (command === 'export' || options.export) {
       const format = (options.format || 'jsonl').toLowerCase();
       const res = exportEvidenceLedger(EVIDENCE_FILE, format);
+      if (!res.valid) process.stderr.write(`Tamper detected: ${res.error}\n`);
       if (options.output) {
         fs.writeFileSync(options.output, res.content, 'utf8');
         process.stdout.write(`Exported ${res.total} audit records to ${options.output} (Integrity: ${res.valid ? 'VALID' : 'TAMPERED'}).\n`);
@@ -946,7 +947,7 @@ async function main() {
   Blocked Drops : ${stats.blocks}
   Allowed Passes: ${stats.allows}
   Shadow Alerts : ${stats.shadows || 0}
-  Integrity     : ${stats.valid ? '\x1b[32mVALID\x1b[0m' : '\x1b[31mCORRUPTED\x1b[0m'}
+  Integrity     : ${stats.valid ? '\x1b[32mVALID\x1b[0m' : '\x1b[31mCORRUPTED\x1b[0m'}${stats.valid ? '' : '\n  Details       : ' + stats.error}
 ───────────────────────────────────────────────────
 Recent Events (last ${Math.min(options.tail, stats.total)}):
 `);

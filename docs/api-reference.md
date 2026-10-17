@@ -28,6 +28,7 @@ const { logEvidence, verifyEvidenceLedger } = require('zn-gate/lib/evidence');
 
 ### `verifyEvidenceLedger(filePath)`
 - Verifies the SHA-256 hash chain in `~/.zn/evidence.jsonl`. It detects accidental or partial edits; it is not tamper-proof against someone with write access to the file.
+- A log that holds invalid bytes or a line that cannot be read is reported as corrupted (`valid: false` with the line number in `error`), never as a crash. Writing never restarts the chain on top of a damaged log: `logEvidence` / `log_evidence` skip the write, print one warning and return `null` / `None`, and the command carries on.
 
 ---
 

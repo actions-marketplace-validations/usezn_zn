@@ -423,6 +423,8 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         fmt = getattr(args, "format", "jsonl")
         res = export_evidence_ledger(format=fmt)
         out_content = res.get("content", "")
+        if not res.get("valid"):
+            print(f"{_icon(ALERT, sys.stderr)} Tamper detected: {res.get('error')}", file=sys.stderr)
         if getattr(args, "output", None):
             Path(args.output).write_text(out_content, encoding="utf-8")
             print(f"Exported {res.get('total')} records to {args.output} (Integrity: {'VALID' if res.get('valid') else 'TAMPERED'}).")
@@ -435,7 +437,10 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     print(f"  Total Events   : {stats.get('total', 0)}")
     print(f"  Blocked Drops  : {stats.get('blocks', 0)}")
     print(f"  Allowed Passes : {stats.get('allows', 0)}")
-    print(f"  Integrity      : {'VALID' if stats.get('valid') else 'CORRUPTED'}\n")
+    print(f"  Integrity      : {'VALID' if stats.get('valid') else 'CORRUPTED'}")
+    if not stats.get("valid") and stats.get("error"):
+        print(f"  Details        : {stats.get('error')}")
+    print()
     return 0
 
 
