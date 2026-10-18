@@ -77,6 +77,7 @@ function acquireLock(lockPath, waitMs = LOCK_WAIT_MS) {
   const deadline = Date.now() + waitMs;
   const token = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
   let delay = 2;
+  let missing = 0;
   for (;;) {
     try {
       const fd = fs.openSync(lockPath, 'wx', LEDGER_FILE_MODE);
@@ -87,7 +88,14 @@ function acquireLock(lockPath, waitMs = LOCK_WAIT_MS) {
       // lock is not there, the real problem is permissions: report it at once, do not wait.
       const winBusy = process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY');
       if (!(e.code === 'EEXIST' || winBusy)) throw e;
-      if (winBusy && !fs.existsSync(lockPath)) throw e;
+      if (winBusy && !fs.existsSync(lockPath)) {
+        // The lock may have been deleted a moment after the error; only a repeat means a real
+        // permission problem.
+        if (++missing >= 5) throw e;
+        sleepMs(5);
+        continue;
+      }
+      missing = 0;
     }
     if (Date.now() >= deadline) throw new EvidenceLockError('another process is writing to the log');
     let stale = false;

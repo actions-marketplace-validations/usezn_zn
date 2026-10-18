@@ -172,6 +172,7 @@ def _acquire_lock(lock_path: str, wait: float = LOCK_WAIT) -> str:
     deadline = time.monotonic() + wait
     token = f"{os.getpid()}:{secrets.token_hex(8)}"
     delay = 0.002
+    missing = 0
     while True:
         try:
             fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -185,8 +186,17 @@ def _acquire_lock(lock_path: str, wait: float = LOCK_WAIT) -> str:
         except OSError as e:
             # On Windows a lock that is being deleted answers EPERM/EACCES instead of EEXIST. If the
             # lock is not there, the real problem is permissions: report it at once, do not wait.
-            if not (os.name == "nt" and e.errno in _WIN_BUSY) or not os.path.exists(lock_path):
+            if not (os.name == "nt" and e.errno in _WIN_BUSY):
                 raise
+            if not os.path.exists(lock_path):
+                # The lock may have been deleted a moment after the error; only a repeat means a
+                # real permission problem.
+                missing += 1
+                if missing >= 5:
+                    raise
+                time.sleep(0.005)
+                continue
+            missing = 0
         if time.monotonic() >= deadline:
             raise EvidenceLockError("another process is writing to the log")
         stale = False
