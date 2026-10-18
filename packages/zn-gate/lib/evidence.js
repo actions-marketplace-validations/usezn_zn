@@ -46,11 +46,73 @@ function appendLedgerLine(filePath, line) {
 
 class EvidenceLedgerError extends Error {}
 
+// Writers take an exclusive lock around "read the last hash + append", so two processes (for
+// example two agents in the same project) cannot both chain onto the same record and fork the
+// log. The lock is a sidecar file `<log>.lock` created with O_EXCL; the Python package uses the
+// same file and the same rules, so the two exclude each other. A writer waits at most
+// LOCK_WAIT_MS; if it cannot get the lock it skips the write (fail closed: the log is never
+// written without the lock) and the caller goes on. A lock file older than LOCK_STALE_MS
+// belongs to a process that died and is removed.
+const LOCK_WAIT_MS = 2000;
+const LOCK_STALE_MS = 10000;
+
+class EvidenceLockError extends Error {}
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function acquireLock(lockPath) {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let delay = 2;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx', LEDGER_FILE_MODE);
+      try { fs.writeSync(fd, String(process.pid)); } catch { /* the pid is informational */ }
+      fs.closeSync(fd);
+      return;
+    } catch (e) {
+      // On Windows a lock that is being deleted answers EPERM/EACCES instead of EEXIST.
+      const busy = e.code === 'EEXIST'
+        || (process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY'));
+      if (!busy) throw e;
+    }
+    if (Date.now() >= deadline) throw new EvidenceLockError('another process is writing to the log');
+    try {
+      if (Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+        fs.unlinkSync(lockPath);
+        continue;
+      }
+    } catch {
+      continue; // released or removed by someone else meanwhile: try again at once
+    }
+    sleepMs(delay + Math.floor(Math.random() * delay));
+    delay = Math.min(delay * 2, 50);
+  }
+}
+
+function releaseLock(lockPath) {
+  try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+}
+
+// Canonical serialization of a record for hashing. Node writes UTF-8 as is; Python used to
+// escape non-ASCII as \uXXXX. Verification accepts both forms, so a log written by either
+// package (or by an older version) verifies in both. New records use the plain form.
+function canonical(record) {
+  return JSON.stringify(record);
+}
+function canonicalAscii(record) {
+  return JSON.stringify(record).replace(/[\u007f-￿]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+
+const HASH_RE = /^[0-9a-f]{64}$/;
+
 // A damaged log makes logEvidence skip its writes. The warning is shown on the first skipped
 // write and again at most every WARN_INTERVAL_MS, so the long-running MCP proxy (shield) does
 // not go quiet after one line. Time based, not count based, so a quiet session still hears it.
 const WARN_INTERVAL_MS = 5 * 60 * 1000;
 let lastWarnAt = null;
+let lastWriteWarnAt = null;
 
 /** Tells the user how to get logging going again after damage. */
 function recoveryHint(filePath = EVIDENCE_FILE) {
@@ -165,7 +227,7 @@ function getLastHash(filePath = EVIDENCE_FILE) {
     throw new EvidenceLedgerError(`Malformed JSON in the last line: ${e.message}`);
   }
   const hash = parsed && typeof parsed === 'object' ? parsed.record_hash : undefined;
-  if (typeof hash !== 'string' || hash.length !== 64) {
+  if (typeof hash !== 'string' || !HASH_RE.test(hash)) {
     throw new EvidenceLedgerError('The last record has no valid record_hash.');
   }
   return hash;
@@ -178,10 +240,11 @@ function getLastHash(filePath = EVIDENCE_FILE) {
  * @param {string} [filePath] - Optional ledger path
  * @returns {object|null} The recorded evidence record, or null when the existing ledger is
  *   damaged: nothing is appended (the chain is never restarted), a warning is printed to
- *   stderr (first time, then at most every 5 minutes), and the caller carries on.
+ *   stderr (first time, then at most every 5 minutes), and the caller carries on. It also
+ *   returns null (with a warning) when the log cannot be written (permissions, disk) or the
+ *   write lock stays busy for 2 seconds; it never throws for a log problem.
  */
 function logEvidence(event, filePath = EVIDENCE_FILE) {
-  ensureZnDir(filePath);
   if (filePath === EVIDENCE_FILE) {
     require('./stats').record({
       layer: 'shield', agent: event.agent || event.agent_environment || 'other', checked: 1,
@@ -189,21 +252,45 @@ function logEvidence(event, filePath = EVIDENCE_FILE) {
     });
   }
 
-  let prevHash;
+  const lockPath = filePath + '.lock';
+  let locked = false;
   try {
-    prevHash = getLastHash(filePath);
+    ensureZnDir(filePath);
+    acquireLock(lockPath);
+    locked = true;
+    let prevHash;
+    try {
+      prevHash = getLastHash(filePath);
+    } catch (e) {
+      if (!(e instanceof EvidenceLedgerError)) throw e;
+      const now = Date.now();
+      if (lastWarnAt === null || now - lastWarnAt >= WARN_INTERVAL_MS) {
+        lastWarnAt = now;
+        process.stderr.write(`zn-gate: the evidence log ${filePath} is damaged (${e.message}) Events are not being recorded. Run 'zn-gate evidence --verify' for details. ${recoveryHint(filePath)}\n`);
+      }
+      return null;
+    }
+    const finalRecord = buildRecord(event, prevHash);
+    appendLedgerLine(filePath, JSON.stringify(finalRecord) + '\n');
+    return finalRecord;
   } catch (e) {
-    if (!(e instanceof EvidenceLedgerError)) throw e;
+    // A log problem (no permission, a full disk, a busy lock) must never break the caller.
     const now = Date.now();
-    if (lastWarnAt === null || now - lastWarnAt >= WARN_INTERVAL_MS) {
-      lastWarnAt = now;
-      process.stderr.write(`zn-gate: the evidence log ${filePath} is damaged (${e.message}) Events are not being recorded. Run 'zn-gate evidence --verify' for details. ${recoveryHint(filePath)}\n`);
+    if (lastWriteWarnAt === null || now - lastWriteWarnAt >= WARN_INTERVAL_MS) {
+      lastWriteWarnAt = now;
+      const why = e instanceof EvidenceLockError ? e.message : (e.code || e.message);
+      process.stderr.write(`zn-gate: cannot write to the evidence log ${filePath} (${why}). Events are not being recorded; the log is left as it is.\n`);
     }
     return null;
+  } finally {
+    if (locked) releaseLock(lockPath);
   }
+}
+
+function buildRecord(event, prevHash) {
   const timestamp = new Date().toISOString();
   const id = 'ev_' + Date.now().toString(36) + '_' + crypto.randomBytes(4).toString('hex');
-  
+
   const payloadStr = typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload || '');
   const payloadSha256 = crypto.createHash('sha256').update(payloadStr).digest('hex');
 
@@ -225,16 +312,13 @@ function logEvidence(event, filePath = EVIDENCE_FILE) {
     prev_hash: prevHash,
   };
 
-  // Compute record hash over prev_hash + canonical serialized content
+  // Record hash over prev_hash + canonical serialized content.
   const recordHash = crypto
     .createHash('sha256')
-    .update(prevHash + ':' + JSON.stringify(baseRecord))
+    .update(prevHash + ':' + canonical(baseRecord))
     .digest('hex');
 
-  const finalRecord = { ...baseRecord, record_hash: recordHash };
-
-  appendLedgerLine(filePath, JSON.stringify(finalRecord) + '\n');
-  return finalRecord;
+  return { ...baseRecord, record_hash: recordHash };
 }
 
 /**
@@ -282,12 +366,9 @@ function verifyEvidenceLedger(filePath = EVIDENCE_FILE) {
     }
 
     const { record_hash, ...baseRecord } = rec;
-    const computedHash = crypto
-      .createHash('sha256')
-      .update(expectedPrevHash + ':' + JSON.stringify(baseRecord))
-      .digest('hex');
-
-    if (computedHash !== record_hash) {
+    const hashOf = (text) => crypto.createHash('sha256').update(expectedPrevHash + ':' + text).digest('hex');
+    // Records written by Python (or older versions) may have non-ASCII escaped: accept both forms.
+    if (hashOf(canonical(baseRecord)) !== record_hash && hashOf(canonicalAscii(baseRecord)) !== record_hash) {
       return {
         valid: false,
         total: lines.length,
