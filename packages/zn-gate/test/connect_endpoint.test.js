@@ -127,6 +127,9 @@ test('the analyze_prompt MCP tool sends the stored key only to api.usezn.com', a
 test('status shows the fixed endpoint for the stored key', async () => {
   await withConnectedKey(async () => {
     assert.equal(client.usesStoredKey({}), true);
+    // The marker alone turns the cloud on: a key given without ZN_CLOUD=1 takes no part.
+    assert.equal(client.usesStoredKey({ apiKey: freshKey() }), true);
+    process.env.ZN_CLOUD = '1';
     assert.equal(client.usesStoredKey({ apiKey: freshKey() }), false);
   });
 });

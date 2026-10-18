@@ -579,6 +579,159 @@ test('a read placed after thousands of chained commands is still found, and a lo
   assert.equal(policy.bashDenial(heredoc, o), null, 'a 1200-line heredoc writing a file');
 });
 
+/* ------------------- here-document bodies read as data ------------------- */
+
+test('the body of a here-document a program reads as data is not refused for a glob or a path in it', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.mkdirSync(path.join(dir, '.aws'));
+  fs.writeFileSync(path.join(dir, '.aws', 'credentials'), '[default]\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  // Code with a glob, brackets, braces and secret-looking paths, written to a file: all data.
+  let body = '';
+  for (let i = 0; body.length < 90 * 1024; i++) body += 'const v' + i + ' = a[' + i + '] * b; // .env ~/.aws/credentials "quoted"\n';
+  const cmd = (head, tail) => head + '\n' + body + tail;
+  assert.equal(policy.bashDenial(cmd("cat > generated.js <<'EOF'", 'EOF'), o), null, 'quoted delimiter');
+  assert.equal(policy.bashDenial(cmd('cat > generated.js <<EOF', 'EOF'), o), null, 'bare delimiter');
+  assert.equal(policy.bashDenial(cmd('tee generated.js <<"EOF"', 'EOF'), o), null, 'double-quoted delimiter');
+  assert.equal(policy.bashDenial(cmd("dd of=generated.js <<'EOF'", 'EOF'), o), null, 'dd');
+  assert.equal(policy.bashDenial(cmd('cat > generated.js <<-EOF', '\tEOF'), o), null, '<<- strips tabs');
+  assert.equal(policy.bashDenial(cmd('cat > generated.js <<\\EOF', 'EOF'), o), null, 'backslash-quoted delimiter');
+  assert.equal(policy.bashDenial(cmd("sudo tee /tmp/generated.js <<'EOF'", 'EOF'), o), null, 'behind a wrapper');
+  // Two here-documents on one line: each body ends at its own delimiter.
+  assert.equal(policy.bashDenial("cat <<'A' <<'B'\n* ? [a-z]\nA\n{ }\nB", o), null, 'two bodies on one line');
+  // A program run before the command does not make the body code: only what runs
+  // after the operator can run it, so a program or a relative path before it is
+  // not a reason to keep the check.
+  assert.equal(policy.bashDenial("python3 build.py && cat > generated.js <<'EOF'\n* .env ~/.aws/credentials\nEOF", o), null, 'a program before the here-document');
+  assert.equal(policy.bashDenial("mkdir -p ./out && tee ./out/generated.js <<'EOF'\n* .env\nEOF", o), null, 'a relative path before the here-document');
+  // A redirect after the operator names the file the body is written to: its
+  // target is not a command, so the body stays data.
+  assert.equal(policy.bashDenial("cat <<'EOF' > generated.js\n* .env ~/.aws/credentials\nEOF", o), null, 'a relative redirect target after the operator');
+  assert.equal(policy.bashDenial("cat <<'EOF' > " + path.join(dir, 'generated.js') + "\n* .env\nEOF", o), null, 'an absolute redirect target after the operator');
+});
+
+test('a here-document that runs its body as code, or a read on the command line, is still refused', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-deny-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
+  fs.mkdirSync(path.join(dir, '.aws'));
+  fs.writeFileSync(path.join(dir, '.aws', 'credentials'), '[default]\n');
+  const o = { cwd: dir, home: dir, env: {} };
+  const body = Array.from({ length: 2000 }, (_, i) => 'line ' + i).join('\n');
+  // The read stays on the command line, before or after the here-document.
+  assert.ok(policy.bashDenial("cat .env <<'EOF'\n" + body + '\nEOF', o), 'read before the here-document');
+  assert.ok(policy.bashDenial("cat <<'EOF'\n" + body + '\nEOF\ncat .env', o), 'read after the here-document');
+  // A bare delimiter expands the body, so a substitution in it still reads the file.
+  assert.ok(policy.bashDenial('cat > out.txt <<EOF\n$(cat .env)\nEOF', o), 'command substitution');
+  assert.ok(policy.bashDenial('cat > out.txt <<EOF\n`cat .aws/credentials`\nEOF', o), 'backticks');
+  assert.ok(policy.bashDenial('cat > out.txt <<EOF\n$(cat .env)\n' + body, o), 'unterminated body');
+  // A shell, an interpreter or apply_patch runs the body as code, so it keeps its check.
+  assert.ok(policy.bashDenial("bash <<'EOF'\ncat .env\nEOF", o), 'bash reads code from stdin');
+  assert.ok(policy.bashDenial("sudo bash <<EOF\ncat .aws/credentials\nEOF", o), 'bash behind a wrapper');
+  assert.ok(policy.bashDenial("python3 - <<'PY'\nopen('.env').read()\nPY", o), 'python reads code from stdin');
+  // A body the command pipes somewhere, groups, or feeds to xargs is not data either.
+  assert.ok(policy.bashDenial("cat <<'EOF' | sh\ncat .env\nEOF", o), 'piped to a shell');
+  assert.ok(policy.bashDenial("dd <<'EOF' | sh\ncat .env\nEOF", o), 'piped to a shell after dd');
+  assert.ok(policy.bashDenial("tee >(sh) <<'EOF'\ncat .env\nEOF", o), 'process substitution');
+  assert.ok(policy.bashDenial('( sh ) <<EOF\ncat .env\nEOF', o), 'group close before the operator');
+  assert.ok(policy.bashDenial('{ sh; } <<EOF\ncat .env\nEOF', o), 'brace group before the operator');
+  assert.ok(policy.bashDenial('<<EOF sh\ncat .env\nEOF', o), 'operator before the program');
+  assert.ok(policy.bashDenial("xargs cat <<'EOF'\n.env\nEOF", o), 'xargs turns its input into a command');
+  // A command that writes a script and then runs it keeps the old check.
+  for (const run of ['bash x.sh', 'sh x.sh', 'source x.sh', './x.sh']) {
+    assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\n" + run, o), 'written and run: ' + run);
+  }
+  // A pipe or a process substitution before the operator makes the command a
+  // pipeline, not a plain simple data command: the body keeps the check.
+  assert.ok(policy.bashDenial("echo hi | cat <<'EOF'\ncat .env\nEOF", o), 'pipe before the here-document');
+  assert.ok(policy.bashDenial("cat <(sh) <<'EOF'\ncat .env\nEOF", o), 'input process substitution before the here-document');
+  assert.ok(policy.bashDenial("tee >(sh) cat <<'EOF'\ncat .env\nEOF", o), 'output process substitution before the program');
+  // A script the same command writes and then runs by another route keeps the check.
+  assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\n. x.sh", o), 'written and sourced with dot');
+  assert.ok(policy.bashDenial("cat > x.sh <<'EOF'\ncat .env\nEOF\ncat x.sh | sh", o), 'written then piped to a shell');
+  // A group opened on an earlier line counts, also when the closing line pipes
+  // the body to a program that runs its input (awk, sed).
+  assert.ok(policy.bashDenial("{\ncat <<'EOF'\ncat .env\nEOF\n} | awk '{system($0)}'", o), 'a group opened on an earlier line, piped to awk');
+  assert.ok(policy.bashDenial("(\ncat <<'EOF'\ncat .env\nEOF\n) | sed e", o), 'a substitution opened on an earlier line, piped to sed');
+  // The `)` of a `case` pattern does not close an open group: the body stays
+  // code when the group is piped to a program that runs its input.
+  assert.ok(policy.bashDenial("{ case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n} | awk '{system($0)}'", o), 'a case-pattern paren inside a group piped to awk');
+  // A pipe after the first data body keeps the check: a group or a substitution
+  // opened on an earlier line can run it and the walk cannot tell a `case`
+  // pattern from a group close.
+  assert.ok(policy.bashDenial("( case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n) | awk '{system($0)}'", o), 'a case-pattern paren in a subshell piped to awk');
+  assert.ok(policy.bashDenial("( case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n) | sed e", o), 'a case-pattern paren in a subshell piped to sed');
+  assert.ok(policy.bashDenial("y=$( case x in a) ;; esac\ncat <<'EOF'\ncat .env\nEOF\n| awk '{system($0)}')", o), 'a case-pattern paren in a command substitution piped to awk');
+  // A data program with an option that runs a program is not a plain data program.
+  assert.ok(policy.bashDenial("split -n 1 --filter=sh <<'EOF'\ncat .env\nEOF", o), 'split with a filter program');
+  assert.ok(policy.bashDenial("sort -S 1 --compress-program=sh <<'EOF'\ncat .env\nEOF", o), 'sort with a compress program');
+  // A command that redefines how a name resolves keeps the check on its bodies.
+  assert.ok(policy.bashDenial("cat() { sh; }; cat <<'EOF'\ncat .env\nEOF", o), 'a function redefines the data program');
+  assert.ok(policy.bashDenial("alias cat=sh; cat <<'EOF'\ncat .env\nEOF", o), 'the command sets an alias');
+  assert.ok(policy.bashDenial("cat > f <<'EOF'\ncat .env\nEOF\nPATH=. cat </dev/null", o), 'the command changes PATH');
+  // A file the same command writes and then runs by an absolute path keeps the check.
+  const abs = path.join(dir, 'x.sh');
+  assert.ok(policy.bashDenial("cat > " + abs + " <<'EOF'\ncat .env\nEOF\nchmod +x " + abs + '; ' + abs, o), 'written and run by an absolute path');
+  // Also behind a wrapper: the wrapper is skipped before the command is read.
+  for (const run of ['nohup ' + abs, 'timeout 5 ' + abs, 'exec ' + abs, 'sudo ' + abs]) {
+    assert.ok(policy.bashDenial("cat > " + abs + " <<'EOF'\ncat .env\nEOF\n" + run, o), 'written and run behind a wrapper: ' + run);
+  }
+  // A file written from a body and only read as an argument is not run: the body stays data.
+  assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n* .env\nEOF\ngrep x out.txt", o), null, 'written and only read as an argument');
+  // A quoted delimiter turns the expansions off: the same text is data.
+  assert.equal(policy.bashDenial("cat > out.txt <<'EOF'\n$(cat .env)\nEOF", o), null, 'quoted: data');
+  // A comment that spells a here-document does not eat the command after it.
+  assert.ok(policy.bashDenial('# example: cat <<EOF\ncat .env', o), 'comment');
+  // `<<` in arithmetic is a shift, not a here-document.
+  assert.ok(policy.bashDenial('echo $(( 1 <<2 ))\ncat .env\n2', o), 'arithmetic shift');
+  // A glob on the command line itself is still refused.
+  assert.ok(policy.bashDenial('cat *', o), 'glob on the command line');
+});
+
+test('a 100 KB here-document read as data is checked in milliseconds', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-big-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  const line = 'export const value = a * b + 1; // 100 KB of code written to a file\n';
+  let body = '';
+  while (body.length + line.length < 100 * 1024 - 64) body += line;
+  const cmd = "cat > generated.js <<'EOF'\n" + body + 'EOF';
+  const t0 = process.hrtime.bigint();
+  const deny = policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.equal(deny, null, 'the body is data, so the command is allowed');
+  assert.ok(ms < 25, 'checked in ' + ms + ' ms');
+});
+
+test('10 000 here-document operators on one line are checked within the time budget', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-many-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  const cmd = 'cat ' + "<<'D' ".repeat(10000);
+  assert.ok(cmd.length < policy.SHELL_SCAN_CAP, 'the case is under the scan cap');
+  const t0 = process.hrtime.bigint();
+  const deny = policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.equal(deny, null, 'the bodies are data, so the command is allowed');
+  assert.ok(ms < 1500, 'checked in ' + ms + ' ms');
+});
+
+test('50 000 parentheses on one line are checked within the time budget', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-heredoc-parens-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const o = { cwd: dir, home: dir, env: {} };
+  // 25 000 `((` runs on the operator line: an unclosed arithmetic run must be
+  // read once, not rescanned for every `(`, or the check becomes quadratic.
+  const cmd = 'cat <<a ' + '(('.repeat(25000) + 'x\nb\na';
+  assert.ok(cmd.length < policy.SHELL_SCAN_CAP, 'the case is under the scan cap');
+  const t0 = process.hrtime.bigint();
+  policy.bashDenial(cmd, o);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(ms < 1500, 'checked in ' + ms + ' ms');
+});
+
 test('thousands of cd in one command are followed within the time budget', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zn-manycd-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

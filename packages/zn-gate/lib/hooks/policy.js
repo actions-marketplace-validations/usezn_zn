@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-17.20';
+const POLICY_RULES_VERSION = '2026-10-17.28';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -923,7 +923,7 @@ function hasNetworkSignals(cmd) {
 }
 
 // The program is zn, zn-gate (also with a version: npx -y zn-gate@1.6.0, pnpm dlx zn-gate@latest) or the bin file.
-const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|hooks\s+(install|uninstall)|init(?![^\n;&|#`$()'"<>\\]{0,512}[ \t]--(?:wrap-mcp|dry-run|revert|shadow)(?=[ \t\n]|$))|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
+const ZN_ADMIN_RE = /(^|[\s;&|(`$'"\\\/])((?:zn|zn-gate(?:@[^\s"'`;&|]+)?|cli\.js))(\.cmd|\.js|\.ps1)?["']?\s+(?:--\s+)?(secret\s+(set|get|rm|remove|import|adopt|approve|allow|reveal|link)|env\s+(shadow|unshadow)|unlock|lock|connect|disconnect|hooks\s+(install|uninstall)|init(?![^\n;&|#`$()'"<>\\]{0,512}[ \t]--(?:wrap-mcp|dry-run|revert|shadow)(?=[ \t\n]|$))|stats(?:\s+(?:-{1,2}[^\s-]\S*|\d+))*\s+share\s+on|["']?pins["']?\s+["']?approve)\b/i;
 
 // `npm exec` (and `npm x`) keeps the options after the package for itself unless a `--` comes first, so
 // `npm exec zn-gate init --dry-run` runs the guided init: the options do not count there. Checked per simple
@@ -1121,6 +1121,398 @@ function codesOfCommand(w, out) {
   }
 }
 
+/* --------------------------- here-documents --------------------------- */
+
+/*
+ * The body of a here-document (`cat > f <<'EOF' ... EOF`) is data the shell
+ * writes to a file or feeds to a program that reads it as data, not words of
+ * the command line: a `*` in it names no file and a path in it is not read.
+ * Such a body is dropped before the command is read, which also keeps a 100 KB
+ * write cheap to check. A quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`)
+ * turns the expansions off, so the body is dropped whole. A bare delimiter
+ * (`<<EOF`) still expands the body first, so its `$( )`, backticks and `$VAR`
+ * are put back as words; dropping them would hide a substitution that reads a
+ * secret file.
+ *
+ * Only the body of a plain data command is dropped: the command that holds the
+ * operator must be a plain simple one (no pipe, no process substitution, no
+ * group closed before it), its program must be a known data program (`cat`,
+ * `tee`, `dd`, ...) and not empty, and the command must not run code after the
+ * here-document. Every other body keeps the check it had, which is the safe side.
+ */
+
+// A here-document operator starts a redirect. `<<` glued to the end of a word
+// (`x<<y`, an arithmetic shift) is left alone: missing one only means its body
+// is checked as if it were code, which is the safe side.
+const HEREDOC_START_RE = /[\s;&|(\n]/;
+// Characters that end a run and are read by stripHeredocs: quotes, escapes, a
+// comment, a line break, and every separator or group bracket of the command.
+const HEREDOC_SPECIAL_RE = /[<>(){};&|`'"\\#\n]/g;
+
+/** The here-document operator at `from` (`<<`, `<<-`) with its delimiter, or null. */
+function heredocAt(s, from) {
+  if (s[from] !== '<' || s[from + 1] !== '<' || s[from + 2] === '<') return null;
+  if (from > 0 && !HEREDOC_START_RE.test(s[from - 1])) return null;
+  let j = from + 2;
+  const stripTabs = s[j] === '-';
+  if (stripTabs) j++;
+  let quoted = false;
+  let delimiter = '';
+  while (j < s.length) {
+    const c = s[j];
+    if (c === "'" || c === '"') {
+      const close = s.indexOf(c, j + 1);
+      if (close === -1) return null;
+      quoted = true;
+      delimiter += s.slice(j + 1, close);
+      j = close + 1;
+      continue;
+    }
+    if (c === '\\') {
+      if (j + 1 >= s.length) return null;
+      quoted = true;
+      delimiter += s[j + 1];
+      j += 2;
+      continue;
+    }
+    if (/[\s;&|()<>]/.test(c)) break;
+    delimiter += c;
+    j++;
+  }
+  if (!delimiter) return null;
+  return { doc: { delimiter, quoted, stripTabs }, end: j };
+}
+
+/** What an unquoted here-document body still runs, as words: its `$( )`, backticks and `$VAR`. */
+function heredocExpansions(body) {
+  let out = '';
+  const add = (text) => { out += (out && !/\s$/.test(out) ? ' ' : '') + text; };
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '\\') { i++; continue; }
+    if (ch === '`') {
+      const end = body.indexOf('`', i + 1);
+      const stop = end === -1 ? body.length : end + 1;
+      add(body.slice(i, stop));
+      i = stop - 1;
+      continue;
+    }
+    if (ch !== '$') continue;
+    const n = body[i + 1];
+    if (n === '(') {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < body.length; j++) {
+        if (body[j] === '(') depth++;
+        else if (body[j] === ')' && --depth === 0) { j++; break; }
+      }
+      add(body.slice(i, j));
+      i = j - 1;
+    } else if (n === '{') {
+      const end = body.indexOf('}', i + 2);
+      const stop = end === -1 ? body.length : end + 1;
+      add(body.slice(i, stop));
+      i = stop - 1;
+    } else {
+      const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(body.slice(i + 1));
+      if (name) { add('$' + name[0]); i += name[0].length; }
+    }
+  }
+  return out;
+}
+
+/*
+ * Drop the bodies of the pending here-documents from `s`, starting at the line
+ * after their operator, and return the index to read on from. `keep` receives
+ * what is left of each unquoted body. A delimiter with no closing line makes
+ * the shell feed the rest of the input as the body (it is not run), so the rest
+ * is dropped too.
+ */
+function skipHeredocBodies(s, from, pending, keep) {
+  let cursor = from;
+  for (const doc of pending) {
+    const bodyStart = cursor;
+    let termStart = -1;
+    let pos = cursor;
+    for (;;) {
+      const nl = s.indexOf('\n', pos);
+      const lineEnd = nl === -1 ? s.length : nl;
+      let line = s.slice(pos, lineEnd);
+      if (doc.stripTabs) line = line.replace(/^\t+/, '');
+      if (line.replace(/\r$/, '') === doc.delimiter) { termStart = pos; break; }
+      if (nl === -1) break;
+      pos = nl + 1;
+    }
+    const bodyEnd = termStart === -1 ? s.length : termStart;
+    if (!doc.quoted) keep(heredocExpansions(s.slice(bodyStart, bodyEnd)));
+    if (termStart === -1) return s.length;
+    const nl = s.indexOf('\n', termStart);
+    cursor = nl === -1 ? s.length : nl + 1;
+  }
+  return cursor;
+}
+
+/**
+ * The command with the bodies of its data here-documents removed (see above).
+ * A body is kept when its command is not a plain simple command with a known
+ * data program: a pipe, a process substitution or an open group (also one opened
+ * on an earlier line) makes that command not simple, a command that writes a
+ * file and then runs it or that redefines how a name resolves keeps the check,
+ * and so does a program that runs code after the here-document. `budget` bounds
+ * the work; past it the command is left whole.
+ */
+function stripHeredocs(cmd, budget) {
+  const s = String(cmd);
+  if (s.indexOf('<<') === -1) return s;
+  const parts = [];
+  let outLen = 0;
+  const keep = (t) => { if (t) { parts.push(t); outLen += t.length; } };
+  let quote = null;
+  let pending = [];
+  // State of the simple command that holds the operator. A body is data only in
+  // a plain simple command: no pipe or process substitution, no group closed
+  // before it, and a non-empty known data program.
+  let segStart = 0;
+  let segProgram; // the program of the segment, computed once
+  let segPipe = false;
+  let segClose = false;
+  let parens = 0; // `(` and `)` open here; a `)` with no `(` is a `case` pattern
+  let braces = 0; // `{` and `}` open here; both are kept across lines
+  let hasData = false;
+  let tailStart = -1; // output length just before the first data operator
+  let i = 0;
+  let ticks = 0;
+  // A separator ends the command: the next one starts after it, plain again.
+  const reset = (at) => { segStart = at; segProgram = undefined; segPipe = false; segClose = false; };
+  // A pipe, a process substitution or a group after an operator makes its body code.
+  const drop = () => { if (pending.length) pending = []; };
+  while (i < s.length) {
+    if ((++ticks & 4095) === 0 && overBudget(budget, 0)) return s;
+    if (quote === "'") {
+      const end = s.indexOf("'", i + 1);
+      keep(s.slice(i, end === -1 ? s.length : end + 1));
+      i = end === -1 ? s.length : end + 1;
+      if (end !== -1) quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      let j = i;
+      while (j < s.length && s[j] !== '"') j += s[j] === '\\' ? 2 : 1;
+      const stop = Math.min(j + 1, s.length);
+      keep(s.slice(i, stop));
+      i = stop;
+      if (j < s.length) quote = null;
+      continue;
+    }
+    HEREDOC_SPECIAL_RE.lastIndex = i;
+    const m = HEREDOC_SPECIAL_RE.exec(s);
+    if (!m) { keep(s.slice(i)); break; }
+    if (m.index > i) { keep(s.slice(i, m.index)); i = m.index; }
+    const ch = s[i];
+    if (ch === "'" || ch === '"') { quote = ch; keep(ch); i++; continue; }
+    if (ch === '\\') { keep(s.slice(i, i + 2)); i += 2; continue; }
+    if (ch === '#' && (i === 0 || HEREDOC_START_RE.test(s[i - 1]))) {
+      const nl = s.indexOf('\n', i);
+      if (nl === -1) { keep(s.slice(i)); break; }
+      keep(s.slice(i, nl));
+      i = nl;
+      continue;
+    }
+    if (ch === '\n') {
+      keep('\n');
+      i++;
+      if (pending.length) { i = skipHeredocBodies(s, i, pending, keep); pending = []; }
+      reset(i);
+      continue;
+    }
+    if (ch === ';') { keep(ch); i++; reset(i); continue; }
+    if (ch === '&') {
+      // &> and &>> are redirects, as are >& and <& (a file-descriptor copy).
+      if (s[i + 1] === '>' || s[i - 1] === '>' || s[i - 1] === '<') { keep(ch); i++; continue; }
+      keep(ch); i++;
+      if (s[i] === '&') { keep('&'); i++; } // && or the & of |&
+      reset(i);
+      continue;
+    }
+    if (ch === '|') {
+      if (s[i + 1] === '|') { keep('||'); i += 2; reset(i); continue; } // || separates commands
+      segPipe = true; drop(); // | or |&: a pipeline, not a simple command
+      keep(ch); i++;
+      if (s[i] === '&') { keep('&'); i++; }
+      continue;
+    }
+    // A group or a substitution keeps the check on its bodies. The depth is kept
+    // across lines, and each bracket only closes its own kind, so the `)` of a
+    // `case` pattern does not close an open `{` group.
+    if (ch === '{') { braces++; segClose = true; drop(); keep(ch); i++; continue; }
+    if (ch === '}') { if (braces > 0) braces--; segClose = true; drop(); keep(ch); i++; continue; }
+    if (ch === ')') { if (parens > 0) parens--; segClose = true; drop(); keep(ch); i++; continue; }
+    if (ch === '<') {
+      const h = heredocAt(s, i);
+      if (h) {
+        if (segProgram === undefined) segProgram = heredocConsumer(s.slice(segStart, Math.min(i, segStart + 512)));
+        if (parens === 0 && braces === 0 && !segPipe && !segClose && segProgram && HEREDOC_DATA_CMDS.has(segProgram)) {
+          if (tailStart === -1) tailStart = outLen;
+          hasData = true;
+          pending.push(h.doc);
+        }
+        keep(s.slice(i, h.end));
+        i = h.end;
+        continue;
+      }
+      if (s[i + 1] === '(') { segPipe = true; drop(); keep(ch); i++; continue; } // <( process substitution
+      keep(ch); i++;
+      continue;
+    }
+    if (ch === '>') {
+      if (s[i + 1] === '(') { segPipe = true; drop(); keep(ch); i++; continue; } // >( process substitution
+      keep(ch); i++;
+      continue;
+    }
+    // Arithmetic (`$(( ))`, `(( ))`): a `<<` inside it is a shift, not a
+    // here-document. The run is read once: closed it is kept whole, and unclosed
+    // it is read to the end of its line, so a run of `(` stays linear.
+    if (ch === '(' && s[i + 1] === '(') {
+      let nesting = 0;
+      let j = i;
+      for (; j < s.length && s[j] !== '\n'; j++) {
+        if ((++ticks & 4095) === 0 && overBudget(budget, 0)) return s;
+        if (s[j] === '(') nesting++;
+        else if (s[j] === ')' && --nesting === 0) { j++; break; }
+      }
+      keep(s.slice(i, j));
+      i = j;
+      segClose = true;
+      drop();
+      continue;
+    }
+    if (ch === '(') { parens++; segClose = true; drop(); keep(ch); i++; continue; }
+    keep(ch);
+    i++;
+  }
+  const out = parts.join('');
+  if (!hasData) return out;
+  const tail = out.slice(tailStart);
+  // A command that writes a file and then runs it, redefines how a name resolves,
+  // or pipes it on a later line, keeps the old check: the body is code that runs.
+  if (HEREDOC_RUN_AFTER_RE.test(tail) || HEREDOC_DEFINES_RE.test(out) || runsCodeAfter(tail, writtenFiles(out))) return s;
+  return out;
+}
+
+/*
+ * A here-document whose body a program reads as plain data (`cat > f`, `tee`,
+ * `dd`) cannot leak a secret by reading it, so its body is dropped before the
+ * command is checked. A body a program runs as code (a shell, an interpreter,
+ * apply_patch) still holds a command or a file pattern, so it keeps the check
+ * it had. Only the data programs are listed: an unknown program keeps the
+ * check, which is the safe side.
+ */
+const HEREDOC_DATA_CMDS = new Set(['cat', 'tac', 'tee', 'dd', 'tr', 'uniq', 'wc', 'head', 'tail', 'cut', 'paste',
+  'join', 'grep', 'egrep', 'fgrep', 'rg', 'diff', 'cmp', 'comm', 'jq', 'base64', 'nl', 'od', 'xxd', 'hexdump',
+  'sha256sum', 'sha1sum', 'sha512sum', 'md5sum', 'shasum', 'cksum', 'gzip', 'gunzip', 'zcat', 'bzip2', 'bunzip2',
+  'xz', 'unxz', 'zstd', 'fold', 'expand', 'unexpand', 'fmt', 'column', 'rev']);
+
+// `sort --compress-program` and `split --filter` run a program on the data, so
+// neither is a plain data program. A command that defines a function or changes
+// how a name resolves (`PATH`, `alias`, `hash`, `enable`) can do the same to any
+// data program, so no body of it is data either.
+const HEREDOC_DEFINES_RE = /(?:^|[^A-Za-z0-9_])(?:function\s+[A-Za-z_]|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{|PATH\s*=|alias\s|hash\s|enable\s)/;
+
+// A pipe or a process substitution that appears after the first data body can
+// run that body when a group or a substitution was opened on an earlier line
+// (`( case x in a) ... ) | awk '{system($0)}'`), where the walk cannot tell a
+// `case` pattern from a group close. A `||` is not a pipe.
+const HEREDOC_RUN_AFTER_RE = /(?<!\|)\|&?(?!\|)|>\(|<\(/;
+
+// A redirect operator and its target (`> f`, `2>> f`, `<< EOF`) and the glued
+// forms (`>f`, `2>f`, `<<EOF`). Read by runsCodeAfter so a target is not read as
+// the command.
+const REDIRECT_OP_RE = /^[0-9]*(?:>>?\|?|<<?-?|<>|<&|>&|&>>?|<|>)$/;
+const REDIRECT_GLUED_RE = /^[0-9]*(?:>>?|<<?-?|<>|<&|>&|&>>?|<|>)[^<>&\s]+$/;
+
+// Wrappers that turn their input into arguments or commands: their body is code,
+// not data, so they are not read through like `sudo` or `env`.
+const HEREDOC_RUNS_STDIN = new Set(['xargs', 'parallel']);
+
+/** The program a here-document feeds, read through assignments, reserved words and wrappers (`sudo cat`). */
+function heredocConsumer(segment) {
+  const words = segment.split(/\s+/).filter(Boolean).map((text) => ({ text }));
+  let k = 0;
+  while (k < words.length && (ASSIGNMENT_RE.test(words[k].text) || RESERVED_WORDS.has(words[k].text))) {
+    const name = programName(words[k].text);
+    if (HEREDOC_RUNS_STDIN.has(name)) return name; // xargs turns its input into a command
+    k++;
+  }
+  for (let guard = 0; k < words.length && guard < 16; guard++) {
+    const name = programName(words[k].text);
+    if (HEREDOC_RUNS_STDIN.has(name)) return name;
+    if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) return name;
+    k = skipWrapper(words, k, name);
+  }
+  return k < words.length ? programName(words[k].text) : '';
+}
+
+/**
+ * The files a command line writes: the target of a `>` or `>>` redirect, the
+ * positional arguments of `tee`, and the `of=` of `dd`. Used to keep the body
+ * when the same command later runs the file it writes, also by an absolute path.
+ */
+function writtenFiles(text) {
+  const files = new Set();
+  const words = text.split(/\s+/).filter(Boolean);
+  const unquote = (w) => w.replace(/^["']+|["']+$/g, '');
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    if (w === '>' || w === '>>' || w === '>|') { if (words[k + 1]) { files.add(unquote(words[k + 1])); k++; } continue; }
+    if (/^>>?[^>]/.test(w)) { files.add(unquote(w.replace(/^>>?/, ''))); continue; }
+    if (/^of=/.test(w)) files.add(unquote(w.slice(3)));
+  }
+  const tee = words.indexOf('tee');
+  if (tee !== -1) {
+    for (let k = tee + 1; k < words.length && !/[;&|]/.test(words[k]); k++) {
+      if (!words[k].startsWith('-') && !/^[<>]/.test(words[k])) files.add(unquote(words[k]));
+    }
+  }
+  return files;
+}
+
+/**
+ * Whether the command runs code: a shell, an interpreter, `source`, a program
+ * that turns its input into a command, a path run directly (`./x.sh`), or a
+ * command that names a file the same command writes. Used to keep the body of a
+ * here-document a command then runs.
+ */
+function runsCodeAfter(text, targets) {
+  // Any word that is a shell, an interpreter or a stdin-to-command wrapper keeps
+  // the check, wherever it sits (the safe side).
+  for (const token of text.split(/[\s;&|(){}<>`"']+/)) {
+    if (!token) continue;
+    const name = programName(token);
+    if (CODE_CMDS_RE.test(name) || name === 'source' || name === 'eval' || name === '.' || HEREDOC_RUNS_STDIN.has(name)) return true;
+    if (token.startsWith('./') || token.startsWith('../')) return true;
+  }
+  if (!targets || !targets.size) return false;
+  // A file the command writes and then runs is named in command position, also
+  // behind a wrapper (`nohup x.sh`, `timeout 5 x.sh`, `exec x.sh`, `sudo x.sh`).
+  // A redirect and its target are skipped (`cat <<EOF > f`), so the target is not
+  // read as the command.
+  for (const segment of text.split(/[\n;|&(){}`"']+/)) {
+    const words = segment.split(/\s+/).filter(Boolean).map((text) => ({ text }));
+    let k = 0;
+    for (let guard = 0; k < words.length && guard < 32; guard++) {
+      const w = words[k].text;
+      if (ASSIGNMENT_RE.test(w)) { k++; continue; }
+      if (REDIRECT_OP_RE.test(w)) { k += 2; continue; }
+      if (REDIRECT_GLUED_RE.test(w)) { k++; continue; }
+      const name = programName(w);
+      if (!Object.prototype.hasOwnProperty.call(GIT_WRAPPERS, name)) break;
+      k = skipWrapper(words, k, name);
+    }
+    if (k < words.length && targets.has(words[k].text.replace(/^["']+|["']+$/g, ''))) return true;
+  }
+  return false;
+}
+
 /*
  * zn keeps the API key of `zn-gate connect` and the vault identity in the
  * system keychain, under zn's own service name. A command that asks the
@@ -1134,10 +1526,18 @@ const KEYCHAIN_MESSAGE = 'zn: this command would read a zn secret (the API key o
 // zn's key code). No wrapper, quoting, interpreter or heredoc has to be understood: the words are enough, and
 // searching for the names with rg, grep or git grep (no keychain word) stays allowed.
 const KEYCHAIN_WORD_RE = /(?:(?<![A-Za-z0-9_.-])(?:security(?:\.exe)?(?=\s)|secret-tool|cmdkey|vaultcmd|Get-StoredCredential|CredRead|CredEnumerate|keyring|keytar|PasswordVault)(?![A-Za-z0-9_-])|(?<![A-Za-z0-9_-])(?:getPassword|get_password)(?![A-Za-z0-9_-])|find-(?:generic|internet)-password)/i;
-const KEYCHAIN_DUMP_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s[^\n]*\bdump-keychain\b/i;
+// The patterns below are matched one at a time, with no gap between parts: `security\s[^\n]*dump-keychain` takes time
+// proportional to length times the number of candidates, and a bounded gap could be padded past its limit.
+const KEYCHAIN_DUMP_RE = /\bdump-keychain\b/i;
+const KEYCHAIN_SECURITY_RE = /(?<![A-Za-z0-9_.-])security(?:\.exe)?\s/i;
 // zn's own modules, loaded to read the key.
-const KEYCHAIN_LIB_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)\s*['"]?[^;\n]*(?:cloud-key|vault\/keychain)/;
-const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity)/;
+const KEYCHAIN_LIB_LOAD_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)/;
+// zn-gate's own client modules count only by their full path (node_modules, a global install or packages/zn-gate): a
+// project's own lib/client is no business of ours. A relative ./lib/client inside zn-gate itself is not covered.
+// Matching ignores case (macOS and Windows load ZN-GATE/LIB/CLIENT) and drops `/./` segments first.
+const KEYCHAIN_LIB_NAME_RE = /(?:cloud-key|vault[\\/]+keychain|zn-gate[\\/]+lib[\\/]+(?:vault[\\/]+)?client(?![A-Za-z0-9_-]))/i;
+const KEYCHAIN_DOT_RE = /[\\/]\.(?=[\\/])/g;
+const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity|\banalyze\b|\bisCloudEnabled\b)/;
 
 /*
  * A single simple command that only writes or searches text: `git commit|grep|log|show`, `echo`, `printf`. Such a
@@ -1176,9 +1576,9 @@ function keychainQuery(cmd, env) {
   // Quotes, backslashes and backticks inside a name do not change what the tool sees.
   for (const t of [text, text.replace(/['"`\\^]/g, '')]) {
     // Dumping the keychain would include zn's entries whatever name is given.
-    if (KEYCHAIN_DUMP_RE.test(t)) return true;
+    if (KEYCHAIN_DUMP_RE.test(t) && KEYCHAIN_SECURITY_RE.test(t)) return true;
     if (KEYCHAIN_WORD_RE.test(t) && named(t)) return true;
-    if (KEYCHAIN_LIB_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
+    if (KEYCHAIN_LIB_NAME_RE.test(t.replace(KEYCHAIN_DOT_RE, '')) && KEYCHAIN_LIB_LOAD_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
   }
   return false;
 }
@@ -1197,13 +1597,15 @@ function bashDenialOf(cmd, opts = {}) {
   // The code of a shell inside the command (sh -c "...") is checked as a command of its own, with the same budget.
   const depth = opts.depth || 0;
   if (!depth || !opts.budget) opts.budget = { until: Date.now() + CHECK_BUDGET_MS, disk: CHECK_BUDGET_DISK };
+  // The bodies of the here-documents read as data are data, not command-line words, and are dropped first.
+  const text = stripHeredocs(cmd, opts.budget);
   // The command is read three times: a backslash before a letter is a Windows
   // path separator or a bash escape, and a PowerShell backtick is an escape too.
   // A word protected in any reading is refused.
-  const readings = [allWords(cmd, false), allWords(cmd, true), allWords(String(cmd).replace(/`(.)/gs, '$1'), false)];
+  const readings = [allWords(text, false), allWords(text, true), allWords(text.replace(/`(.)/gs, '$1'), false)];
   // Bash $'...' quoting spells characters as escapes ($'\x2eenv' is .env), and $"..." is a plain "...":
   // a fourth reading with them decoded.
-  if (/\$['"]/.test(String(cmd))) readings.push(allWords(decodeAnsiC(String(cmd)), true));
+  if (/\$['"]/.test(text)) readings.push(allWords(decodeAnsiC(text), true));
   // A reading that could not be split to the end is refused, not checked in part.
   if (readings.some((r) => r.truncated)) return TOO_MANY_MESSAGE;
   const words = readings.flat();
@@ -1220,9 +1622,9 @@ function bashDenialOf(cmd, opts = {}) {
   // Inside $( ) or backticks the text is not split into simple commands, so
   // every word of it is checked on its own, as if it were a word of the command.
   // The same for the code an interpreter runs (python -c "open('.env')"), where a path sits inside quotes and brackets.
-  if (/\$\(|`/.test(String(cmd)) || words.some((w) => CODE_CMDS_RE.test(bareHead(w.head)))) {
+  if (/\$\(|`/.test(text) || words.some((w) => CODE_CMDS_RE.test(bareHead(w.head)))) {
     const split = [];
-    for (const t of String(cmd).split(/[\s'"`$(){};|&<>=,]+/)) if (t) split.push({ text: t, redirectTarget: false, head: '', seq: 0 });
+    for (const t of text.split(/[\s'"`$(){};|&<>=,]+/)) if (t) split.push({ text: t, redirectTarget: false, head: '', seq: 0 });
     words.push(...split);
     readings.push(split);
   }
@@ -1231,7 +1633,7 @@ function bashDenialOf(cmd, opts = {}) {
   opts.cdBases = cdBasesOf(readings, opts);
   opts.elsewhere = new Map();
   if (overBudget(opts.budget, 0)) return TOO_SLOW_MESSAGE;
-  opts.cmdText = String(cmd);
+  opts.cmdText = text;
   // A word is classified once per command: each classification resolves the path on disk, and a long command
   // often repeats the same words.
   const classified = new Map();
@@ -1576,6 +1978,9 @@ function adminDenial(admin, opts = {}, cmd = '') {
   }
   if (/^(un)?lock$/i.test(admin)) {
     return 'zn blocked this: locking or unlocking the secret vault is the user\'s decision, so an agent may not run `' + znCommand(admin, opts) + '`. ' + run(admin);
+  }
+  if (/^(dis)?connect$/i.test(admin)) {
+    return 'zn blocked this: `' + znCommand(admin, opts) + '` turns the optional cloud check on or off and handles your zn API key, which is the user\'s decision. ' + run(admin);
   }
   if (/^stats/i.test(admin)) {
     return 'zn blocked this: only the user can turn on sharing of zn\'s usage statistics. ' + run('stats share on');
