@@ -65,7 +65,7 @@ const WIN_SPELLINGS = [
 function project(t) {
   const dir = tempDir(t, 'zn-forms-');
   fs.mkdirSync(path.join(dir, 'app1', 'inner'), { recursive: true });
-  for (const d of ['', path.join('app1', 'inner')]) {
+  for (const d of ['', 'app1', path.join('app1', 'inner')]) {
     fs.writeFileSync(path.join(dir, d, '.env'), 'EXAMPLE_API_KEY=zn-test-fake-value-0000\n');
     fs.writeFileSync(path.join(dir, d, 'notes.txt'), 'hello\n');
   }
@@ -159,6 +159,34 @@ test('an ordinary file spelled and read the Windows ways is allowed', { skip: !W
   assert.deepEqual(refused, []);
 });
 
+// A drive-relative path (C:.env, C:app1\.env) or a profile variable ($env:USERPROFILE, %USERPROFILE%) names the
+// same real file once Windows expands it, so a .env behind one is refused like the plain path. On POSIX "\" is
+// not a separator and %VARS% are not expanded, so this runs in the Windows checks job.
+test('a .env named through a drive-relative or profile path is refused on Windows', { skip: !WIN && 'Windows path spellings' }, (t) => {
+  const o = project(t);
+  const drive = o.cwd.slice(0, 2); // "C:" of the folder the test writes in.
+  const missed = [];
+  const refused = [];
+  const dotenv = [drive + '.env', drive + 'app1\\.env', drive + 'app1\\inner\\.env',
+    '$env:USERPROFILE\\.env', '"$env:USERPROFILE\\.env"', '%USERPROFILE%\\.env', '"%USERPROFILE%\\.env"'];
+  const ordinary = [drive + 'notes.txt', drive + 'app1\\notes.txt',
+    '$env:USERPROFILE\\notes.txt', '%USERPROFILE%\\notes.txt'];
+  for (const p of dotenv) {
+    for (const read of WIN_READS) {
+      const cmd = read(p);
+      if (!policy.bashDenial(cmd, o)) missed.push(cmd);
+    }
+  }
+  for (const p of ordinary) {
+    for (const read of WIN_READS) {
+      const cmd = read(p);
+      if (policy.bashDenial(cmd, o)) refused.push(cmd);
+    }
+  }
+  assert.deepEqual(missed, [], 'a .env behind a drive-relative or profile path is refused');
+  assert.deepEqual(refused, [], 'an ordinary file is allowed');
+});
+
 // A .env reached through a path zn cannot follow (a UNC share or an extended-length path, a %CD% root) cannot be
 // read and checked, so the name itself is refused like a .env path built while the command runs. An ordinary
 // file on the same path is left alone. No file is needed, so this runs on every platform.
@@ -166,9 +194,9 @@ test('a .env reached through a UNC share, an extended path or %CD% is refused', 
   const o = project(t);
   const missed = [];
   const refused = [];
-  const dotenv = ['\\\\servidor\\share\\.env', '\\\\servidor\\share\\app1\\.env', '\\\\?\\C:\\ruta\\.env',
-    '\\\\?\\C:\\ruta\\app1\\.env', '%CD%\\.env', '"%CD%\\.env"', '%CD%\\app1\\.env'];
-  const ordinary = ['\\\\servidor\\share\\notes.txt', '\\\\?\\C:\\ruta\\notes.txt', '%CD%\\notes.txt', '"%CD%\\notes.txt"'];
+  const dotenv = ['\\\\server\\share\\.env', '\\\\server\\share\\app1\\.env', '\\\\?\\C:\\path\\.env',
+    '\\\\?\\C:\\path\\app1\\.env', '%CD%\\.env', '"%CD%\\.env"', '%CD%\\app1\\.env'];
+  const ordinary = ['\\\\server\\share\\notes.txt', '\\\\?\\C:\\path\\notes.txt', '%CD%\\notes.txt', '"%CD%\\notes.txt"'];
   for (const p of dotenv) {
     for (const read of WIN_READS) {
       const cmd = read(p);

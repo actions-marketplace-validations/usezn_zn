@@ -1919,7 +1919,7 @@ function dotenvElsewhereOf(text, opts, kind = 'dotenv') {
   // (`cat $(echo app)/.env` leaves the word /.env right after the closing bracket).
   const cmdText = opts.cmdText || '';
   const afterSubstitution = /[()]/.test(text) || cmdText.includes(')' + text) || cmdText.includes('`' + text);
-  // A path that starts at a Windows root or a network share (\\server\share\.env, \\?\C:\ruta\.env,
+  // A path that starts at a Windows root or a network share (\\server\share\.env, \\?\C:\path\.env,
   // \folder\.env, //server/share/.env): zn cannot follow it, so a .env reached through it is refused.
   if (kind === 'dotenv' && (String(text).startsWith('\\') || String(text).startsWith('//'))) {
     return 'zn: this command reads ' + text + ' through a path zn cannot check (a Windows root or a network share), so it was blocked. ' +
