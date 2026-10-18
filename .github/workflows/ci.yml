@@ -142,7 +142,8 @@ jobs:
           if [ "$PRIMARY" != "true" ] && [ "$FULL" != "true" ]; then
             if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git fetch --no-tags --depth=1 origin "$BASE_SHA" > /dev/null 2>&1 \
                && files="$(git diff --no-renames --name-only "$BASE_SHA" HEAD)"; then
-              run=false
+              # An empty list (no net change) is a doubt too: keep the entry.
+              [ -n "$files" ] && run=false
               while IFS= read -r f; do
                 case "$f" in
                   packages/zn-gate-py/*|packages/zn-gate/*|bench/*|.github/workflows/ci.yml|.github/ci-test-requirements.txt|.github/scripts/ci-scope.sh)
