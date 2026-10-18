@@ -57,3 +57,13 @@ test('the other forms stay refused', () => {
     assert.ok(denied(c), 'not refused: ' + c);
   }
 });
+
+test('a lib name counts only as a whole name, not inside a longer one', () => {
+  const load = (n) => 'node -e "require(\'' + n + '\').loadStoredKey()"';
+  for (const n of ['ACME-ZN-GATE/LIB/CLIENT', 'myzn-gate/lib/client', '@acme/Cloud-Key-Manager', './lib/cloud-keys', 'xcloud-key']) {
+    assert.equal(denied(load(n)), null, 'refused: ' + n);
+  }
+  for (const n of ['./lib/cloud-key', '../cloud-key', './lib/cloud-key.js', 'node_modules/zn-gate/lib/client', 'zn-gate\\lib\\client', 'zn-gate/lib/client', 'ZN-GATE/LIB/CLIENT']) {
+    assert.ok(denied(load(n)), 'not refused: ' + n);
+  }
+});
