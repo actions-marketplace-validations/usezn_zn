@@ -27,7 +27,7 @@ const { znCommand } = require('../zn-command');
 
 // Version of the policy rules (credential paths, zn home, secret commands,
 // command wrapping). Bump it when a rule changes; see CONTRIBUTING.md.
-const POLICY_RULES_VERSION = '2026-10-18.29';
+const POLICY_RULES_VERSION = '2026-10-18.30';
 
 /* ------------------------------ paths ------------------------------ */
 
@@ -1537,6 +1537,18 @@ const KEYCHAIN_LIB_LOAD_RE = /(?:require\s*\(|import\s*\(|\bimport\s|\bfrom\s)/;
 // Matching ignores case (macOS and Windows load ZN-GATE/LIB/CLIENT) and drops `/./` segments first.
 const KEYCHAIN_LIB_NAME_RE = /(?:(?<![A-Za-z0-9_.-])cloud-key(?![A-Za-z0-9_-])|vault[\\/]+keychain|(?<![A-Za-z0-9_.-])zn-gate[\\/]+lib[\\/]+(?:vault[\\/]+)?client(?![A-Za-z0-9_-]))/i;
 const KEYCHAIN_DOT_RE = /[\\/]\.(?=[\\/])/g;
+// A name written with escapes (\x2f, /, \u{2f}, \057) is the same name once the shell or the interpreter decodes
+// it, so the name is also looked for in a decoded copy. The decoded copy only adds matches. One pass, no backtracking.
+const KEYCHAIN_ESC_RE = /\\(?:x([0-9A-Fa-f]{2})|u([0-9A-Fa-f]{4})|u\{([0-9A-Fa-f]{1,6})\}|([0-7]{1,3}))/g;
+function keychainUnescape(t) {
+  return t.replace(KEYCHAIN_ESC_RE, (m, x, u, b, o) => {
+    const cp = o !== undefined ? parseInt(o, 8) : parseInt(x || u || b, 16);
+    return cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+  });
+}
+const keychainLibName = (t) =>
+  KEYCHAIN_LIB_NAME_RE.test(t.replace(KEYCHAIN_DOT_RE, '')) ||
+  KEYCHAIN_LIB_NAME_RE.test(keychainUnescape(t).replace(KEYCHAIN_DOT_RE, ''));
 const KEYCHAIN_LIB_USE_RE = /(?:loadStoredKey|resolveApiKey|\b_native\b|CLOUD_SLOT|loadIdentity|storeIdentity|\banalyze\b|\bisCloudEnabled\b)/;
 
 /*
@@ -1578,7 +1590,7 @@ function keychainQuery(cmd, env) {
     // Dumping the keychain would include zn's entries whatever name is given.
     if (KEYCHAIN_DUMP_RE.test(t) && KEYCHAIN_SECURITY_RE.test(t)) return true;
     if (KEYCHAIN_WORD_RE.test(t) && named(t)) return true;
-    if (KEYCHAIN_LIB_NAME_RE.test(t.replace(KEYCHAIN_DOT_RE, '')) && KEYCHAIN_LIB_LOAD_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
+    if (keychainLibName(t) && KEYCHAIN_LIB_LOAD_RE.test(t) && KEYCHAIN_LIB_USE_RE.test(t)) return true;
   }
   return false;
 }

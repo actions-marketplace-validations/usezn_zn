@@ -67,3 +67,31 @@ test('a lib name counts only as a whole name, not inside a longer one', () => {
     assert.ok(denied(load(n)), 'not refused: ' + n);
   }
 });
+
+test('a name whose separator or letters are written as escapes is still recognised', () => {
+  const load = (n) => 'node -e "require(\'' + n + '\').loadStoredKey()"';
+  for (const n of [
+    'node_modules\\x2fzn-gate/lib/client',
+    'node_modules\\x2Fzn-gate/lib/client',
+    'node_modules\\u002fzn-gate/lib/client',
+    'node_modules\\u{2f}zn-gate/lib/client',
+    'node_modules\\x5czn-gate\\lib\\client',
+    'zn-gate/lib\\x2fcloud-key',
+    'zn-gate/lib\\u002Fcloud-key',
+    'node_modules\\057zn-gate/lib/client',
+    'zn\\x2dgate/lib/client',
+  ]) {
+    assert.ok(denied(load(n)), 'not refused: ' + n);
+  }
+  assert.ok(denied("node -e $'require(\"node_modules\\x2fzn-gate/lib/client\").loadStoredKey()'"), 'not refused: ANSI-C form');
+  assert.equal(denied(load('ACME-ZN-GATE\\x2fLIB/CLIENT')), null);
+  assert.equal(denied(load('@acme\\x2fCloud-Key-Manager')), null);
+});
+
+test('the escape decoding is fast on a long run of escapes and ignores impossible code points', () => {
+  const start = process.hrtime.bigint();
+  denied('node -e "require(\'' + '\\x2f'.repeat(15000) + 'x\').loadStoredKey()"');
+  denied('node -e "require(\'' + '\\u{110000}\\u{ffffff}'.repeat(3000) + '\').loadStoredKey()"');
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(ms < 1000, 'took ' + ms + ' ms');
+});
