@@ -455,3 +455,55 @@ def test_lone_surrogate_is_escaped_like_node(tmp_path):
     p = str(tmp_path / "evidence.jsonl")
     assert log_evidence({"payload": "x\ud800y", "tool_name": "bash"}, file_path=p)  # does not raise
     assert verify_evidence_ledger(p)["valid"] is True
+
+
+# ---- lock ownership and edge cases ----
+
+def test_writer_that_lost_its_lock_writes_nothing_and_leaves_the_new_lock_alone(tmp_path, capsys, monkeypatch):
+    p = _ledger(tmp_path, n=1)
+    before = open(p, "rb").read()
+    real = evidence.get_last_hash
+
+    def steal_after_reading(path):
+        h = real(path)
+        # Simulates a stalled writer: someone else broke its lock and took it.
+        with open(path + ".lock", "w") as f:
+            f.write("4242:otherwriter")
+        return h
+
+    monkeypatch.setattr(evidence, "get_last_hash", steal_after_reading)
+    assert log_evidence({"payload": "slow writer"}, file_path=p) is None
+    assert "taken over" in capsys.readouterr().err
+    assert open(p, "rb").read() == before
+    assert open(p + ".lock").read() == "4242:otherwriter"
+
+
+def test_several_writers_meeting_one_stale_lock_keep_one_chain(tmp_path):
+    p = str(tmp_path / "evidence.jsonl")
+    with open(p + ".lock", "w") as f:
+        f.write("1:crashed")
+    old = time.time() - 60
+    os.utime(p + ".lock", (old, old))
+    _wait_all([_spawn_py(p, i, 5) for i in range(6)])
+    v = verify_evidence_ledger(p)
+    assert v["error"] is None and v["valid"] is True and v["total"] == 30
+    assert [n for n in os.listdir(tmp_path) if ".lock" in n] == []
+
+
+def test_lock_dated_in_the_future_counts_as_stale(tmp_path):
+    p = _ledger(tmp_path, n=1)
+    with open(p + ".lock", "w") as f:
+        f.write("1:crashed")
+    future = time.time() + 3600
+    os.utime(p + ".lock", (future, future))
+    assert log_evidence({"payload": "after clock change"}, file_path=p)
+    assert verify_evidence_ledger(p)["total"] == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs symlinks")
+def test_unreadable_lock_path_does_not_spin_the_cpu(tmp_path, capsys):
+    p = _ledger(tmp_path, n=1)
+    os.symlink(str(tmp_path / "missing-target"), p + ".lock")
+    cpu0 = time.process_time()
+    assert log_evidence({"payload": "x"}, file_path=p, lock_wait=0.6) is None
+    assert time.process_time() - cpu0 < 0.4

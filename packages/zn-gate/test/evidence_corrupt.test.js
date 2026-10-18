@@ -448,3 +448,73 @@ test('a log written by an older Python version (non-ASCII escaped) still verifie
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- lock ownership and edge cases ----
+
+test('a writer that lost its lock to a takeover writes nothing and leaves the new lock alone', () => {
+  const { dir, file } = tmpLedger(1);
+  try {
+    const before = fs.readFileSync(file);
+    const fresh = freshEvidence();
+    let r;
+    const err = captureStderr(() => {
+      r = fresh.logEvidence({ payload: 'slow writer' }, file, {
+        // Simulates a stalled writer: someone else broke its lock and took it.
+        beforeAppend: () => fs.writeFileSync(file + '.lock', '4242:otherwriter'),
+      });
+    });
+    assert.equal(r, null);
+    assert.match(err, /taken over/);
+    assert.ok(fs.readFileSync(file).equals(before), 'nothing is appended');
+    assert.equal(fs.readFileSync(file + '.lock', 'utf8'), '4242:otherwriter', 'the other lock is not deleted');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('several writers meeting one stale lock: all writes land, one chain', async () => {
+  const { dir, file } = tmpLedger(0);
+  try {
+    fs.writeFileSync(file + '.lock', '1:crashed');
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(file + '.lock', old, old);
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => run(process.execPath, ['-e', NODE_WRITER, EVIDENCE_JS, file, String(i), '5'])));
+    for (const r of results) assert.equal(r.code, 0, r.err);
+    const v = verifyEvidenceLedger(file);
+    assert.equal(v.error, null);
+    assert.equal(v.valid, true);
+    assert.equal(v.total, 30);
+    assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('.lock')), [], 'no lock or stale file left behind');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a lock dated in the future counts as stale', () => {
+  const { dir, file } = tmpLedger(1);
+  try {
+    fs.writeFileSync(file + '.lock', '1:crashed');
+    const future = new Date(Date.now() + 3600 * 1000);
+    fs.utimesSync(file + '.lock', future, future);
+    assert.ok(logEvidence({ payload: 'after clock change' }, file));
+    assert.equal(verifyEvidenceLedger(file).total, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a lock path that cannot be read does not spin the CPU while waiting', { skip: process.platform === 'win32' }, () => {
+  const { dir, file } = tmpLedger(1);
+  try {
+    fs.symlinkSync(path.join(dir, 'missing-target'), file + '.lock');
+    const cpu0 = process.cpuUsage();
+    const fresh = freshEvidence();
+    let r;
+    captureStderr(() => { r = fresh.logEvidence({ payload: 'x' }, file, { lockWaitMs: 600 }); });
+    const used = process.cpuUsage(cpu0);
+    assert.equal(r, null);
+    assert.ok((used.user + used.system) / 1000 < 400, `used ${(used.user + used.system) / 1000} ms of CPU in a 600 ms wait`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

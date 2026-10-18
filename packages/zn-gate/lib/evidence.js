@@ -52,7 +52,9 @@ class EvidenceLedgerError extends Error {}
 // same file and the same rules, so the two exclude each other. A writer waits at most
 // LOCK_WAIT_MS; if it cannot get the lock it skips the write (fail closed: the log is never
 // written without the lock) and the caller goes on. A lock file older than LOCK_STALE_MS
-// belongs to a process that died and is removed.
+// belongs to a process that died (or was suspended) and is broken. The lock holds its owner's
+// token: a writer only deletes the lock while it is still its own, and checks that again just
+// before it appends, so a writer that lost its lock to a takeover writes nothing.
 const LOCK_WAIT_MS = 2000;
 const LOCK_STALE_MS = 10000;
 
@@ -62,36 +64,59 @@ function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function acquireLock(lockPath) {
-  const deadline = Date.now() + LOCK_WAIT_MS;
+function readLockToken(lockPath) {
+  try { return fs.readFileSync(lockPath, 'utf8'); } catch { return null; }
+}
+
+/**
+ * Takes the lock and returns this writer's token (pid + random bytes), which is written into
+ * the lock file. The token lets a writer tell its own lock from one taken over after it was
+ * considered stale: it only releases, and only appends, while the file still holds its token.
+ */
+function acquireLock(lockPath, waitMs = LOCK_WAIT_MS) {
+  const deadline = Date.now() + waitMs;
+  const token = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
   let delay = 2;
   for (;;) {
     try {
       const fd = fs.openSync(lockPath, 'wx', LEDGER_FILE_MODE);
-      try { fs.writeSync(fd, String(process.pid)); } catch { /* the pid is informational */ }
-      fs.closeSync(fd);
-      return;
+      try { fs.writeSync(fd, token); } finally { fs.closeSync(fd); }
+      return token;
     } catch (e) {
-      // On Windows a lock that is being deleted answers EPERM/EACCES instead of EEXIST.
-      const busy = e.code === 'EEXIST'
-        || (process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY'));
-      if (!busy) throw e;
+      // On Windows a lock that is being deleted answers EPERM/EACCES instead of EEXIST. If the
+      // lock is not there, the real problem is permissions: report it at once, do not wait.
+      const winBusy = process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY');
+      if (!(e.code === 'EEXIST' || winBusy)) throw e;
+      if (winBusy && !fs.existsSync(lockPath)) throw e;
     }
     if (Date.now() >= deadline) throw new EvidenceLockError('another process is writing to the log');
+    let stale = false;
     try {
-      if (Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-        fs.unlinkSync(lockPath);
+      // abs(): a lock dated in the future (clock moved back) is stale too.
+      stale = Math.abs(Date.now() - fs.statSync(lockPath).mtimeMs) > LOCK_STALE_MS;
+    } catch { /* gone or unreadable: wait a moment and try again */ }
+    if (stale) {
+      // Break it by renaming it away (atomic: when several writers try, only one rename wins),
+      // then delete the renamed file. Never delete by the shared path.
+      const aside = `${lockPath}.stale-${token.replace(':', '-')}`;
+      try {
+        fs.renameSync(lockPath, aside);
+        try { fs.unlinkSync(aside); } catch { /* best effort */ }
         continue;
-      }
-    } catch {
-      continue; // released or removed by someone else meanwhile: try again at once
+      } catch { /* someone else broke it first */ }
     }
     sleepMs(delay + Math.floor(Math.random() * delay));
     delay = Math.min(delay * 2, 50);
   }
 }
 
-function releaseLock(lockPath) {
+function ownsLock(lockPath, token) {
+  return readLockToken(lockPath) === token;
+}
+
+function releaseLock(lockPath, token) {
+  // Only remove the lock if it is still ours; after a takeover it belongs to someone else.
+  if (!ownsLock(lockPath, token)) return;
   try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
 }
 
@@ -238,13 +263,14 @@ function getLastHash(filePath = EVIDENCE_FILE) {
  *
  * @param {object} event - Event details (agent, phase, tool_name, payload, verdict, rule, reason, latency_us, engine)
  * @param {string} [filePath] - Optional ledger path
+ * @param {{lockWaitMs?: number}} [opts] - How long to wait for the write lock (default 2000)
  * @returns {object|null} The recorded evidence record, or null when the existing ledger is
  *   damaged: nothing is appended (the chain is never restarted), a warning is printed to
  *   stderr (first time, then at most every 5 minutes), and the caller carries on. It also
  *   returns null (with a warning) when the log cannot be written (permissions, disk) or the
  *   write lock stays busy for 2 seconds; it never throws for a log problem.
  */
-function logEvidence(event, filePath = EVIDENCE_FILE) {
+function logEvidence(event, filePath = EVIDENCE_FILE, opts = {}) {
   if (filePath === EVIDENCE_FILE) {
     require('./stats').record({
       layer: 'shield', agent: event.agent || event.agent_environment || 'other', checked: 1,
@@ -253,11 +279,10 @@ function logEvidence(event, filePath = EVIDENCE_FILE) {
   }
 
   const lockPath = filePath + '.lock';
-  let locked = false;
+  let token = null;
   try {
     ensureZnDir(filePath);
-    acquireLock(lockPath);
-    locked = true;
+    token = acquireLock(lockPath, opts.lockWaitMs);
     let prevHash;
     try {
       prevHash = getLastHash(filePath);
@@ -271,6 +296,10 @@ function logEvidence(event, filePath = EVIDENCE_FILE) {
       return null;
     }
     const finalRecord = buildRecord(event, prevHash);
+    if (typeof opts.beforeAppend === 'function') opts.beforeAppend(); // test hook
+    // Still our lock? If it was taken over (this process was stalled for over 10 s) the last
+    // hash read above may be out of date: write nothing rather than fork the chain.
+    if (!ownsLock(lockPath, token)) throw new EvidenceLockError('the write lock was taken over');
     appendLedgerLine(filePath, JSON.stringify(finalRecord) + '\n');
     return finalRecord;
   } catch (e) {
@@ -283,7 +312,7 @@ function logEvidence(event, filePath = EVIDENCE_FILE) {
     }
     return null;
   } finally {
-    if (locked) releaseLock(lockPath);
+    if (token !== null) releaseLock(lockPath, token);
   }
 }
 
@@ -291,6 +320,9 @@ function buildRecord(event, prevHash) {
   const timestamp = new Date().toISOString();
   const id = 'ev_' + Date.now().toString(36) + '_' + crypto.randomBytes(4).toString('hex');
 
+  // Note: a payload with a lone surrogate hashes as U+FFFD here and as '?' in the Python package,
+  // so payload_sha256 differs between the two for such text; record_hash and verification are
+  // not affected.
   const payloadStr = typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload || '');
   const payloadSha256 = crypto.createHash('sha256').update(payloadStr).digest('hex');
 

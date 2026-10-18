@@ -149,44 +149,78 @@ class EvidenceLockError(Exception):
 # same file and the same rules, so the two exclude each other. A writer waits at most LOCK_WAIT
 # seconds; if it cannot get the lock it skips the write (fail closed: the log is never written
 # without the lock) and the caller goes on. A lock file older than LOCK_STALE seconds belongs to
-# a process that died and is removed.
+# a process that died (or was suspended) and is broken. The lock holds its owner's token: a writer
+# only deletes the lock while it is still its own, and checks that again just before it appends,
+# so a writer that lost its lock to a takeover writes nothing.
 LOCK_WAIT = 2.0
 LOCK_STALE = 10.0
 _WIN_BUSY = (errno.EACCES, errno.EPERM, errno.EBUSY)
 
 
-def _acquire_lock(lock_path: str) -> None:
-    deadline = time.monotonic() + LOCK_WAIT
+def _read_lock_token(lock_path: str) -> Optional[str]:
+    try:
+        with open(lock_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _acquire_lock(lock_path: str, wait: float = LOCK_WAIT) -> str:
+    """Takes the lock and returns this writer's token (pid + random bytes), which is written into
+    the lock file. The token lets a writer tell its own lock from one taken over after it was
+    considered stale: it only releases, and only appends, while the file still holds its token."""
+    deadline = time.monotonic() + wait
+    token = f"{os.getpid()}:{secrets.token_hex(8)}"
     delay = 0.002
     while True:
         try:
             fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
-                os.write(fd, str(os.getpid()).encode("ascii"))
-            except OSError:
-                pass  # the pid is informational
+                os.write(fd, token.encode("ascii"))
             finally:
                 os.close(fd)
-            return
+            return token
         except FileExistsError:
             pass
         except OSError as e:
-            # On Windows a lock that is being deleted answers EPERM/EACCES instead of EEXIST.
-            if not (os.name == "nt" and e.errno in _WIN_BUSY):
+            # On Windows a lock that is being deleted answers EPERM/EACCES instead of EEXIST. If the
+            # lock is not there, the real problem is permissions: report it at once, do not wait.
+            if not (os.name == "nt" and e.errno in _WIN_BUSY) or not os.path.exists(lock_path):
                 raise
         if time.monotonic() >= deadline:
             raise EvidenceLockError("another process is writing to the log")
+        stale = False
         try:
-            if time.time() - os.stat(lock_path).st_mtime > LOCK_STALE:
-                os.unlink(lock_path)
-                continue
+            # abs(): a lock dated in the future (clock moved back) is stale too.
+            stale = abs(time.time() - os.stat(lock_path).st_mtime) > LOCK_STALE
         except OSError:
-            continue  # released or removed by someone else meanwhile: try again at once
+            pass  # gone or unreadable: wait a moment and try again
+        if stale:
+            # Break it by renaming it away (atomic: when several writers try, only one rename wins),
+            # then delete the renamed file. Never delete by the shared path.
+            aside = f"{lock_path}.stale-{token.replace(':', '-')}"
+            try:
+                os.rename(lock_path, aside)
+            except OSError:
+                pass  # someone else broke it first
+            else:
+                try:
+                    os.unlink(aside)
+                except OSError:
+                    pass
+                continue
         time.sleep(delay + random.random() * delay)
         delay = min(delay * 2, 0.05)
 
 
-def _release_lock(lock_path: str) -> None:
+def _owns_lock(lock_path: str, token: str) -> bool:
+    return _read_lock_token(lock_path) == token
+
+
+def _release_lock(lock_path: str, token: str) -> None:
+    # Only remove the lock if it is still ours; after a takeover it belongs to someone else.
+    if not _owns_lock(lock_path, token):
+        return
     try:
         os.unlink(lock_path)
     except OSError:
@@ -213,7 +247,8 @@ def _canonical_ascii(record: Dict[str, Any]) -> str:
 _last_write_warn: Optional[float] = None
 
 
-def log_evidence(event: Dict[str, Any], file_path: str = EVIDENCE_FILE) -> Optional[Dict[str, Any]]:
+def log_evidence(event: Dict[str, Any], file_path: str = EVIDENCE_FILE,
+                 lock_wait: float = LOCK_WAIT) -> Optional[Dict[str, Any]]:
     """
     Appends a cryptographically hash-chained evidence record to the ledger.
     Formula: record_hash = sha256(prev_hash + ":" + json(base_record))
@@ -228,11 +263,10 @@ def log_evidence(event: Dict[str, Any], file_path: str = EVIDENCE_FILE) -> Optio
     """
     global _last_warn, _last_write_warn
     lock_path = file_path + ".lock"
-    locked = False
+    token: Optional[str] = None
     try:
         _ensure_dir(file_path)
-        _acquire_lock(lock_path)
-        locked = True
+        token = _acquire_lock(lock_path, lock_wait)
         try:
             prev_hash = get_last_hash(file_path)
         except EvidenceLedgerError as e:
@@ -246,6 +280,10 @@ def log_evidence(event: Dict[str, Any], file_path: str = EVIDENCE_FILE) -> Optio
                 )
             return None
         final_record = _build_record(event, prev_hash)
+        # Still our lock? If it was taken over (this process was stalled for over 10 s) the last
+        # hash read above may be out of date: write nothing rather than fork the chain.
+        if not _owns_lock(lock_path, token):
+            raise EvidenceLockError("the write lock was taken over")
         with _open_for_append(file_path) as f:
             f.write(_canonical(final_record) + "\n")
         return final_record
@@ -261,14 +299,17 @@ def log_evidence(event: Dict[str, Any], file_path: str = EVIDENCE_FILE) -> Optio
             )
         return None
     finally:
-        if locked:
-            _release_lock(lock_path)
+        if token is not None:
+            _release_lock(lock_path, token)
 
 
 def _build_record(event: Dict[str, Any], prev_hash: str) -> Dict[str, Any]:
     timestamp = datetime.now(timezone.utc).isoformat()
     record_id = f"ev_{int(time.time() * 1000):x}_{secrets.token_hex(4)}"
 
+    # Note: a payload with a lone surrogate hashes as "?" here and as U+FFFD in the Node package,
+    # so payload_sha256 differs between the two for such text; record_hash and verification are
+    # not affected.
     payload_raw = event.get("payload", "")
     payload_str = payload_raw if isinstance(payload_raw, str) else json.dumps(payload_raw, separators=(",", ":"))
     payload_sha256 = hashlib.sha256(payload_str.encode("utf-8", errors="replace")).hexdigest()
