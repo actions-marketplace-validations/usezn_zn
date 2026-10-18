@@ -111,8 +111,17 @@ def _configure_output_streams() -> None:
             pass
 
 
+def _plain_text() -> bool:
+    """True when the environment asks for plain text: NO_COLOR set to any non-empty
+    value (no-color.org) or TERM=dumb. Symbols are then left out; the words next to
+    them carry the same meaning."""
+    return bool(os.environ.get("NO_COLOR")) or os.environ.get("TERM") == "dumb"
+
+
 def _icon(symbol: str, stream: Any = None) -> str:
-    """Return `symbol` if the stream can encode it, else a plain ASCII marker."""
+    """Return `symbol` if the stream can encode it, else a plain ASCII marker ('' in plain text)."""
+    if _plain_text():
+        return ""
     stream = stream if stream is not None else sys.stdout
     encoding = getattr(stream, "encoding", None) or "utf-8"
     try:
