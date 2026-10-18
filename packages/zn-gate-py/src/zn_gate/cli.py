@@ -131,6 +131,12 @@ def _icon(symbol: str, stream: Any = None) -> str:
         return _ASCII_MARKERS.get(symbol, "")
 
 
+def _lead(symbol: str, stream: Any = None) -> str:
+    """The symbol and one space, or '' when there is no symbol to show."""
+    icon = _icon(symbol, stream)
+    return f"{icon} " if icon else ""
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     text = args.text
     t0 = time.perf_counter()
@@ -150,7 +156,7 @@ def cmd_test(args: argparse.Namespace) -> int:
         # The icon follows the injection verdict only. A secret found by the
         # DLP filter is reported on its own line and does not turn an ALLOW
         # into a BLOCK.
-        status_icon = f"{_icon(SHIELD)} ALLOW" if assessment.allowed else f"{_icon(ALERT)} BLOCK"
+        status_icon = f"{_lead(SHIELD)}ALLOW" if assessment.allowed else f"{_lead(ALERT)}BLOCK"
         print(f"\n{status_icon} | Verdict: {assessment.verdict.upper()} (latency: {latency_us:.1f}µs)")
         print(f"Rule:       {assessment.rule}")
         if assessment.reason:
@@ -398,7 +404,7 @@ def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_vio
             "skipped": skipped,
         }, indent=2))
     else:
-        print(f"\n{_icon(SHIELD)} zn-gate Security Scanner — Scanned {scanned} files")
+        print(f"\n{_lead(SHIELD)}zn-gate Security Scanner — Scanned {scanned} files")
         if skipped:
             print(f"Not scanned ({len(skipped)}):")
             for s in skipped[:20]:
@@ -406,9 +412,9 @@ def _print_report(fmt: str, scanned: int, skipped: List[Dict[str, str]], all_vio
             if len(skipped) > 20:
                 print(f"  ... and {len(skipped) - 20} more")
         if not all_violations:
-            print(f"{_icon(CHECK)} All scanned prompts, tool definitions, and files are clean!\n")
+            print(f"{_lead(CHECK)}All scanned prompts, tool definitions, and files are clean!\n")
             return
-        print(f"{_icon(ALERT)} Found {leak_count} secrets and {other_count} threat vectors:\n")
+        print(f"{_lead(ALERT)}Found {leak_count} secrets and {other_count} threat vectors:\n")
         for v in all_violations:
             label = "Secret found" if v.get("type") == "secret_leak" else "Threat"
             print(f"  {v['file']}:{v['line']} {label} [{v['rule']}] {v['reason']}")
@@ -422,10 +428,10 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     if getattr(args, "verify", False):
         res = verify_evidence_ledger()
         if res.get("valid"):
-            print(f"\n{_icon(LOCK)} Cryptographic Evidence Ledger: ALL {res.get('total', 0)} RECORDS VERIFIED (IMMUTABLE)\n")
+            print(f"\n{_lead(LOCK)}Cryptographic Evidence Ledger: ALL {res.get('total', 0)} RECORDS VERIFIED (IMMUTABLE)\n")
             return 0
         else:
-            print(f"\n{_icon(ALERT, sys.stderr)} Tamper detected: {res.get('error')}", file=sys.stderr)
+            print(f"\n{_lead(ALERT, sys.stderr)}Tamper detected: {res.get('error')}", file=sys.stderr)
             print(f"{recovery_hint()}\n", file=sys.stderr)
             return 1
 
@@ -434,7 +440,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         res = export_evidence_ledger(format=fmt)
         out_content = res.get("content", "")
         if not res.get("valid"):
-            print(f"{_icon(ALERT, sys.stderr)} Tamper detected: {res.get('error')}", file=sys.stderr)
+            print(f"{_lead(ALERT, sys.stderr)}Tamper detected: {res.get('error')}", file=sys.stderr)
             print(recovery_hint(), file=sys.stderr)
         if getattr(args, "output", None):
             Path(args.output).write_text(out_content, encoding="utf-8")
@@ -444,7 +450,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         return 0
 
     stats = get_evidence_stats()
-    print(f"\n{_icon(SHIELD)} zn Evidence Ledger Stats ({EVIDENCE_FILE})")
+    print(f"\n{_lead(SHIELD)}zn Evidence Ledger Stats ({EVIDENCE_FILE})")
     print(f"  Total Events   : {stats.get('total', 0)}")
     print(f"  Blocked Drops  : {stats.get('blocks', 0)}")
     print(f"  Allowed Passes : {stats.get('allows', 0)}")
@@ -459,7 +465,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     has_key = bool(os.environ.get("ZN_API_KEY"))
     cloud = is_cloud_enabled()
-    print(f"\n{_icon(SHIELD)} zn-gate Status (Python):")
+    print(f"\n{_lead(SHIELD)}zn-gate Status (Python):")
     print(f"  Package Version : {__version__}")
     print(f"  Rules Version   : {RULES_VERSION}")
     print(f"  Python Runtime  : {sys.version.split()[0]}")

@@ -39,7 +39,7 @@ class TestPlainOutput(unittest.TestCase):
         self.assertEqual(code, 1)
         for symbol in SYMBOLS:
             self.assertNotIn(symbol, out)
-        self.assertIn("BLOCK | Verdict: BLOCK", out)
+        self.assertIn("\nBLOCK | Verdict: BLOCK", out)
         self.assertNotIn("\x1b[", out)
 
     def test_term_dumb_leaves_out_the_symbol_and_keeps_the_verdict(self):
@@ -48,7 +48,7 @@ class TestPlainOutput(unittest.TestCase):
         self.assertEqual(code, 1)
         for symbol in SYMBOLS:
             self.assertNotIn(symbol, out)
-        self.assertIn("BLOCK | Verdict: BLOCK", out)
+        self.assertIn("\nBLOCK | Verdict: BLOCK", out)
 
     def test_not_a_terminal_keeps_the_symbol_and_prints_no_color_codes(self):
         with _env(TERM="xterm-256color"):
@@ -79,7 +79,7 @@ class TestPlainOutput(unittest.TestCase):
         self.assertEqual(code, 1)
         for symbol in SYMBOLS:
             self.assertNotIn(symbol, out)
-        self.assertIn("Found ", out)
+        self.assertTrue(any(line.startswith("Found ") for line in out.splitlines()), out)
         self.assertIn("Secret found", out)
         self.assertNotIn("\x1b[", out)
         self.assertNotIn(FAKE_AWS, out)
