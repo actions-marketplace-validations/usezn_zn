@@ -39,7 +39,14 @@
 
 ## Install
 
-Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it.
+Everything runs on your machine; no account or API key is needed. You need Node.js 18 or later (the LTS version from [nodejs.org](https://nodejs.org/)). With an older Node.js, the `zn-gate` and `zn` commands stop and say how to install it. The Claude Code plugin needs Node.js 20.12 or later.
+
+**Getting started: four steps, one command each.** Run them in your own terminal.
+
+1. `npx -y zn-gate reach` shows what your coding agents can reach on this machine: secrets in your `.env` files (by name only), credential files and MCP servers. It is read only and sends nothing. Details in [docs/reach.md](docs/reach.md).
+2. `npx -y zn-gate init` sets up protection for the coding agents it finds, one step at a time, and asks before each change.
+3. `npx -y zn-gate check` tests that protection with a fake secret in a temporary folder. `init` runs it at the end too.
+4. `npx -y zn-gate env shadow .env` moves the real values of your `.env` into the local vault and leaves markers in the file. The first time, run `npx -y zn-gate unlock` to create the vault.
 
 **One command for the coding agents on your machine:**
 
@@ -150,7 +157,7 @@ Python equivalent:
 
 Where zn-gate sits in a tool call, as an MCP server or as the `shield` proxy around other servers:
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/tool-call-sequence-dark.svg"><img alt="Sequence diagram. The agent sends analyze_prompt to zn-gate on your machine, which allows or blocks it. Then check_tool_call, which allows the call with secrets masked or blocks it. The agent runs the tool. The output comes back through check_tool_result or shield, and zn-gate returns it with secrets redacted, or neutralized if it carries an injection." src="docs/diagrams/tool-call-sequence-light.svg" width="800"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/tool-call-sequence-animated-dark.svg"><img alt="Sequence diagram. The agent sends analyze_prompt to zn-gate on your machine, which allows or blocks it. Then check_tool_call, which allows the call with secrets masked or blocks it. The agent runs the tool. The output comes back through check_tool_result or shield, and zn-gate returns it with secrets redacted, or neutralized if it carries an injection." src="docs/diagrams/tool-call-sequence-animated-light.svg" width="800"></picture>
 
 ### Scrubber: secrets stay out of the model's context
 - **Today, through zn-gate:** redacts AWS keys, OpenAI and Anthropic keys, GitHub tokens, JWTs, private keys and database URL passwords in everything that passes through zn-gate: tool output checked with `check_tool_result`, tool arguments checked with `check_tool_call`, and output of MCP servers wrapped by `zn-gate shield` / `init`. Python: `sanitize_tool_result`, `@guard(mask_secrets=True)` and the framework integrations.
@@ -179,7 +186,7 @@ By default nothing is sent. If you set `ZN_CLOUD=1` and an API key (or the API k
 
 **Nothing, by default.**
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/data-flow-dark.svg"><img alt="Flow diagram. The agent, zn-gate and the tools or MCP servers run on your machine, and tool calls and prompts go through zn-gate. Tool output comes back redacted. Nothing leaves the machine by default. Only with ZN_CLOUD=1 and ZN_API_KEY set (or the Claude Code plugin's API key option), prompts with detected secrets removed go to api.usezn.com, the Galvanize 2 classifier." src="docs/diagrams/data-flow-light.svg" width="800"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/data-flow-animated-dark.svg"><img alt="Flow diagram. The agent, zn-gate and the tools or MCP servers run on your machine, and tool calls and prompts go through zn-gate. Tool output comes back redacted. Nothing leaves the machine by default. Only with ZN_CLOUD=1 and ZN_API_KEY set (or the Claude Code plugin's API key option), prompts with detected secrets removed go to api.usezn.com, the Galvanize 2 classifier." src="docs/diagrams/data-flow-animated-light.svg" width="800"></picture>
 
 | Data | Evaluated | Sent anywhere? |
 |---|---|---|
@@ -251,10 +258,10 @@ jobs:
           persist-credentials: false
       - name: Scan AI agent prompts and tools
         # Pin the action to a full commit SHA; the comment names the release.
-        uses: usezn/zn@98fc10e88c9c364b96fa65acc72a41386f0bd2e4 # v1.10.0
+        uses: usezn/zn@003a95ae7ef63c22b969496422131a49fa107f8d # v1.12.0
         with:
-          version: '1.10.0'
-          package-sha256: '36b3fbee7a846a4d8ba7b4c5e8b654d57b9a3fdbb9d99a2839f8cd83433b2d1d'
+          version: '1.12.0'
+          package-sha256: '9e7b7ac4a43722249c10623dcb5817c1cd956b6100d6ca02faa8b6451dd72dbf'
           path: '.'
           fail-on-threat: 'true'
           format: 'github'
@@ -288,7 +295,7 @@ jobs:
         # mode input. The zn-gate package version is set by version below.
         uses: usezn/zn@<commit-sha> # <first Action release with mode>
         with:
-          version: '1.10.0'
+          version: '1.12.0'
           mode: 'both'
           format: 'sarif'
           severity-threshold: 'medium'   # stricter than the default (high)
@@ -301,7 +308,7 @@ jobs:
 
 | Input | Default | Description |
 |---|---|---|
-| `version` | `1.10.0` | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
+| `version` | `1.12.0` | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
 | `mode` | `scan` | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). `scan`, `audit` or `both`. |
 | `path` | `.` | File or directory to scan. `audit` needs a directory: with `both` a file skips the audit with a warning; with `audit` the step fails. |
 | `fail-on-threat` | `true` | Fail the step on findings. For `scan`, anything found (an injection trap or a secret); for `audit`, findings at or above `severity-threshold`. Set `false` to report only. Any value other than `true` or `false` fails the step. `true` or `false`, in any case; other values fail the step. |
@@ -354,6 +361,12 @@ Permissions: the action itself needs only `contents: read`; add `security-events
 Report vulnerabilities to [security@usezn.com](mailto:security@usezn.com). Policy, scope and safe harbor: [SECURITY.md](SECURITY.md). Hall of Fame: [usezn.com/security](https://usezn.com/security/).
 
 Releases published by the release workflow, starting with the first one after 1.5.0-beta.1, are signed and carry build provenance. 1.5.0-beta.1 and earlier versions were published by hand and have no signatures or provenance. To check a download: [docs/verify-release.md](docs/verify-release.md).
+
+## Community and support
+
+- **[Discussions](https://github.com/usezn/zn/discussions)**: questions about setup and use, ideas, and show and tell. Start here if you are not sure where your question belongs.
+- **[Issues](https://github.com/usezn/zn/issues)**: reproducible bugs and concrete feature requests.
+- **Security vulnerabilities**: do not post them in Discussions or Issues. Report them privately as described in [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
