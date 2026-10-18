@@ -24,6 +24,26 @@ const testDir = __dirname;
 // Add a name here with a comment saying why.
 const EXCLUDE = [];
 
+// Test-looking files that have their own explicit step.
+const EXPLICIT = ['integration/test_agent_workflows.js'];
+const TEST_NAME = /(\.test\.[cm]?js|_test\.js)$/;
+
+function walk(dir, base) {
+  let out = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = base ? base + '/' + e.name : e.name;
+    if (e.isDirectory()) out = out.concat(walk(path.join(dir, e.name), rel));
+    else out.push(rel);
+  }
+  return out;
+}
+
+// Files under dir that look like tests but no step runs (paths relative to dir).
+function uncovered(dir, { plain, harness, exclude }) {
+  const covered = new Set([...plain, ...harness, ...exclude, ...EXPLICIT]);
+  return walk(dir, '').filter((f) => TEST_NAME.test(f) && !covered.has(f)).sort();
+}
+
 function load() {
   const plain = JSON.parse(fs.readFileSync(path.join(testDir, 'runner-plain.json'), 'utf8'));
   if (!Array.isArray(plain) || plain.some((f) => typeof f !== 'string')) {
@@ -42,15 +62,12 @@ function load() {
   const rel = (f) => 'test/' + f;
   const steps = [];
   for (const f of plain) steps.push({ label: rel(f), args: [rel(f)] });
-  if (harness.length) {
-    steps.push({ label: 'node --test (' + harness.length + ' files)', args: ['--test', ...harness.map(rel)], files: harness.map(rel) });
-  }
+  if (!harness.length) throw new Error('no test/*.test.js files found for node --test');
+  steps.push({ label: 'node --test (' + harness.length + ' files)', args: ['--test', ...harness.map(rel)], files: harness.map(rel) });
   steps.push({ label: 'test/integration/test_agent_workflows.js', args: ['test/integration/test_agent_workflows.js'] });
   steps.push({ label: 'bin/cli.js test', args: ['bin/cli.js', 'test'] });
 
-  // Every .test.js is either run plain, run under --test, or excluded.
-  const covered = new Set([...plain, ...harness, ...EXCLUDE]);
-  const lost = discovered.filter((f) => !covered.has(f));
+  const lost = uncovered(testDir, { plain, harness, exclude: EXCLUDE });
   if (lost.length) throw new Error('test files not run by any step: ' + lost.join(', '));
   return steps;
 }
@@ -64,6 +81,7 @@ function main() {
     }
     return 0;
   }
+  let n = 0;
   for (const s of steps) {
     console.log('\n=== ' + s.label + ' ===');
     const r = spawnSync(process.execPath, s.args, { cwd: root, stdio: 'inherit', shell: false });
@@ -71,13 +89,19 @@ function main() {
       console.error('\nFAILED: ' + s.label + (r.error ? ' (' + r.error.message + ')' : ' (exit ' + (r.status === null ? 'signal ' + r.signal : r.status) + ')'));
       return r.status || 1;
     }
+    n++;
   }
+  console.log('\nOK: ' + n + ' steps passed');
   return 0;
 }
 
-try {
-  process.exitCode = main();
-} catch (e) {
-  console.error('run-all: ' + e.message);
-  process.exitCode = 1;
+module.exports = { uncovered };
+
+if (require.main === module) {
+  try {
+    process.exitCode = main();
+  } catch (e) {
+    console.error('run-all: ' + e.message);
+    process.exitCode = 1;
+  }
 }
