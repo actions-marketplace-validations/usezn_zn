@@ -1,5 +1,5 @@
 ### Fixed
-- The guard that refuses commands loading zn-gate's own key modules now matches the module names as whole names, so a command that only loads an unrelated package such as `@acme/cloud-key-manager` or `acme-zn-gate/lib/client` is no longer refused.
+- The rule that protects zn's key no longer mistakes a module named `cloud-keys` or `acme-cloud-key-manager` for zn's own `cloud-key` module.
 
 ### Security
-- The key-protection rule now also recognises the module names when characters of the name or of the path separator before it are written as escape sequences such as `\x2f`.
+- The key-protection rule now also recognises the module names when they are written with escape sequences (JavaScript or shell, such as `\x2f`) or split by quotes.
