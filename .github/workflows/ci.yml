@@ -131,6 +131,8 @@ jobs:
           # Pushes, pull requests into main or a release branch and full-ci pull requests run every entry.
           FULL: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
           PRIMARY: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' }}
+          PY_VERSION: ${{ matrix.python-version }}
+          RUNNER_OS_NAME: ${{ matrix.os }}
         working-directory: .
         run: |
           # A pull request into next that touches the Python package, the Node package it shares fixtures
@@ -138,8 +140,8 @@ jobs:
           # Any error while listing the files means the full matrix: when in doubt, test more.
           run=true
           if [ "$PRIMARY" != "true" ] && [ "$FULL" != "true" ]; then
-            run=true
-            if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git fetch --no-tags --depth=1 origin "$BASE_SHA" > /dev/null 2>&1                && files="$(git diff --no-renames --name-only "$BASE_SHA" HEAD)"; then
+            if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git fetch --no-tags --depth=1 origin "$BASE_SHA" > /dev/null 2>&1 \
+               && files="$(git diff --no-renames --name-only "$BASE_SHA" HEAD)"; then
               run=false
               while IFS= read -r f; do
                 case "$f" in
@@ -149,7 +151,7 @@ jobs:
               done <<< "$files"
             fi
           fi
-          [ "$run" = "true" ] || echo "this change does not need ${{ matrix.python-version }} on ${{ matrix.os }}"
+          [ "$run" = "true" ] || echo "this change does not need Python $PY_VERSION on $RUNNER_OS_NAME"
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
       - name: Decide what this change needs
         id: scope
