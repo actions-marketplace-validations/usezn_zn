@@ -29,12 +29,24 @@ The project has a single maintainer today (see [MAINTAINERS.md](MAINTAINERS.md))
 
 | Step | Target |
 | --- | --- |
-| Acknowledge your report | within 3 business days |
-| Initial assessment and severity (CVSS) | within 7 days |
+| Acknowledge your report (first human response) | within 24 hours |
+| Initial assessment: validity and severity (CVSS) | within 48 hours |
 | Fix released, critical or high severity | within 30 days |
 | Fix released, medium or low severity | within 90 days |
 
 We keep you updated at least every 14 days until the issue is resolved, and tell you if a target will be missed and why.
+
+### Out of scope
+
+These reports are not accepted as vulnerabilities:
+
+* Denial of Service (DoS/DDoS) attacks
+* Social engineering or phishing targeting zn personnel
+* Third-party services hosting our assets (for example AWS, Cloudflare)
+* Automated scanner spam without actionable proof-of-concept
+* Missing hardening headers or best practices without a demonstrable security impact
+* Findings that require physical access or a compromised end-user device
+* Unverified reports (no reproduced steps and no observed result)
 
 ---
 
