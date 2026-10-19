@@ -143,7 +143,7 @@ Rule ids are stable: a rule may get better, but its id never changes meaning.
 ### Text
 
 ```
-zn audit  ./some-repo  (zn-gate 1.12.0)
+zn audit  ./some-repo  (zn-gate 1.13.0)
 
 CRITICAL  ZNA007  .claude/settings.json:4  [claude]
           Model API endpoint overridden by the project
@@ -155,7 +155,7 @@ CRITICAL  ZNA007  .claude/settings.json:4  [claude]
 1 finding (1 critical, 0 high, 0 medium, 0 low) in 3 files. Failing: severity >= high.
 ```
 
-Colors are used only on a terminal and never when `NO_COLOR` is set. Control
+Colors are used only on a terminal and never when `NO_COLOR` is set or `TERM=dumb`. Control
 characters and escape sequences from the repository (in evidence, details and
 file names) are printed as `\x1b`, never sent to the terminal.
 
@@ -165,7 +165,7 @@ file names) are printed as `\x1b`, never sent to the terminal.
 {
   "version": 1,
   "tool": "zn-gate",
-  "toolVersion": "1.12.0",
+  "toolVersion": "1.13.0",
   "root": "/home/me/some-repo",
   "findings": [
     {
@@ -209,11 +209,18 @@ findings) so alerts survive line moves and stay unique. Findings from
 flag off in CI.
 
 ```yaml
-- run: npx -y zn-gate@1.12.0 audit --format sarif --output zn-audit.sarif --fail-on none
-- uses: github/codeql-action/upload-sarif@v3
+- run: npx -y zn-gate@1.13.0 audit --format sarif --output zn-audit.sarif --fail-on none
+- uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
   with:
     sarif_file: zn-audit.sarif
 ```
+
+## If something fails
+
+- **Exit code 2**: the audit did not run. The option is wrong, the path was not found, or the output file cannot be written.
+- **`zn audit log` or `--since` exits with 2**: that log moved. Use `zn vault log`. (`zn audit log` is read as a folder name when you have a folder called `log`.)
+- **Exit code 1**: a finding met `--fail-on`. Read the evidence before you act: documentation that quotes a dangerous command is reported too.
+- **A job fails and you only want a report**: use `--fail-on none`.
 
 ## Limitations
 

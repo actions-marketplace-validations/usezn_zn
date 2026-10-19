@@ -257,6 +257,13 @@ The SARIF file is written before the exit code is known, so the upload step
   covers differs: in Cursor, for example, shell output and file contents are
   not scrubbed. See [what each agent supports](compat.md).
 
+## If something fails
+
+- **Exit code 2**: reach did not run or stopped with an error. Check that the path is a folder and that you used only one folder and valid options. `--json` and `--sarif` cannot be used together.
+- **Exit code 1 in CI**: a finding met `--fail-on`. Read the report. Use `--fail-on none` to report without failing.
+- **A `.env` file in a sub-folder is missing from the report**: reach checks one folder. Run it in that folder, or use `npx -y zn-gate scan`.
+- **The report says some files were not checked in time**: the check stops after about 2.5 seconds or 20,000 entries. Run `npx -y zn-gate audit --include-home` to check them all.
+
 ## Next steps
 
 - Fix the high findings with the commands the report prints, in this order:

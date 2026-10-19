@@ -54,9 +54,24 @@ Everything runs on your machine; no account or API key is needed. You need Node.
 npx -y zn-gate init
 ```
 
-It finds Claude Code, Codex CLI, Cursor and OpenCode, shows the setup for each one that is not protected yet (the zn-gate plugin for Claude Code, zn's hooks for the others), runs each step after you confirm it, and ends with `zn-gate check`. Run it yourself in your own terminal, with no arguments: when an AI agent or a script runs it, it only prints the steps.
+`init` does this:
+
+- It finds Claude Code, Codex CLI, Cursor and OpenCode on your machine.
+- For each one that is not protected yet, it shows the setup: the zn-gate plugin for Claude Code (or zn's hooks when your Node.js is older than 20.12), and zn's hooks for the others.
+- It runs each step only after you confirm it.
+- It ends with `zn-gate check`.
+
+Run it yourself, in your own terminal, with no arguments. When an AI agent or a script runs it, it only prints the steps.
 
 > **Windows PowerShell:** `npm` and `npx` can fail with "running scripts is disabled on this system", because the default execution policy blocks `npm.ps1`. Use `npm.cmd`, `npx.cmd` and `zn.cmd` instead (for example `npm.cmd install -g zn-gate`), run the commands from Command Prompt, or allow local scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+**If something fails:**
+
+- `npx: command not found`, or a message about the Node.js version: install the LTS version of [Node.js](https://nodejs.org/), open a new terminal and run the command again.
+- "running scripts is disabled on this system" on Windows: see the PowerShell note above.
+- `init` only prints steps and changes nothing: an AI agent or a script ran it. Run it yourself in your own terminal.
+- `check` shows **NOT protected**: that line says why and what to run. [What the output means](docs/check.md).
+- You want to undo what `init` changed: `npx -y zn-gate init --revert`.
 
 **Then keep your `.env` values in the vault.** With the plugin or the hooks, the agent cannot read `.env` files with real values; move them into zn-gate's encrypted vault, and the file keeps markers such as `__ZN_STRIPE_KEY__`:
 
@@ -67,14 +82,14 @@ npx -y zn-gate env shadow .env
 
 After this, your own app also reads the markers in `.env`: start it with zn-gate's `run` command once you allow it ([docs/secrets.md](docs/secrets.md)). `env shadow` tells you how to undo it.
 
-Five-minute walkthrough: [docs/secrets.md](docs/secrets.md). Limits: [docs/threat-model.md](docs/threat-model.md).
+Five-minute walkthrough: [docs/secrets.md](docs/secrets.md). Limits: [docs/threat-model.md](docs/threat-model.md). Words you do not know: [docs/glossary.md](docs/glossary.md).
 
 <details>
 <summary><strong>Other ways to install</strong>: one agent at a time, other editors, Python, MCP server only, wrapping the MCP servers you already use</summary>
 
 **One agent at a time** (the same steps `init` runs):
 
-**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later.
+**Claude Code: the plugin.** You also need Git and Claude Code 2.1.295 or later. The plugin needs Node.js 20.12 or later. With an older Node.js, `npx -y zn-gate init` skips the plugin and sets up zn's hooks for Claude Code instead (`zn-gate check` says so if the plugin is installed); update Node.js to use the plugin.
 
 ```bash
 claude plugin marketplace add usezn/zn
@@ -125,6 +140,22 @@ npx -y zn-gate init --revert    # undo
 It reads Claude Desktop, Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`), Codex CLI (`~/.codex/config.toml`), OpenCode (`~/.config/opencode/opencode.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). [Full list and rules](packages/zn-gate/README.md#wrap-the-mcp-servers-you-already-use).
 
 </details>
+
+## See what zn-gate did
+
+```bash
+npx -y zn-gate report
+```
+
+A short summary of the last 7 days on this computer: blocked actions, secrets hidden, new protected MCP servers and tool changes waiting for your approval. It reads only local files, needs no account and sends nothing. `--since 30d` changes the period, `--json` prints it for scripts. [What it shows](docs/report.md).
+
+## Turn on the optional cloud check
+
+```bash
+npx -y zn-gate connect
+```
+
+Optional, and you do it yourself in your own terminal (an agent cannot). It opens usezn.com so you can create an analysis-only API key (it cannot read your usage or manage keys), then asks you to paste it at a hidden prompt. A full-access key is refused. The key is kept in your system keychain (or the zn vault when there is no keychain), never written to a file, and zn's hooks refuse the direct ways for your agent to read it. After that, the text you or your agent send through `analyze_prompt`, with detected secrets removed first, is also checked by the Galvanize 2 classifier at usezn.com. Until you run it, nothing is sent. `zn-gate disconnect` removes the key from this computer and asks whether to revoke it on usezn.com too (default no). [How it works](docs/connect.md).
 
 ## Check that it works
 
@@ -180,7 +211,7 @@ Everything above runs locally, for free, with no account. The optional cloud at 
 - **A larger detection model** for prompts, when you opt in (`ZN_CLOUD=1`).
 - **Team controls** (shared policies, organization-level audit): in progress.
 
-By default nothing is sent. If you set `ZN_CLOUD=1` and an API key (or the API key option of the Claude Code plugin), `analyze` sends the prompt text after removing the secrets zn-gate detects locally: personal data is not removed on this path, and a secret it does not detect would be sent with the text. The dashboard keeps the metadata of each cloud decision. Tool output and tool-call arguments are never sent.
+By default nothing is sent. If you set `ZN_CLOUD=1` and an API key, run `zn-gate connect`, or use the API key option of the Claude Code plugin, `analyze` sends the prompt text after removing the secrets zn-gate detects locally: personal data is not removed on this path, and a secret it does not detect would be sent with the text. The dashboard keeps the metadata of each cloud decision. Tool output and tool-call arguments are never sent.
 
 ## What leaves your machine
 
@@ -194,9 +225,9 @@ By default nothing is sent. If you set `ZN_CLOUD=1` and an API key (or the API k
 | Tool-call arguments (`check_tool_call`, `shield`) | Locally | **Never**, in any configuration |
 | MCP tool and parameter descriptions (`shield`) | Locally | **Never**, in any configuration |
 | Counts of what zn-gate did (`zn-gate stats`: checks, blocks, secrets replaced, per secret type) | Written locally to `~/.zn/stats.json` | **Never**, unless you turn on `zn-gate stats share on`: then one report a day with a random installation id, the day, the zn-gate, OS and Node.js versions, the agent and part of zn-gate used most, and the number of secrets found per built-in type (never values, prompts, variable or secret names, paths, hosts or emails). `zn-gate stats share show` shows it first. |
-| Prompts (`analyze_prompt`, `zn-gate analyze`, Python `analyze()`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`, or the API key option of the Claude Code plugin (for `analyze_prompt` only). Detected secrets are removed locally before sending; personal data is not. |
+| Prompts (`analyze_prompt`, `zn-gate analyze`, Python `analyze()`) | Locally | Only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`, run `zn-gate connect` yourself (Node package), or use the API key option of the Claude Code plugin (for `analyze_prompt` only). Detected secrets are removed locally before sending; personal data is not. |
 
-`ZN_API_KEY` alone enables nothing. `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `npx -y zn-gate status` prints what your configuration sends.
+`ZN_API_KEY` alone enables nothing. `zn-gate connect` is the other way to opt in: you run it, in your own terminal, and it keeps the key in your system keychain or the zn vault, never in a file (`zn-gate disconnect` undoes it and can revoke the key on usezn.com when you say yes; [details](docs/connect.md)). `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1` and a connected key. `npx -y zn-gate status` shows the active detection engine and whether the optional cloud check is on. Sharing of usage statistics is off by default and has its own status: `npx -y zn-gate stats share status`.
 
 > **1.4.0 and earlier:** with `ZN_API_KEY` set, the Node package sent tool output and tool-call arguments to `api.usezn.com` without redaction. 1.4.1 removes that path. Details in the [CHANGELOG](CHANGELOG.md).
 
@@ -226,6 +257,8 @@ Custom rules: add banned patterns and forbidden paths in `.znrules` or `zn.confi
 Audit log: `zn-gate shield` appends each decision to `~/.zn/evidence.jsonl` as a hash-chained (SHA-256) record with a redacted preview. It detects accidental or partial edits; it is not tamper-proof against someone with write access to the file. Check it with `npx -y zn-gate evidence --verify`.
 
 ### GitHub Action
+
+Guide for the audit mode (permissions, code scanning, badge): [docs/github-action.md](docs/github-action.md).
 
 The action installs the published zn-gate packages at an exact version and runs on the runner only; it sends nothing anywhere. It has two checks, chosen with `mode`:
 
@@ -308,7 +341,7 @@ jobs:
 
 | Input | Default | Description |
 |---|---|---|
-| `version` | `1.12.0` | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
+| `version` | `1.13.0` | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
 | `mode` | `scan` | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). `scan`, `audit` or `both`. |
 | `path` | `.` | File or directory to scan. `audit` needs a directory: with `both` a file skips the audit with a warning; with `audit` the step fails. |
 | `fail-on-threat` | `true` | Fail the step on findings. For `scan`, anything found (an injection trap or a secret); for `audit`, findings at or above `severity-threshold`. Set `false` to report only. Any value other than `true` or `false` fails the step. `true` or `false`, in any case; other values fail the step. |
