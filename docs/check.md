@@ -12,7 +12,7 @@ npx -y zn-gate check
 
 zn-gate makes a temporary folder with two files: a `.env` file that holds a fake key (`ZN_CHECK_EXAMPLE_KEY=zn-check-fake-value-not-a-real-key`) and an ordinary `README.txt`. For each agent set up for your user, it asks zn's hook to let the agent read each file, the same way your agent asks. An agent counts as protected only when the `.env` file is blocked and the ordinary file is allowed.
 
-- **Claude Code**: zn-gate checks the zn-gate plugin, or the hooks of `zn hooks install claude-code`. It also notices when the plugin is turned off and when a Claude Code setting turns hooks off.
+- **Claude Code**: zn-gate checks the zn-gate plugin, or the hooks of `zn hooks install claude-code`. It also notices when the plugin is turned off and when a Claude Code setting turns hooks off. If your hooks were installed by an older zn-gate and lack the check for typed skills and commands, it suggests running `zn hooks install claude-code` again.
 - **Codex CLI and Cursor**: zn-gate checks the hooks of `zn hooks install`.
 - **What it runs**: for Claude Code, Codex CLI and Cursor it runs the hook that is installed, exactly as your agent would. On Windows, a hook installed as `zn hook <agent>` is not started; zn-gate checks zn's rules for it instead and says so in the output. A hook that cannot start, or that blocks every file because part of zn is missing, is reported as **NOT protected**.
 - **OpenCode**: zn-gate checks zn's rules. The zn plugin runs inside OpenCode, so it is not started here.
@@ -40,6 +40,13 @@ Your agent cannot read secret files such as .env through these tools. Nothing wa
 
 `zn-gate check` exits with 0 only when every agent that is set up for your user is protected.
 
+## If something fails
+
+- **`npx: command not found`**: install the LTS version of [Node.js](https://nodejs.org/), open a new terminal and run the command again.
+- **A line starts with `-`**: zn is not set up for that agent. Run `npx -y zn-gate init`. It shows each step and asks before it runs one. If the line says *not found on this machine*, that agent is not installed and `init` does nothing for it.
+- **A line says NOT protected**: read the line. It says what to run. If the Node.js your hook used was removed, run `npm install -g zn-gate`, then `zn hooks install <agent>`.
+- **Still not sure**: re-run `npx -y zn-gate check`, then ask in [Discussions](https://github.com/usezn/zn/discussions).
+
 ## If your agent needs a value from `.env`
 
 zn blocks the file because it holds secret values. To let your agent use them without seeing them, move the values into zn's vault:
@@ -53,4 +60,4 @@ The file keeps markers such as `__ZN_API_KEY__` instead of the values, and zn pu
 ## Related
 
 - `zn-gate test` runs zn's built-in rule self-test (51 examples). It checks the rules, not your agent setup.
-- `zn-gate status` shows what your configuration sends over the network (nothing, unless you turned on the optional cloud check).
+- `zn-gate status` shows the active detection engine and whether the optional cloud check is on, and whether a key was saved by `zn-gate connect` (never the key itself). Sharing of usage statistics is off by default and has its own status: `zn-gate stats share status`.

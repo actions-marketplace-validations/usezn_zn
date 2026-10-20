@@ -3,6 +3,8 @@ name: zn CI
 # Pull requests into next run the checks the rulesets require and Ubuntu with Node.js 22. The full matrix
 # (every Node.js and Python version, Windows and macOS) runs on pushes to main and next, on pull requests
 # into main and release branches, and on any pull request labelled full-ci. Its only macOS job is Python 3.12.
+# A pull request into next that changes the Python package, the Node package it shares fixtures with,
+# bench/ or this workflow also runs the whole Python matrix.
 on:
   push:
     branches: [ main, next ]
@@ -86,6 +88,9 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         run: node bench/bench_node.js
 
+  # The Python tests also read files from packages/zn-gate (rule fixtures) and run bench/bench_python.py.
+  # A pull request into next that touches any of them runs the whole Python matrix, not only 3.12:
+  # a failure on an older Python version must show up before the merge, not on the push to next.
   test-python:
     name: Python ${{ matrix.python-version }} tests & benchmarks (${{ matrix.os }})
     # Draft pull requests skip this job; marking the pull request ready for review runs it.
@@ -95,8 +100,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # "Python 3.12 tests & benchmarks (ubuntu-latest)" is a required check: it always runs.
-        include: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[{"os":"ubuntu-latest","python-version":"3.10"},{"os":"ubuntu-latest","python-version":"3.11"},{"os":"ubuntu-latest","python-version":"3.12"},{"os":"ubuntu-latest","python-version":"3.13"},{"os":"windows-latest","python-version":"3.12"},{"os":"macos-latest","python-version":"3.12"}]' || '[{"os":"ubuntu-latest","python-version":"3.12"}]') }}
+        # The matrix is fixed so that every job name is known when the run starts (a matrix built from
+        # another job leaves a check with an unexpanded name when the run is cancelled early).
+        # "Python 3.12 tests & benchmarks (ubuntu-latest)" is a required check: it always runs. The
+        # other entries decide in their first step whether this change needs them and end quickly if not.
+        include:
+          - { os: ubuntu-latest, python-version: "3.10" }
+          - { os: ubuntu-latest, python-version: "3.11" }
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: ubuntu-latest, python-version: "3.13" }
+          - { os: windows-latest, python-version: "3.12" }
+          - { os: macos-latest, python-version: "3.12" }
     defaults:
       run:
         shell: bash
@@ -109,8 +123,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Decide whether this matrix entry runs
+        id: entry
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Pushes, pull requests into main or a release branch and full-ci pull requests run every entry.
+          FULL: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' || startsWith(github.base_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          PRIMARY: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' }}
+          PY_VERSION: ${{ matrix.python-version }}
+          RUNNER_OS_NAME: ${{ matrix.os }}
+        working-directory: .
+        run: |
+          # A pull request into next that touches the Python package, the Node package it shares fixtures
+          # with, bench/ or the CI setup runs the whole matrix; any other one runs Python 3.12 on Ubuntu only.
+          # Any error while listing the files means the full matrix: when in doubt, test more.
+          run=true
+          if [ "$PRIMARY" != "true" ] && [ "$FULL" != "true" ]; then
+            if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git fetch --no-tags --depth=1 origin "$BASE_SHA" > /dev/null 2>&1 \
+               && files="$(git diff --no-renames --name-only "$BASE_SHA" HEAD)"; then
+              # An empty list (no net change) is a doubt too: keep the entry.
+              [ -n "$files" ] && run=false
+              while IFS= read -r f; do
+                case "$f" in
+                  packages/zn-gate-py/*|packages/zn-gate/*|bench/*|.github/workflows/ci.yml|.github/ci-test-requirements.txt|.github/scripts/ci-scope.sh)
+                    run=true; echo "runs the full Python matrix: $f"; break ;;
+                esac
+              done <<< "$files"
+            fi
+          fi
+          [ "$run" = "true" ] || echo "this change does not need Python $PY_VERSION on $RUNNER_OS_NAME"
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
       - name: Decide what this change needs
         id: scope
+        if: steps.entry.outputs.run == 'true'
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}

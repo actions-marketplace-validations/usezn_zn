@@ -2,7 +2,7 @@
   "layers": {
     "rules": {
       "version_const": "RULES_VERSION",
-      "version": "2026-10-16.10",
+      "version": "2026-10-19.1",
       "ids": [
         "evasion:bidi_override",
         "exfil:credentials",
@@ -45,12 +45,12 @@
         "secret:private_key"
       ],
       "sha256": {
-        "lib/rules.js": "3af274958d75e4a214fcb1f7231adeab8d69fa372799eba2422f2c3f9b28318e"
+        "lib/rules.js": "11bab37a126053cc653794d855d32d34bb2d5a8a93453ae6df9193578803df60"
       }
     },
     "scrub": {
       "version_const": "SCRUB_RULES_VERSION",
-      "version": "2026-10-16.7",
+      "version": "2026-10-17.3",
       "ids": [
         "AGE_SECRET_KEY",
         "ALIBABA_KEY_ID",
@@ -130,6 +130,7 @@
         "URL_PASSWORD",
         "VAULT_TOKEN",
         "XAI_KEY",
+        "ZN_API_KEY",
         "exact.AC_PREFIX",
         "exact.AhoCorasick",
         "exact.MIN_LENGTH",
@@ -142,13 +143,13 @@
         "exact.variants"
       ],
       "sha256": {
-        "lib/scrub/patterns.js": "dcf93a5a83caa58711ccbcf10b04e34ca08acb06e26baff84006f4ca7c25da9c",
+        "lib/scrub/patterns.js": "1f836da9f9cee692d55d1ea46fbe16451b9e02c52f243aaab4cd1e9b147ad145",
         "lib/scrub/exact.js": "d104e85ec6a25e7d6d4b6c428bd0bf8b25d43c3ead313f6872f508b65793bf6b"
       }
     },
     "audit": {
       "version_const": "AUDIT_RULES_VERSION",
-      "version": "2026-10-15.1",
+      "version": "2026-10-17.1",
       "ids": [
         "ZNA001",
         "ZNA002",
@@ -190,13 +191,13 @@
         "patterns.weakening"
       ],
       "sha256": {
-        "lib/audit/rules.js": "d5416943f74a530dc7a333f6ab13d250d978ccf60ee730055f8d82552000ee7c",
-        "lib/audit/patterns.js": "88107fd9244b3d97fc841b67c1a2219948205ec4ba6094f5609c9274054ab8eb"
+        "lib/audit/rules.js": "e8610a99cfb1ef2782138cd48a8f9c64b236f48dbc13ee80da78ea8cd69eb8bd",
+        "lib/audit/patterns.js": "1711d1c0ea18693b91b97c6272affdc188eed7c944294a9620bb7330f4c33abd"
       }
     },
     "policy": {
       "version_const": "POLICY_RULES_VERSION",
-      "version": "2026-10-17.8",
+      "version": "2026-10-18.31",
       "ids": [
         "SHELL_SCAN_CAP",
         "_decodeAnsiC",
@@ -218,7 +219,7 @@
         "writeDenial"
       ],
       "sha256": {
-        "lib/hooks/policy.js": "f8a6f61fb16fbc8471e4102bf3ade599198760d9fe427743eb2d2ffebb28f515",
+        "lib/hooks/policy.js": "13a9619c8ff328950e6a07c65bce73f4c6accae8557f08245cd124a7d04af0cf",
         "lib/broker/files.js": "45dd8927cc626ac35e8c036e5118ec3c584a3f3a396640c09cee8b545e67c097",
         "lib/broker/markers.js": "301eb1d763e8e88c32e32a02c344be8f44b342b06b61897f3a2d478dbe55d6b4",
         "lib/broker/dotenv.js": "d12a12bd12108a38f84e9f4772ed50f0b015962a1e68f75362142b9b3449e8fe",

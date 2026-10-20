@@ -30,6 +30,29 @@ includes PowerShell and Claude Code's Monitor tool) is blocked, because zn
 could not check it within the time the agent waits for the hook. The same
 limit applies to a patch (`apply_patch`) in Codex and OpenCode.
 
+## Skills, commands and @file in Claude Code
+
+- **Typed skills and commands**: `UserPromptSubmit` sees only what you typed, not
+  what a skill or command expands into. zn also registers a `UserPromptExpansion`
+  hook, which checks the expanded text with the same detectors as a typed prompt
+  and refuses the expansion when it contains a secret value, a private key or
+  the lines of a `.env` file. It says why and what to do next. If the hook
+  cannot run or takes too long, the expansion is blocked, like the other prompt
+  hook. Expanded text over 1 MB is blocked because it cannot be checked in time.
+  The hook needs a Claude Code version that has the `UserPromptExpansion` event
+  (builds from about 2.1.141 on; 2.1.110 does not have it). With the plugin, an older
+  Claude Code that does not know the event can ignore every hook in the plugin's
+  `hooks.json`, so zn's plugin needs Claude Code 2.1.295 or later.
+  The hook cannot rewrite the text, so there is no redaction here: the command
+  is stopped and you remove the value or save it with `zn secret set`.
+- **`!` shell commands inside skills and commands**: Claude Code checks them
+  against your permission rules. zn does not confirm that its `PreToolUse` hook
+  sees them. To turn them off, set `disableSkillShellExecution: true` in your
+  Claude Code settings (in managed settings for a team).
+- **`@file` mentions**: Claude Code does not run Read hooks for them, so zn
+  cannot check the file when you mention it with `@`. A protected file
+  (`.env`, credentials, a private key) is covered only when a tool call reads it.
+
 ## Why the differences
 
 - **Claude Code**: `PostToolUse` can replace the output of any tool

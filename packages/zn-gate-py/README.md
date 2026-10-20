@@ -31,6 +31,14 @@ On Debian and Ubuntu, `python3 -m venv` needs the `python3-venv` package first: 
 
 Inside an environment you already use (your project's virtualenv, Poetry, uv), `pip install zn-gate` is enough. Python 3.10 or later (CI tests 3.10 to 3.13). Zero runtime dependencies.
 
+**If something fails:**
+
+- `externally-managed-environment`: install it in a virtual environment, as shown above.
+- `python3 -m venv` fails on Debian or Ubuntu: run `sudo apt install python3-venv`.
+- Python says it cannot find `zn_gate`: run your script with the Python of that environment (`.venv/bin/python`; Windows: `.venv\Scripts\python`).
+- Legitimate content is blocked: use `on_block="return"` with a fallback while you evaluate it.
+- You use Claude Code, Codex CLI, Cursor or OpenCode: this package does not protect them. Run `npx -y zn-gate init` in your own terminal instead.
+
 ## Check that it works
 
 ```python
@@ -81,7 +89,7 @@ print(r.verdict)           # allow
 
 **Nothing, by default.** `evaluate`, `guard`, `check_tool_call`, `check_tool_result`, `sanitize_tool_result`, `redact_secrets` and the LangChain / CrewAI / LlamaIndex / Promptfoo integrations are always local.
 
-The only function that can reach the network is `analyze()`, and only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. The text is secret-redacted locally before it is sent. `ZN_API_KEY` alone enables nothing, and `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `zn-gate status` prints what your configuration sends. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
+The only function that can reach the network is `analyze()`, and only if you set **both** `ZN_CLOUD=1` and `ZN_API_KEY`. The text is secret-redacted locally before it is sent. `ZN_API_KEY` alone enables nothing, and `ZN_LOCAL_ONLY=true` overrides `ZN_CLOUD=1`. `zn-gate status` shows the active detection engine and whether the optional cloud check is on. Sharing of usage statistics is off by default and has its own status in the npm package: `npx -y zn-gate stats share status`. Data-flow diagrams: [repository README](https://github.com/usezn/zn#what-leaves-your-machine).
 
 A long text (over 1,000 characters) is checked by the cloud classifier in overlapping 512-token windows, up to 20, so an injection in the middle or at the end of a long document is not missed. Set `ZN_LONG_INPUT=off` (or `analyze(..., long_input="off")`, `zn-gate analyze --long-input off`) to check only the first 512 tokens, as before. Cloud checks are billed by text size, with or without windows (`off` does not lower the count): 1 call up to 2,000 characters, and 1 more for each further 1,000 characters or part of them (up to 19 calls for the 20,000-character limit); the gate reports the count in `billed_calls`.
 
@@ -179,6 +187,7 @@ We only publish numbers we can reproduce, with the method next to them.
 - `ZN_LOCAL_ONLY`: `true` forces local-only.
 - `ZN_STRICT`: `1` also blocks the rules that only warn by default (same as `evaluate(text, strict=True)`; also `check_tool_call`, `check_tool_result` and `sanitize_tool_result` take `strict=True`).
 - `ZN_STAGE` / `ZN_API_URL`: cloud endpoint selection.
+- `NO_COLOR` (any non-empty value) or `TERM=dumb`: the command line output leaves out its symbols; the status words (ALLOW, BLOCK, clean, ...) stay.
 
 ## FAQ
 
