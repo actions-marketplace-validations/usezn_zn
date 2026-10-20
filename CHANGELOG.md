@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.13.1] - 2026-10-20
 
+zn-gate 1.13.1 is a security patch for the Python package. The LangChain callback handler now stops a run when it blocks a tool call, and the new `guard_langchain_tool` wrapper checks tool arguments and masks secrets in tool output before the model reads them. Upgrade with `pip install -U zn-gate`. The npm package has no code changes in this release.
+
 ### Changed
 - Upgrade note, Python, LangChain: `ZnGuardCallbackHandler(on_block="return")` now raises `ValueError`. It let blocked calls through, like `"ignore"`. Use `guard_langchain_tool(tool, on_block="return")` to give the model a block message instead.
 - Upgrade note, Python, LangChain: with `mask_secrets=True` (default) a secret in a tool output now stops the run with `GuardBlockError`. If you wrap your tools with `guard_langchain_tool`, create the handler with `mask_secrets=False` so the wrapper hides the secret and the run goes on.
