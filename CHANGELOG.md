@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-10-20
+
+### Changed
+- Upgrade note, Python, LangChain: `ZnGuardCallbackHandler(on_block="return")` now raises `ValueError`. It let blocked calls through, like `"ignore"`. Use `guard_langchain_tool(tool, on_block="return")` to give the model a block message instead.
+- Upgrade note, Python, LangChain: with `mask_secrets=True` (default) a secret in a tool output now stops the run with `GuardBlockError`. If you wrap your tools with `guard_langchain_tool`, create the handler with `mask_secrets=False` so the wrapper hides the secret and the run goes on.
+
+### Fixed
+- Python, LlamaIndex: `ZnLlamaGuard(on_block="return")` let a blocked query through, like `"ignore"`. `check_query` and `on_query_start` now return a short block message, or the new `fallback`, in place of the query. `sanitize_response` now also hides secrets in a LlamaIndex `Response` object, not only in text.
+
+### Security
+- Python, LangChain: `ZnGuardCallbackHandler` now stops the run when it blocks something ([GHSA-q7p5-7x6r-fm4r](https://github.com/usezn/zn/security/advisories/GHSA-q7p5-7x6r-fm4r)). Before, LangChain caught the `GuardBlockError` raised inside the callback and only logged a warning, so a blocked tool call still ran and a blocked prompt or tool output still reached the model. The handler now sets `raise_error = True`, which tells LangChain to let the error through.
+- Python, LangChain: the handler could not hide secrets or replace an injected tool output, because LangChain ignores what a callback returns, so the secret still reached the model. With `mask_secrets=True` (default) a tool output that contains a secret now stops the run. The new `guard_langchain_tool(tool)` wraps a LangChain tool: it checks the arguments before the tool runs and the output before the model reads it, and hides secrets in that output.
+
 ## [1.13.0] - 2026-10-19
 
 zn-gate 1.13.0 adds `zn-gate connect`, which turns on the optional cloud check for `analyze_prompt` with an analysis-only API key kept in your system keychain, and `zn-gate disconnect`, which can also revoke that key on usezn.com. It also adds `zn-gate report`, a local summary of what zn-gate did in the last days, and the agent hooks now check what a typed skill or command expands into and the code that shells and wrappers run from a string. zn-gate still needs no account and sends nothing by default. This release also fixes how a damaged audit log is handled (it is reported instead of crashing, and never used to start a new chain) and how several programs writing to it at once keep its hash chain intact and tightens when the saved cloud key can be used. Update with `npm install -g zn-gate@1.13.0` and `pip install -U zn-gate`.
@@ -599,7 +612,8 @@ Limits: [docs/threat-model.md](docs/threat-model.md). Per-agent support:
 - MCP Server interface for Claude Code, Cursor, and custom agent loops.
 - Bidirectional inspection for prompt inputs and tool returns.
 
-[Unreleased]: https://github.com/usezn/zn/compare/v1.13.0...next
+[Unreleased]: https://github.com/usezn/zn/compare/v1.13.1...next
+[1.13.1]: https://github.com/usezn/zn/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/usezn/zn/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/usezn/zn/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/usezn/zn/compare/v1.10.0...v1.11.0
