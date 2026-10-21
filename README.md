@@ -293,10 +293,10 @@ jobs:
           persist-credentials: false
       - name: Scan AI agent prompts and tools
         # Pin the action to a full commit SHA; the comment names the release.
-        uses: usezn/zn@1174db0f8d980fb5e61facc7b63344f8da95e5ff # v1.13.0
+        uses: usezn/zn@746be20f3276ab0d589f2d6df941b5d31a5396d8 # v1.13.1
         with:
-          version: '1.13.0'
-          package-sha256: '2655200798bde877238968003a8e82d5934e683b675fb374fd26e2d87f20d61b'
+          version: '1.13.1'
+          package-sha256: '7fab55ba5c01790c06582144b7f991dc03698039813fdb1556986f6327bed0a1'
           path: '.'
           fail-on-threat: 'true'
           format: 'github'
@@ -330,7 +330,7 @@ jobs:
         # mode input. The zn-gate package version is set by version below.
         uses: usezn/zn@<commit-sha> # <first Action release with mode>
         with:
-          version: '1.13.0'
+          version: '1.13.1'
           mode: 'both'
           format: 'sarif'
           severity-threshold: 'medium'   # stricter than the default (high)
@@ -343,7 +343,7 @@ jobs:
 
 | Input | Default | Description |
 |---|---|---|
-| `version` | `1.13.0` | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
+| `version` | `1.13.1` | Exact `zn-gate` version to install. Ranges and `latest` are refused. `audit` needs 1.6.0 or later. |
 | `mode` | `scan` | Requires a release of the action that includes audit mode (see the [CHANGELOG](CHANGELOG.md)). `scan`, `audit` or `both`. |
 | `path` | `.` | File or directory to scan. `audit` needs a directory: with `both` a file skips the audit with a warning; with `audit` the step fails. |
 | `fail-on-threat` | `true` | Fail the step on findings. For `scan`, anything found (an injection trap or a secret); for `audit`, findings at or above `severity-threshold`. Set `false` to report only. Any value other than `true` or `false` fails the step. `true` or `false`, in any case; other values fail the step. |
